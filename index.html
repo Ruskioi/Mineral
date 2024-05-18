@@ -1,23 +1,71 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Train Adventure</title>
-    <link rel="stylesheet" href="styles.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Welcome</title>
+<style>
+  body {
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: #222;
+    overflow: hidden;
+  }
+
+  #container {
+    text-align: center;
+    color: white;
+    font-family: 'Roboto', sans-serif;
+    position: relative;
+  }
+
+  #am-text {
+    font-size: 100px;
+    opacity: 0;
+    animation: fadeIn 2s forwards;
+  }
+
+  #welcome-text {
+    font-size: 40px;
+    opacity: 0;
+    animation: fadeIn 2s forwards 1.5s;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+</style>
 </head>
 <body>
-    <div id="game-container">
-        <div id="info-bar">
-            <div>Distance: <span id="distance">0</span> km</div>
-            <div>Speed: <span id="speed">0</span> km/h</div>
-        </div>
-        <div id="train-container">
-            <div id="background"></div>
-            <div id="train"></div>
-        </div>
-        <button id="upgrade-button">Upgrade Train (Cost: <span id="upgrade-cost">100</span> points)</button>
-    </div>
-    <script src="script.js"></script>
+  <div id="container">
+    <div id="am-text">AM</div>
+    <div id="welcome-text">Welcome to</div>
+  </div>
+
+<script>
+  // JavaScript to manipulate the text elements
+  window.onload = function() {
+    var amText = document.getElementById('am-text');
+    var welcomeText = document.getElementById('welcome-text');
+    
+    setTimeout(function() {
+      amText.style.opacity = '1';
+    }, 500);
+
+    setTimeout(function() {
+      welcomeText.style.opacity = '1';
+    }, 2000);
+  };
+</script>
+
 </body>
 </html>
