@@ -2,9 +2,10 @@ class Player {
     constructor(balance) {
         this.balance = balance;
         this.inventory = [];
-        this.updateBalance();
+        this.updateBalance(); // Lägg till detta för att uppdatera balansen när spelaren skapas
     }
 
+    // Metod för att uppdatera balansen
     updateBalance() {
         document.getElementById('balance').textContent = `Balance: ${this.balance} coins`;
     }
@@ -15,9 +16,30 @@ class Player {
             return;
         }
 
+        // Dra 100 coins från balansen
         this.balance -= 100;
-        this.updateBalance();
-        this.displayMessage("Du har öppnat en låda och 100 coins har dragits från din balans.");
+        this.updateBalance(); // Uppdatera balansen efter att ha dragit från den
+
+        // Fortsätt med resten av koden
+    }
+
+    sellBox(index) {
+        let boxType = this.inventory[index];
+        let boxValues = this.getBoxValues();
+
+        if (index !== -1) {
+            this.inventory.splice(index, 1);
+            this.balance += boxValues[boxType];
+            this.updateBalance(); // Uppdatera balansen efter att ha sålt boxen
+            this.displayMessage(`Du har sålt ${boxType} för ${boxValues[boxType]} coins.\nDin nya balans är ${this.balance} coins.`);
+            this.showInventory();
+        } else {
+            this.displayMessage(`Du har ingen ${boxType} i ditt inventory.`);
+        }
+    }
+
+    // Resten av koden
+}
 
         this.animateOpening(() => {
             let boxType = this.getRandomBox();
@@ -98,20 +120,6 @@ class Player {
         }
     }
 
-    sellBox(index) {
-        let boxType = this.inventory[index];
-        let boxValues = this.getBoxValues();
-
-        if (index !== -1) {
-            this.inventory.splice(index, 1);
-            this.balance += boxValues[boxType];
-            this.updateBalance();
-            this.displayMessage(`Du har sålt ${boxType} för ${boxValues[boxType]} coins.\nDin nya balans är ${this.balance} coins.`);
-            this.showInventory();
-        } else {
-            this.displayMessage(`Du har ingen ${boxType} i ditt inventory.`);
-        }
-    }
 
     getBoxValues() {
         return {
