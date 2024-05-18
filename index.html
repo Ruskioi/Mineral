@@ -17,33 +17,6 @@
     position: relative;
   }
 
-  #container {
-    text-align: center;
-    color: white;
-    font-family: 'Roboto', sans-serif;
-    position: relative;
-  }
-
-  #am-text {
-    font-size: 100px;
-    opacity: 0;
-    animation: fadeIn 2s forwards;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-  }
-
-  #welcome-text {
-    font-size: 40px;
-    opacity: 0;
-    animation: fadeIn 2s forwards 1.5s;
-    position: absolute;
-    top: calc(50% - 60px);
-    left: 50%;
-    transform: translateX(-50%);
-  }
-
   #breathing-ball {
     width: 50px;
     height: 50px;
@@ -71,15 +44,6 @@
     transform: translateX(-50%);
   }
 
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
   @keyframes breathe {
     0% { transform: scale(1); opacity: 0.7; }
     50% { transform: scale(1.1); opacity: 0.3; }
@@ -88,10 +52,6 @@
 </style>
 </head>
 <body>
-  <div id="container">
-    <div id="welcome-text">Welcome to</div>
-    <div id="am-text">AM</div>
-  </div>
   <div id="breathing-ball"></div>
   <div id="question-box" contenteditable="true">
     Ask AM a question...
@@ -99,22 +59,10 @@
 
 <script>
   window.onload = function() {
-    var amText = document.getElementById('am-text');
-    var welcomeText = document.getElementById('welcome-text');
     var breathingBall = document.getElementById('breathing-ball');
     var questionBox = document.getElementById('question-box');
 
     setTimeout(function() {
-      amText.style.opacity = '1';
-    }, 500);
-
-    setTimeout(function() {
-      welcomeText.style.opacity = '1';
-    }, 2000);
-
-    setTimeout(function() {
-      amText.style.opacity = '0';
-      welcomeText.style.opacity = '0';
       breathingBall.style.opacity = '1';
       questionBox.style.opacity = '1';
     }, 3000);
