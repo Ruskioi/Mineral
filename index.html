@@ -27,12 +27,20 @@
     font-size: 100px;
     opacity: 0;
     animation: fadeIn 2s forwards;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
   }
 
   #welcome-text {
     font-size: 40px;
     opacity: 0;
     animation: fadeIn 2s forwards 1.5s;
+    position: absolute;
+    top: calc(50% - 60px); /* Adjusted position */
+    left: 50%;
+    transform: translateX(-50%);
   }
 
   @keyframes fadeIn {
@@ -47,8 +55,8 @@
 </head>
 <body>
   <div id="container">
-    <div id="am-text">AM</div>
     <div id="welcome-text">Welcome to</div>
+    <div id="am-text">AM</div>
   </div>
 
 <script>
