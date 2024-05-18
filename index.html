@@ -7,14 +7,32 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <header>
+        <div class="topbar">
+            <h1>Box Öppning Spel</h1>
+            <div id="balance">Balance: 500 coins</div>
+        </div>
+    </header>
+<main>
+
     <div class="container">
-        <h1>Box Öppning Spel</h1>
-        <div id="balance">Balance: 500 coins</div>
         <button id="openBoxBtn">Öppna Låda</button>
         <button id="showInvBtn">Visa Inventory</button>
+        <button id="showBoxopediaBtn">Boxopedia</button> <!-- Ny knapp för att visa Boxopedia -->
+        <div id="inventory" class="inventory hidden"></div>
+        <div id="boxopedia" class="boxopedia hidden"></div> <!-- Boxopedia-element -->
         <div id="animation"></div>
         <div id="output"></div>
     </div>
+</main>
+<div id="modal" class="modal">
+    <div class="modal-content">
+        <span class="close">&times;</span>
+        <h2 id="box-name"></h2>
+        <p id="box-description"></p>
+        <p id="box-id"></p>
+    </div>
+</div>
 
     <script src="game.js"></script>
 </body>

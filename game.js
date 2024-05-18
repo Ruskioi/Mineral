@@ -2,6 +2,19 @@ class Player {
     constructor(balance) {
         this.balance = balance;
         this.inventory = [];
+		this.boxIdCounter = 0;
+        this.boxopedia = {
+            'Box 1': false,
+            'Box 2': false,
+            'Box 3': false,
+            'Box 4': false,
+            'Box 5': false,
+            'Box 6': false,
+            'Box 7': false,
+            'Box 8': false,
+            'Box 9': false,
+            'Box 10': false
+        };
         this.updateBalance();
     }
 
@@ -18,6 +31,8 @@ class Player {
         this.balance -= 100;
         this.updateBalance();
         this.displayMessage("Du har öppnat en låda och 100 coins har dragits från din balans.");
+this.hideAllBoxes(); 
+ // Dölj Boxopedia innan öppningsanimationen börjar
 
         this.animateOpening(() => {
             let boxType = this.getRandomBox();
@@ -79,24 +94,53 @@ class Player {
         return weights.length - 1;
     }
 
-    showInventory() {
-        let output = document.getElementById('output');
-        output.innerHTML = '';
-        if (this.inventory.length === 0) {
-            output.textContent = "Ditt inventory är tomt.";
-        } else {
-            this.inventory.forEach((box, index) => {
-                let value = this.getBoxValue(box);
-                let boxItem = document.createElement('div');
-                boxItem.className = 'box-item';
-                boxItem.innerHTML = `
-                    ${box}: Värde ${value} coins
-                    <button onclick="player.sellBox(${index})">Sälj</button>
-                `;
-                output.appendChild(boxItem);
-            });
-        }
+openModal(boxType, boxDescription) {
+        let modal = document.getElementById('modal');
+        let boxName = document.getElementById('box-name');
+        let boxDescriptionElement = document.getElementById('box-description');
+        let boxId = document.getElementById('box-id');
+
+        // Fyll modalen med information om den valda boxen
+        boxName.textContent = boxType;
+        boxDescriptionElement.textContent = boxDescription;
+        boxId.textContent = `ID: ${this.generateBoxId()}`;
+
+        // Visa modalen
+        modal.style.display = 'block';
+
+        // Lägg till eventlyssnare för att stänga modalen när användaren klickar på krysset
+        let closeButton = document.getElementsByClassName('close')[0];
+        closeButton.onclick = function() {
+            modal.style.display = 'none';
+        };
     }
+
+    // Metod för att generera unika id för varje box
+    generateBoxId() {
+        return ++this.boxIdCounter;
+    }
+
+
+showInventory() {
+    let output = document.getElementById('output');
+    output.innerHTML = '';
+
+    if (this.inventory.length === 0) {
+        output.textContent = "Ditt inventory är tomt.";
+    } else {
+        this.inventory.forEach((boxType, index) => {
+            let value = this.getBoxValue(boxType);
+            let boxItem = document.createElement('div');
+            boxItem.className = 'box-item';
+            boxItem.innerHTML = `
+                <img src="${boxType}.png" alt="${boxType}">
+                ${boxType}: Värde ${value} coins
+                <button onclick="player.sellBox(${index})">Sälj</button>
+            `;
+            output.appendChild(boxItem);
+        });
+    }
+}
 
     sellBox(index) {
         let boxType = this.inventory[index];
@@ -136,7 +180,47 @@ class Player {
     displayMessage(message) {
         document.getElementById('output').textContent = message;
     }
+
+ 
+
+
+    hideAllBoxes() {
+        let boxElements = document.querySelectorAll('.box');
+        boxElements.forEach(box => {
+            box.classList.add('hidden');
+        });
+    }
+
+showBoxopedia() {
+    let boxopediaDiv = document.getElementById('boxopedia');
+    boxopediaDiv.innerHTML = '';
+
+    Object.keys(this.boxopedia).forEach(boxType => {
+        let boxDiv = document.createElement('div');
+        boxDiv.classList.add('box');
+        boxDiv.title = boxType;
+
+        if (this.boxopedia[boxType]) {
+            boxDiv.classList.add('acquired');
+        }
+
+        let overlayDiv = document.createElement('div');
+        overlayDiv.classList.add('overlay'); // Lägg till överlagret för att simulera färgändringen
+
+        let img = document.createElement('img');
+        img.src = `${boxType}.png`;
+        img.alt = boxType;
+
+        boxDiv.appendChild(overlayDiv); // Lägg till överlagret till boxen
+        boxDiv.appendChild(img);
+        boxopediaDiv.appendChild(boxDiv);
+    });
+
+    boxopediaDiv.classList.toggle('hidden');
 }
+
+}
+
 
 document.addEventListener('DOMContentLoaded', () => {
     window.player = new Player(500);
@@ -147,5 +231,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('showInvBtn').addEventListener('click', () => {
         player.showInventory();
+    });
+
+    document.getElementById('showBoxopediaBtn').addEventListener('click', () => {
+        player.showBoxopedia();
+    });
+
+    document.getElementById('openBoxBtn').addEventListener('click', () => {
+        player.hideBoxopedia(); // Lägg till denna rad för att dölja Boxopedia när du öppnar en låda
     });
 });

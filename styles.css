@@ -1,58 +1,73 @@
 body {
     font-family: 'Arial', sans-serif;
-    background: #f3f4f6;
-    color: #333;
+    background-color: #1d212a;
+    color: #ffffff;
     margin: 0;
     padding: 0;
+}
+
+header {
+    background-color: #161a21;
+    padding: 20px 0;
+}
+
+.topbar {
     display: flex;
-    justify-content: center;
+    justify-content: space-between;
     align-items: center;
-    height: 100vh;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
 }
 
-.container {
-    background: #ffffff;
-    border-radius: 8px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-    padding: 20px;
-    text-align: center;
-    max-width: 400px;
-    width: 100%;
-}
-
-h1 {
+header h1 {
     font-size: 24px;
-    margin-bottom: 20px;
-    color: #444;
+    margin: 0;
 }
 
 #balance {
     font-weight: bold;
-    margin: 10px 0;
-    color: #ff9800;
+    color: #ffcc00;
     font-size: 18px;
 }
 
+main {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: calc(100vh - 80px);
+}
+
+.container {
+    background-color: #23262d;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    padding: 20px;
+    text-align: center;
+    max-width: 600px;
+    width: 100%;
+}
+
 button {
-    background: #ff9800;
+    background-color: #ffcc00;
     border: none;
-    color: white;
-    padding: 10px 20px;
-    margin: 5px;
+    color: #23262d;
+    padding: 15px 30px;
+    margin: 10px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 16px;
-    transition: background 0.3s;
+    font-size: 18px;
+    transition: background-color 0.3s;
 }
 
 button:hover {
-    background: #e68900;
+    background-color: #ffbb00;
 }
 
 #animation {
     width: 200px;
     height: 200px;
-    background-color: gold;
+    background-color: #23262d;
     margin: 20px auto;
     border-radius: 50%;
     display: flex;
@@ -60,7 +75,7 @@ button:hover {
     align-items: center;
     font-size: 24px;
     font-weight: bold;
-    color: #444;
+    color: #ffffff;
     box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
 }
 
@@ -68,25 +83,133 @@ button:hover {
     margin: 20px;
     white-space: pre-wrap;
     text-align: left;
+    color: #ffcc00;
 }
 
-.box-item {
-    margin: 5px;
-    padding: 10px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    background: #fafafa;
+/* Lägg till tidigare CSS-regler här */
+
+#inventory {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-top: 20px;
 }
 
-.box-item button {
-    background: #f44336;
-    margin: 0;
+.box {
+    width: 100px;
+    height: 100px;
+    background-color: #23262d;
+    border: 1px solid #444;
+    margin: 10px;
+    position: relative;
+    cursor: pointer;
+}
+
+.box img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.box:hover::after {
+    content: attr(title);
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background-color: rgba(35, 38, 45, 0.9);
+    color: #ffcc00;
     padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 14px;
 }
 
-.box-item button:hover {
-    background: #d32f2f;
+/* Lägg till tidigare CSS-regler här */
+
+.hidden {
+    display: none;
 }
+
+.box.acquired {
+    border: 2px solid #00ff00; /* Grön kant för förvärvad box */
+}
+
+.boxopedia {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.boxopedia .box {
+    width: 100px;
+    height: 100px;
+    background-color: #23262d;
+    border: 1px solid #444;
+    margin: 10px;
+    position: relative;
+    cursor: pointer;
+}
+
+.boxopedia .box img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.boxopedia .box {
+    position: relative;
+}
+
+.boxopedia .box .overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 255, 0, 0.5); /* Grön färg med 50% opacitet */
+    z-index: 1;
+    display: none; /* Dölj överlagret som standard */
+}
+
+.boxopedia .box.acquired .overlay {
+    display: block; /* Visa överlagret om boxen är förvärvad */
+}
+/* CSS för modalrutan */
+/* CSS för modalrutan */
+.modal {
+    display: none; /* Göm modalen som standard */
+    position: fixed;
+    z-index: 9999;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0,0,0,0.4); /* Ljusgrå bakgrund */
+}
+
+/* Modal innehåll */
+.modal-content {
+    background-color: #fefefe;
+    margin: 15% auto;
+    padding: 20px;
+    border: 1px solid #888;
+    width: 80%;
+    max-width: 600px;
+}
+
+/* Stängknapp */
+.close {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+}
+
+.close:hover,
+.close:focus {
+    color: black;
+    text-decoration: none;
+    cursor: pointer;
+}
+
