@@ -2,6 +2,11 @@ class Player {
     constructor(balance) {
         this.balance = balance;
         this.inventory = [];
+        this.updateBalance();
+    }
+
+    updateBalance() {
+        document.getElementById('balance').textContent = `Balance: ${this.balance} coins`;
     }
 
     openBox() {
@@ -11,6 +16,7 @@ class Player {
         }
 
         this.balance -= 100;
+        this.updateBalance();
         this.displayMessage("Du har öppnat en låda och 100 coins har dragits från din balans.");
 
         this.animateOpening(() => {
@@ -23,15 +29,23 @@ class Player {
 
     animateOpening(callback) {
         let animationElement = document.getElementById('animation');
-        animationElement.style.display = 'block';
+        let boxes = Object.keys(this.getProbabilities());
+        let index = 0;
+        animationElement.style.display = 'flex';
+        let interval = setInterval(() => {
+            animationElement.textContent = boxes[index];
+            index = (index + 1) % boxes.length;
+        }, 100);
+
         setTimeout(() => {
+            clearInterval(interval);
             animationElement.style.display = 'none';
             callback();
         }, 2000); // 2 seconds animation
     }
 
-    getRandomBox() {
-        let probabilities = {
+    getProbabilities() {
+        return {
             'Box 1': 0.25,
             'Box 2': 0.20,
             'Box 3': 0.15,
@@ -43,11 +57,13 @@ class Player {
             'Box 9': 0.02,
             'Box 10': 0.02
         };
+    }
 
+    getRandomBox() {
+        let probabilities = this.getProbabilities();
         let boxes = Object.keys(probabilities);
         let probs = Object.values(probabilities);
         let boxType = boxes[this.weightedRandomIndex(probs)];
-
         return boxType;
     }
 
@@ -69,7 +85,6 @@ class Player {
         if (this.inventory.length === 0) {
             output.textContent = "Ditt inventory är tomt.";
         } else {
-            let inventoryMessage = "Ditt inventory:\n";
             this.inventory.forEach((box, index) => {
                 let value = this.getBoxValue(box);
                 let boxItem = document.createElement('div');
@@ -85,22 +100,12 @@ class Player {
 
     sellBox(index) {
         let boxType = this.inventory[index];
-        let boxValues = {
-            'Box 1': 50,
-            'Box 2': 75,
-            'Box 3': 100,
-            'Box 4': 150,
-            'Box 5': 200,
-            'Box 6': 250,
-            'Box 7': 300,
-            'Box 8': 400,
-            'Box 9': 500,
-            'Box 10': 1000
-        };
+        let boxValues = this.getBoxValues();
 
         if (index !== -1) {
             this.inventory.splice(index, 1);
             this.balance += boxValues[boxType];
+            this.updateBalance();
             this.displayMessage(`Du har sålt ${boxType} för ${boxValues[boxType]} coins.\nDin nya balans är ${this.balance} coins.`);
             this.showInventory();
         } else {
@@ -108,8 +113,8 @@ class Player {
         }
     }
 
-    getBoxValue(boxType) {
-        let boxValues = {
+    getBoxValues() {
+        return {
             'Box 1': 50,
             'Box 2': 75,
             'Box 3': 100,
@@ -121,7 +126,10 @@ class Player {
             'Box 9': 500,
             'Box 10': 1000
         };
+    }
 
+    getBoxValue(boxType) {
+        let boxValues = this.getBoxValues();
         return boxValues[boxType] || 0;
     }
 
