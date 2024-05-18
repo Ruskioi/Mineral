@@ -1,39 +1,22 @@
 <!DOCTYPE html>
-<html lang="sv">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Box Öppning Spel</title>
+    <title>Train Game</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <header>
-        <div class="topbar">
-            <h1>Box Öppning Spel</h1>
-            <div id="balance">Balance: 500 coins</div>
+    <div id="game-container">
+        <div id="info-bar">
+            <div>Distance: <span id="distance">0</span> km</div>
+            <div>Speed: <span id="speed">0</span> km/h</div>
         </div>
-    </header>
-<main>
-
-    <div class="container">
-        <button id="openBoxBtn">Öppna Låda</button>
-        <button id="showInvBtn">Visa Inventory</button>
-        <button id="showBoxopediaBtn">Boxopedia</button> <!-- Ny knapp för att visa Boxopedia -->
-        <div id="inventory" class="inventory hidden"></div>
-        <div id="boxopedia" class="boxopedia hidden"></div> <!-- Boxopedia-element -->
-        <div id="animation"></div>
-        <div id="output"></div>
+        <div id="train-container">
+            <div id="train"></div>
+        </div>
+        <button id="upgrade-button">Upgrade Train</button>
     </div>
-</main>
-<div id="modal" class="modal">
-    <div class="modal-content">
-        <span class="close">&times;</span>
-        <h2 id="box-name"></h2>
-        <p id="box-description"></p>
-        <p id="box-id"></p>
-    </div>
-</div>
-
-    <script src="game.js"></script>
+    <script src="script.js"></script>
 </body>
 </html>
