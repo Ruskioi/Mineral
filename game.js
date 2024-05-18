@@ -12,10 +12,22 @@ class Player {
 
         this.balance -= 100;
         this.displayMessage("Du har öppnat en låda och 100 coins har dragits från din balans.");
-        
-        let boxType = this.getRandomBox();
-        this.inventory.push(boxType);
-        this.displayMessage(`Grattis! Du fick ${boxType}.\nDin nya balans är ${this.balance} coins.`);
+
+        this.animateOpening(() => {
+            let boxType = this.getRandomBox();
+            this.inventory.push(boxType);
+            this.displayMessage(`Grattis! Du fick ${boxType}.\nDin nya balans är ${this.balance} coins.`);
+            this.showInventory();
+        });
+    }
+
+    animateOpening(callback) {
+        let animationElement = document.getElementById('animation');
+        animationElement.style.display = 'block';
+        setTimeout(() => {
+            animationElement.style.display = 'none';
+            callback();
+        }, 2000); // 2 seconds animation
     }
 
     getRandomBox() {
@@ -52,19 +64,27 @@ class Player {
     }
 
     showInventory() {
+        let output = document.getElementById('output');
+        output.innerHTML = '';
         if (this.inventory.length === 0) {
-            this.displayMessage("Ditt inventory är tomt.");
+            output.textContent = "Ditt inventory är tomt.";
         } else {
             let inventoryMessage = "Ditt inventory:\n";
-            this.inventory.forEach(box => {
+            this.inventory.forEach((box, index) => {
                 let value = this.getBoxValue(box);
-                inventoryMessage += `- ${box}: Värde ${value} coins\n`;
+                let boxItem = document.createElement('div');
+                boxItem.className = 'box-item';
+                boxItem.innerHTML = `
+                    ${box}: Värde ${value} coins
+                    <button onclick="player.sellBox(${index})">Sälj</button>
+                `;
+                output.appendChild(boxItem);
             });
-            this.displayMessage(inventoryMessage);
         }
     }
 
-    sellBox(boxType) {
+    sellBox(index) {
+        let boxType = this.inventory[index];
         let boxValues = {
             'Box 1': 50,
             'Box 2': 75,
@@ -78,33 +98,11 @@ class Player {
             'Box 10': 1000
         };
 
-        let index = this.inventory.indexOf(boxType);
         if (index !== -1) {
             this.inventory.splice(index, 1);
             this.balance += boxValues[boxType];
             this.displayMessage(`Du har sålt ${boxType} för ${boxValues[boxType]} coins.\nDin nya balans är ${this.balance} coins.`);
-        } else {
-            this.displayMessage(`Du har ingen ${boxType} i ditt inventory.`);
-        }
-    }
-
-    boxValue(boxType) {
-        let boxValues = {
-            'Box 1': 50,
-            'Box 2': 75,
-            'Box 3': 100,
-            'Box 4': 150,
-            'Box 5': 200,
-            'Box 6': 250,
-            'Box 7': 300,
-            'Box 8': 400,
-            'Box 9': 500,
-            'Box 10': 1000
-        };
-
-        if (this.inventory.includes(boxType)) {
-            let value = boxValues[boxType];
-            this.displayMessage(`${boxType} är värd ${value} coins.`);
+            this.showInventory();
         } else {
             this.displayMessage(`Du har ingen ${boxType} i ditt inventory.`);
         }
@@ -133,7 +131,7 @@ class Player {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    let player = new Player(500);
+    window.player = new Player(500);
 
     document.getElementById('openBoxBtn').addEventListener('click', () => {
         player.openBox();
@@ -141,15 +139,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('showInvBtn').addEventListener('click', () => {
         player.showInventory();
-    });
-
-    document.getElementById('sellBoxBtn').addEventListener('click', () => {
-        let boxType = document.getElementById('boxInput').value;
-        player.sellBox(boxType);
-    });
-
-    document.getElementById('valueBoxBtn').addEventListener('click', () => {
-        let boxType = document.getElementById('boxInput').value;
-        player.boxValue(boxType);
     });
 });
