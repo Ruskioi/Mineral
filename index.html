@@ -14,6 +14,7 @@
     align-items: center;
     background-color: #222;
     overflow: hidden;
+    position: relative;
   }
 
   #container {
@@ -38,8 +39,35 @@
     opacity: 0;
     animation: fadeIn 2s forwards 1.5s;
     position: absolute;
-    top: calc(50% - 60px); /* Adjusted position */
+    top: calc(50% - 60px);
     left: 50%;
+    transform: translateX(-50%);
+  }
+
+  #breathing-ball {
+    width: 50px;
+    height: 50px;
+    background-color: #3498db;
+    border-radius: 50%;
+    position: absolute;
+    bottom: 10%;
+    left: 50%;
+    opacity: 0;
+    animation: breathe 3s infinite ease-in-out;
+    animation-delay: 3s;
+    transform: translateX(-50%);
+  }
+
+  #question-box {
+    width: 80%;
+    padding: 10px;
+    background-color: #555;
+    color: white;
+    border-radius: 20px;
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    opacity: 0;
     transform: translateX(-50%);
   }
 
@@ -51,6 +79,12 @@
       opacity: 1;
     }
   }
+
+  @keyframes breathe {
+    0% { transform: scale(1); opacity: 0.7; }
+    50% { transform: scale(1.1); opacity: 0.3; }
+    100% { transform: scale(1); opacity: 0.7; }
+  }
 </style>
 </head>
 <body>
@@ -58,13 +92,18 @@
     <div id="welcome-text">Welcome to</div>
     <div id="am-text">AM</div>
   </div>
+  <div id="breathing-ball"></div>
+  <div id="question-box" contenteditable="true">
+    Ask AM a question...
+  </div>
 
 <script>
-  // JavaScript to manipulate the text elements
   window.onload = function() {
     var amText = document.getElementById('am-text');
     var welcomeText = document.getElementById('welcome-text');
-    
+    var breathingBall = document.getElementById('breathing-ball');
+    var questionBox = document.getElementById('question-box');
+
     setTimeout(function() {
       amText.style.opacity = '1';
     }, 500);
@@ -72,6 +111,13 @@
     setTimeout(function() {
       welcomeText.style.opacity = '1';
     }, 2000);
+
+    setTimeout(function() {
+      amText.style.opacity = '0';
+      welcomeText.style.opacity = '0';
+      breathingBall.style.opacity = '1';
+      questionBox.style.opacity = '1';
+    }, 3000);
   };
 </script>
 
