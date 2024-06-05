@@ -1,73 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Welcome</title>
-<style>
-  body {
-    margin: 0;
-    padding: 0;
-    height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background-color: #222;
-    overflow: hidden;
-    position: relative;
-  }
-
-  #breathing-ball {
-    width: 50px;
-    height: 50px;
-    background-color: #3498db;
-    border-radius: 50%;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    opacity: 0;
-    animation: breathe 3s infinite ease-in-out;
-    animation-delay: 3s;
-  }
-
-  #question-box {
-    width: 80%;
-    padding: 10px;
-    background-color: #555;
-    color: white;
-    border-radius: 20px;
-    position: absolute;
-    bottom: 10px;
-    left: 50%;
-    opacity: 0;
-    transform: translateX(-50%);
-  }
-
-  @keyframes breathe {
-    0% { transform: scale(1); opacity: 0.7; }
-    50% { transform: scale(1.1); opacity: 0.3; }
-    100% { transform: scale(1); opacity: 0.7; }
-  }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Slot Machine</title>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="breathing-ball"></div>
-  <div id="question-box" contenteditable="true">
-    Ask AM a question...
-  </div>
-
-<script>
-  window.onload = function() {
-    var breathingBall = document.getElementById('breathing-ball');
-    var questionBox = document.getElementById('question-box');
-
-    setTimeout(function() {
-      breathingBall.style.opacity = '1';
-      questionBox.style.opacity = '1';
-    }, 3000);
-  };
-</script>
-
+    <div class="container">
+        <h1>Enhanced Slot Machine</h1>
+        <div class="slot-machine">
+            <div id="reel1" class="reel">🍒</div>
+            <div id="reel2" class="reel">🍋</div>
+            <div id="reel3" class="reel">🍉</div>
+        </div>
+        <div class="controls">
+            <p>Balance: $<span id="balance">100</span></p>
+            <p>Bet: $<span id="bet">10</span></p>
+            <button id="spinButton">Spin</button>
+            <button id="increaseBetButton">Increase Bet</button>
+            <button id="decreaseBetButton">Decrease Bet</button>
+        </div>
+        <p id="message"></p>
+    </div>
+    <script src="mineral.js"></script>
 </body>
 </html>
