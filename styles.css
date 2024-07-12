@@ -1,28 +1,62 @@
 body {
   font-family: Arial, sans-serif;
+  background: #2c3e50;
+  color: #ecf0f1;
+  margin: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
+
+.container, .form-container {
+  text-align: center;
+  background: #34495e;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
 h1 {
-  text-align: center;
+  margin-bottom: 20px;
 }
 
-form {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+a.btn, button.btn {
+  display: inline-block;
+  margin: 10px;
+  padding: 10px 20px;
+  font-size: 16px;
+  color: #ecf0f1;
+  background: #e74c3c;
+  border: none;
+  border-radius: 4px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+a.btn:hover, button.btn:hover {
+  background: #c0392b;
 }
 
 input {
-  margin: 10px 0;
+  display: block;
+  width: calc(100% - 20px);
+  margin: 10px auto;
   padding: 10px;
-  width: 200px;
+  font-size: 16px;
+  border: 1px solid #7f8c8d;
+  border-radius: 4px;
+  background: #34495e;
+  color: #ecf0f1;
 }
 
-button {
-  padding: 10px 20px;
+input::placeholder {
+  color: #bdc3c7;
 }
 
-#loginMessage, #registerMessage {
-  text-align: center;
+.message {
   margin-top: 20px;
+  font-size: 14px;
+  color: #e74c3c;
 }
