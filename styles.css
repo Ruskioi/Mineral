@@ -9,15 +9,16 @@ body {
   height: 100vh;
 }
 
-.container, .form-container {
-  text-align: center;
+.container, .form-container, .dashboard-container {
   background: #34495e;
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  width: 300px;
+  text-align: center;
 }
 
-h1 {
+h1, h2 {
   margin-bottom: 20px;
 }
 
@@ -59,4 +60,31 @@ input::placeholder {
   margin-top: 20px;
   font-size: 14px;
   color: #e74c3c;
+}
+
+.dashboard-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.profile {
+  background: #1abc9c;
+  padding: 10px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  width: 100%;
+  text-align: left;
+}
+
+.profile h2 {
+  margin: 0 0 10px 0;
+}
+
+.profile p {
+  margin: 5px 0;
+}
+
+.content {
+  text-align: center;
 }
