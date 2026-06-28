@@ -121,14 +121,15 @@ html, body {
   display: grid;
   place-items: center;
   width: 34px; height: 34px;
-  border-radius: 10px;
-  background: linear-gradient(145deg, var(--accent), var(--accent-strong));
-  color: #fff;
-  font-weight: 700;
-  font-size: 19px;
+  border-radius: 11px;
+  background: var(--accent-tint);
+  border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
   flex: none;
+  overflow: hidden;
 }
+.brand-mark svg { width: 28px; height: 28px; display: block; }
+.avatar svg { width: 21px; height: 21px; display: block; }
 .brand-text { min-width: 0; }
 .brand-text h1 {
   margin: 0;
@@ -211,7 +212,7 @@ html, body {
   font-weight: 700;
   margin-top: 2px;
 }
-.msg.assistant .avatar { background: linear-gradient(145deg, var(--accent), var(--accent-strong)); color: #fff; }
+.msg.assistant .avatar { background: var(--accent-tint); border: 1px solid var(--border); overflow: hidden; }
 .msg.user .avatar { background: var(--bg-soft); color: var(--ink-soft); border: 1px solid var(--border); }
 .msg .body { min-width: 0; display: flex; flex-direction: column; gap: 4px; max-width: calc(100% - 36px); }
 .msg.user .body { align-items: flex-end; }
@@ -517,6 +518,39 @@ html, body {
 .toast.success .ic { color: #7fd49a; }
 .toast.error { background: var(--danger); color: #fff; }
 .toast.error .ic { color: #fff; }
+
+/* ---------------- Syntax highlighting ----------------
+   Code blocks have a dark background in both themes, so these are tuned
+   to read on dark and are not theme-split. */
+.tok-func { color: #f0a07a; }
+.tok-ref  { color: #6fcdb2; }
+.tok-str  { color: #b5d68a; }
+.tok-num  { color: #cda6e6; }
+.tok-kw   { color: #8fb6f2; font-weight: 600; }
+.tok-com  { color: #8d8576; font-style: italic; }
+.tok-op   { color: #c9c2b4; }
+
+/* ---------------- Onboarding ---------------- */
+.onb-mascot {
+  width: 58px; height: 58px;
+  margin: 0 auto 10px;
+  background: var(--accent-tint);
+  border: 1px solid var(--border);
+  border-radius: 17px;
+  display: grid; place-items: center;
+  overflow: hidden;
+}
+.onb-mascot svg { width: 44px; height: 44px; display: block; }
+.onb-list { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 9px; }
+.onb-list li {
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.45;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
 
 /* ---------------- Keyframes ---------------- */
 @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }

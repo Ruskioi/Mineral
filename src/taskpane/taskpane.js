@@ -33,6 +33,23 @@ let modelName = "claude-opus-4-8";
 
 const els = {};
 
+// Simba's mascot — a Pomeranian. Used for the brand mark and assistant avatars.
+const POM_SVG = `
+<svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+  <polygon points="6.4,10.2 9.9,0.6 15,8.6" fill="#c2693a"/>
+  <polygon points="25.6,10.2 22.1,0.6 17,8.6" fill="#c2693a"/>
+  <polygon points="8.6,8.6 10.6,3.5 13.8,8.3" fill="#f3b58a"/>
+  <polygon points="23.4,8.6 21.4,3.5 18.2,8.3" fill="#f3b58a"/>
+  <circle cx="16" cy="17.9" r="12.8" fill="#e08a4f"/>
+  <circle cx="16" cy="20.5" r="9.6" fill="#f1c9a0"/>
+  <ellipse cx="16" cy="23" rx="6.6" ry="5" fill="#fbf0e2"/>
+  <circle cx="12.3" cy="16" r="1.7" fill="#36281e"/>
+  <circle cx="19.7" cy="16" r="1.7" fill="#36281e"/>
+  <circle cx="12.9" cy="15.5" r="0.6" fill="#fff"/>
+  <circle cx="20.3" cy="15.5" r="0.6" fill="#fff"/>
+  <ellipse cx="16" cy="20.6" rx="1.7" ry="1.2" fill="#36281e"/>
+</svg>`;
+
 Office.onReady((info) => {
   if (info.host !== Office.HostType.Excel) {
     document.body.innerHTML =
@@ -53,6 +70,7 @@ Office.onReady((info) => {
 
   applyTheme(store.get("simba.theme", "auto"));
   syncEditModeButtons();
+  document.querySelector(".brand-mark").innerHTML = POM_SVG;
 
   els.send.addEventListener("click", onSend);
   els.prompt.addEventListener("keydown", (e) => {
@@ -104,6 +122,9 @@ Office.onReady((info) => {
   fetch(`${API_BASE}/api/health`).then((r) => r.json()).then((h) => {
     if (h?.model) modelName = h.model;
   }).catch(() => {});
+
+  // One-time onboarding tip on first open.
+  if (!store.get("simba.onboarded", "")) setTimeout(showOnboarding, 450);
 });
 
 /* ------------------------------------------------------------------ *
@@ -399,7 +420,7 @@ function renderMessage(role, text) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
   wrap.innerHTML = `
-    <div class="avatar">${role === "user" ? "🙂" : "S"}</div>
+    <div class="avatar">${role === "user" ? "🙂" : POM_SVG}</div>
     <div class="body"><div class="bubble">${formatMarkdown(text)}</div></div>`;
   els.messages.append(wrap);
   scrollDown();
@@ -430,24 +451,113 @@ function markToolDone(note) {
 function renderTyping() {
   const el = document.createElement("div");
   el.className = "msg assistant";
-  el.innerHTML = `<div class="avatar">S</div><div class="body"><div class="bubble">
+  el.innerHTML = `<div class="avatar">${POM_SVG}</div><div class="body"><div class="bubble">
     <span class="typing"><span></span><span></span><span></span></span></div></div>`;
   els.messages.append(el);
   scrollDown();
   return el;
 }
 
-/** Minimal, safe markdown: escape HTML, then code/bold/italic + copy buttons. */
+/** Minimal, safe markdown: fenced code (highlighted), inline code, bold, italic. */
 function formatMarkdown(text) {
-  const esc = escapeHtml(text);
-  return esc
-    .replace(/```([\s\S]*?)```/g, (_, c) =>
-      `<div class="codeblock"><pre><code>${c.replace(/^\n+|\n+$/g, "")}</code></pre>` +
-      `<button class="copy-btn" type="button">Copy</button></div>`)
+  // Pull fenced code out of the RAW text first so highlighting sees real chars.
+  const blocks = [];
+  const stripped = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const html =
+      `<div class="codeblock"><pre><code>${highlight(code.replace(/\n+$/, ""), lang)}</code></pre>` +
+      `<button class="copy-btn" type="button">Copy</button></div>`;
+    blocks.push(html);
+    return `\u0000${blocks.length - 1}\u0000`;
+  });
+
+  let out = escapeHtml(stripped)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
     .replace(/\n/g, "<br>");
+
+  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[+i]);
+}
+
+/* ------------------------------------------------------------------ *
+ * Lightweight syntax highlighting (no dependency).
+ * Tuned for Excel formulas, with a generic fallback for other code.
+ * ------------------------------------------------------------------ */
+
+const GENERIC_KW = new Set(
+  ("const let var function return if else for while do switch case break continue class new " +
+   "import from export default async await try catch finally throw typeof instanceof in of " +
+   "def elif lambda pass yield with print true false null none and or not " +
+   "select insert update delete where group order by join on as").split(" ")
+);
+
+const FORMULA_RULES = [
+  { re: /"(?:[^"]|"")*"/y, cls: "tok-str" },
+  { re: /\b[A-Z][A-Z0-9_.]*(?=\s*\()/y, cls: "tok-func" },
+  { re: /\b(?:TRUE|FALSE)\b/y, cls: "tok-kw" },
+  { re: /\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?\b/y, cls: "tok-ref" },
+  { re: /\d+(?:\.\d+)?/y, cls: "tok-num" },
+  { re: /[-+*/^&=<>%]/y, cls: "tok-op" },
+];
+
+const GENERIC_RULES = [
+  { re: /\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\//y, cls: "tok-com" },
+  { re: /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/y, cls: "tok-str" },
+  { re: /\b\d[\d_]*(?:\.\d+)?\b/y, cls: "tok-num" },
+  { re: /[A-Za-z_]\w*(?=\s*\()/y, cls: "tok-func" },
+  { re: /[A-Za-z_]\w*/y, fn: (t) => (GENERIC_KW.has(t.toLowerCase()) ? "tok-kw" : null) },
+];
+
+function highlight(code, lang) {
+  const l = (lang || "").toLowerCase();
+  const isFormula =
+    l === "excel" || l === "formula" || l === "xls" ||
+    (!l && code.trim().startsWith("="));
+  return tokenize(code, isFormula ? FORMULA_RULES : GENERIC_RULES);
+}
+
+function tokenize(code, rules) {
+  let out = "", i = 0;
+  while (i < code.length) {
+    let matched = false;
+    for (const r of rules) {
+      r.re.lastIndex = i;
+      const m = r.re.exec(code);
+      if (m && m.index === i && m[0].length) {
+        const cls = r.cls || (r.fn && r.fn(m[0]));
+        const t = escapeHtml(m[0]);
+        out += cls ? `<span class="${cls}">${t}</span>` : t;
+        i += m[0].length;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) { out += escapeHtml(code[i]); i++; }
+  }
+  return out;
+}
+
+/** One-time onboarding tip. */
+function showOnboarding() {
+  if (!els.overlay.hidden) return; // don't stack on another popup
+  openModal(
+    `<div style="text-align:center">
+       <div class="onb-mascot">${POM_SVG}</div>
+       <h3>Meet Simba</h3>
+       <p class="sub">Your Pomeranian sidekick for Excel. Here's what I can do:</p>
+     </div>
+     <ul class="onb-list">
+       <li>📊 Read your selection or any range and answer questions about it</li>
+       <li>🧮 Write values and formulas straight into the sheet</li>
+       <li>✅ I ask before editing — switch to <strong>Auto</strong> or <strong>Off</strong> anytime in the bottom bar</li>
+     </ul>
+     <div class="modal-actions"><button class="btn primary" data-act="go">Let's go</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="go"]').onclick = () => {
+    store.set("simba.onboarded", "1");
+    closeModalSilently();
+    toast("Tip: select cells, then ask Simba about them", "info", 3200);
+  };
 }
 
 /* ------------------------------------------------------------------ *

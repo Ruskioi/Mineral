@@ -1,7 +1,7 @@
-# 🦁 Simba AI — Excel Add-in
+# 🐶 Simba AI — Excel Add-in
 
 An AI assistant **sidebar inside Microsoft Excel**, in the same spirit as Claude's
-Excel side panel. Open the task pane, chat with Simba about your data, and let it
+Excel side panel. Simba's mascot is a Pomeranian. Open the task pane, chat with Simba about your data, and let it
 read ranges, write values, and drop in formulas for you — all powered by the
 Claude API (`claude-opus-4-8`).
 
