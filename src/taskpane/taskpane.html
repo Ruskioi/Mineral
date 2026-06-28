@@ -16,7 +16,10 @@
           <p id="context-pill" class="context-pill">No selection</p>
         </div>
       </div>
-      <button id="new-chat" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
+      <div class="header-actions">
+        <button id="settings" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+        <button id="new-chat" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
+      </div>
     </header>
 
     <main id="messages" class="messages" aria-live="polite">
@@ -32,17 +35,26 @@
     </main>
 
     <footer class="composer">
-      <div id="error-bar" class="error-bar" hidden></div>
       <div class="composer-row">
         <textarea id="prompt" rows="1" placeholder="Ask Simba about your spreadsheet…"></textarea>
         <button id="send" class="send-btn" title="Send" aria-label="Send">➤</button>
       </div>
-      <label class="auto-apply">
-        <input type="checkbox" id="auto-apply" checked />
-        Let Simba edit the sheet
-      </label>
+      <div class="composer-foot">
+        <span class="foot-label">Sheet editing</span>
+        <div class="seg" id="edit-mode" role="group" aria-label="Sheet editing mode">
+          <button class="seg-btn" data-mode="auto" title="Apply edits automatically">Auto</button>
+          <button class="seg-btn active" data-mode="ask" title="Ask before each edit">Ask</button>
+          <button class="seg-btn" data-mode="off" title="Never edit the sheet">Off</button>
+        </div>
+      </div>
     </footer>
   </div>
+
+  <!-- Popups -->
+  <div id="modal-overlay" class="modal-overlay" hidden>
+    <div id="modal-card" class="modal-card" role="dialog" aria-modal="true"></div>
+  </div>
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
   <script src="taskpane.js"></script>
 </body>
