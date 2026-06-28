@@ -152,13 +152,16 @@ usage — add **auth, rate limiting, and logging** to `server/server.js` first.
 ## Development & quality
 
 ```bash
-npm test       # ship-safety checks (tool parity, manifest, config, fail-safes)
-npm run check  # test + manifest validation + production build
-npm run build  # production bundle into dist/
+npm test        # ship-safety checks (tool parity, manifest, config, fail-safes)
+npm run check   # test + production build (offline, deterministic)
+npm run build   # production bundle into dist/
+npm run validate # official Microsoft manifest validator (needs internet)
 ```
 
-CI (`.github/workflows/ci.yml`) runs the tests, manifest validation, build, and a
-server smoke-test (boots, serves the sidebar, validates input) on every push and PR.
+CI (`.github/workflows/ci.yml`) runs the tests, build, and a server smoke-test
+(boots, serves the sidebar, validates input) on every push and PR. The online
+manifest validator runs too, but is non-blocking since it depends on an external
+Microsoft service.
 
 **Built-in fail-safes:**
 - Server: input validation, a global rate limit + concurrency cap (tune with

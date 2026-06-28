@@ -16,7 +16,7 @@
     "sideload": "office-addin-debugging start manifest.xml",
     "validate": "office-addin-manifest validate manifest.xml",
     "test": "node test/unit.mjs",
-    "check": "npm run test && npm run validate && npm run build"
+    "check": "npm run test && npm run build"
   },
   "author": "Simba AI",
   "license": "MIT",

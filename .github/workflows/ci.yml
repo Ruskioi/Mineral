@@ -23,8 +23,9 @@ jobs:
       - name: Ship-safety checks
         run: npm test
 
-      - name: Validate manifest
+      - name: Validate manifest (Microsoft online validator; informational)
         run: npm run validate
+        continue-on-error: true
 
       - name: Build
         run: npm run build
