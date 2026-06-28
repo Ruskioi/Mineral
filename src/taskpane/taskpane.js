@@ -537,27 +537,157 @@ function tokenize(code, rules) {
   return out;
 }
 
-/** One-time onboarding tip. */
+/* ------------------------------------------------------------------ *
+ * Onboarding — a polished multi-step welcome shown once on first open.
+ * ------------------------------------------------------------------ */
+
+function onbGridArt() {
+  let cells = "";
+  for (let i = 0; i < 12; i++) {
+    const delay = ((i % 4) * 0.12 + Math.floor(i / 4) * 0.14).toFixed(2);
+    cells += `<span class="gcell" style="animation-delay:${delay}s"></span>`;
+  }
+  return `<div class="onb-art art-grid"><div class="ggrid">${cells}</div>
+    <span class="gcursor"></span></div>`;
+}
+
+function onbFormulaArt() {
+  return `<div class="onb-art art-fx">
+    <div class="fxbar">
+      <span class="fxlabel">fx</span>
+      <span class="fxclip"><span class="fxtext"><span class="tok-op">=</span><span class="tok-func">SUM</span><span class="tok-op">(</span><span class="tok-ref">B2:B9</span><span class="tok-op">)</span></span></span>
+      <span class="fxcaret"></span>
+    </div>
+    <div class="fxcell">↳ 1,248</div>
+  </div>`;
+}
+
+function onbModesArt() {
+  return `<div class="onb-art art-modes">
+    <span class="mchip active">Ask</span>
+    <span class="mchip">Auto</span>
+    <span class="mchip">Off</span>
+  </div>`;
+}
+
+function onbHelloArt() {
+  return `<div class="onb-art art-hello">
+    <span class="spark s1">✦</span><span class="spark s2">✦</span><span class="spark s3">✦</span>
+    <div class="pom-tile">${POM_SVG}</div>
+  </div>`;
+}
+
+const ONB_STEPS = [
+  {
+    art: onbHelloArt,
+    title: "Meet Simba",
+    body: "Your AI sidekick for Excel — a curious little Pomeranian that lives in your spreadsheet and helps you get real work done, fast.",
+  },
+  {
+    art: onbGridArt,
+    title: "I understand your data",
+    body: "Select any range and ask in plain English. I'll read your cells, summarize them, spot trends, and answer questions — no formula-wrangling required.",
+  },
+  {
+    art: onbFormulaArt,
+    title: "And I'll do the work",
+    body: "Ask me to clean a column, build a formula, or fill in values, and I'll write them straight into your sheet — with a preview so you see exactly what changes.",
+  },
+  {
+    art: onbModesArt,
+    title: "You're always in control",
+    body: "By default I <strong>ask</strong> before editing. Switch to <strong>Auto</strong> to let me apply changes, or <strong>Off</strong> to stay read-only — anytime, from the bar below.",
+    cta: "Start using Simba",
+  },
+];
+
 function showOnboarding() {
-  if (!els.overlay.hidden) return; // don't stack on another popup
-  openModal(
-    `<div style="text-align:center">
-       <div class="onb-mascot">${POM_SVG}</div>
-       <h3>Meet Simba</h3>
-       <p class="sub">Your Pomeranian sidekick for Excel. Here's what I can do:</p>
-     </div>
-     <ul class="onb-list">
-       <li>📊 Read your selection or any range and answer questions about it</li>
-       <li>🧮 Write values and formulas straight into the sheet</li>
-       <li>✅ I ask before editing — switch to <strong>Auto</strong> or <strong>Off</strong> anytime in the bottom bar</li>
-     </ul>
-     <div class="modal-actions"><button class="btn primary" data-act="go">Let's go</button></div>`
-  );
-  els.modalCard.querySelector('[data-act="go"]').onclick = () => {
+  if (document.querySelector(".onb-backdrop")) return;
+
+  let step = 0;
+  const bd = document.createElement("div");
+  bd.className = "onb-backdrop";
+  bd.innerHTML = `
+    <div class="onb-modal" role="dialog" aria-modal="true" aria-label="Welcome to Simba">
+      <button class="onb-skip" type="button">Skip</button>
+      <div class="onb-stage"></div>
+      <div class="onb-foot">
+        <div class="onb-dots" role="tablist"></div>
+        <div class="onb-nav">
+          <button class="btn onb-back" type="button">Back</button>
+          <button class="btn primary onb-next" type="button">Next</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(bd);
+
+  const stage = bd.querySelector(".onb-stage");
+  const dots = bd.querySelector(".onb-dots");
+  const back = bd.querySelector(".onb-back");
+  const next = bd.querySelector(".onb-next");
+
+  ONB_STEPS.forEach((_, i) => {
+    const d = document.createElement("button");
+    d.className = "onb-dot";
+    d.type = "button";
+    d.setAttribute("aria-label", `Step ${i + 1}`);
+    d.addEventListener("click", () => go(i));
+    dots.appendChild(d);
+  });
+
+  function render(dir) {
+    const s = ONB_STEPS[step];
+    const el = document.createElement("div");
+    el.className = "onb-step " + (dir >= 0 ? "enter-right" : "enter-left");
+    el.innerHTML = `${s.art()}
+      <h3 class="onb-title">${s.title}</h3>
+      <p class="onb-body">${s.body}</p>`;
+    const old = stage.querySelector(".onb-step");
+    if (old) {
+      old.className = "onb-step " + (dir >= 0 ? "leave-left" : "leave-right");
+      old.addEventListener("animationend", () => old.remove(), { once: true });
+    }
+    stage.appendChild(el);
+
+    [...dots.children].forEach((d, i) => {
+      d.classList.toggle("active", i === step);
+      d.setAttribute("aria-selected", i === step ? "true" : "false");
+    });
+    back.style.visibility = step === 0 ? "hidden" : "visible";
+    next.textContent = s.cta || "Next";
+    next.classList.toggle("final", Boolean(s.cta));
+  }
+
+  function go(i) {
+    if (i < 0 || i >= ONB_STEPS.length || i === step) return;
+    const dir = i >= step ? 1 : -1;
+    step = i;
+    render(dir);
+  }
+
+  function finish() {
     store.set("simba.onboarded", "1");
-    closeModalSilently();
-    toast("Tip: select cells, then ask Simba about them", "info", 3200);
-  };
+    bd.classList.add("closing");
+    document.removeEventListener("keydown", onKey);
+    setTimeout(() => bd.remove(), 240);
+    toast("Tip: select some cells, then ask Simba about them", "info", 3400);
+  }
+
+  function onKey(e) {
+    if (!document.body.contains(bd)) { document.removeEventListener("keydown", onKey); return; }
+    if (e.key === "Escape") finish();
+    else if (e.key === "ArrowRight") (step === ONB_STEPS.length - 1 ? finish() : go(step + 1));
+    else if (e.key === "ArrowLeft") go(step - 1);
+  }
+
+  back.addEventListener("click", () => go(step - 1));
+  next.addEventListener("click", () => (step === ONB_STEPS.length - 1 ? finish() : go(step + 1)));
+  bd.querySelector(".onb-skip").addEventListener("click", finish);
+  bd.addEventListener("mousedown", (e) => { if (e.target === bd) finish(); });
+  document.addEventListener("keydown", onKey);
+
+  render(1);
+  setTimeout(() => next.focus(), 60);
 }
 
 /* ------------------------------------------------------------------ *
