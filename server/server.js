@@ -205,15 +205,54 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, model: MODEL, keyConfigured: Boolean(apiKey) });
 });
 
-app.post("/api/chat", async (req, res) => {
-  if (!apiKey) {
-    return res.status(500).json({ error: "Server is missing ANTHROPIC_API_KEY." });
+// ---- Fail-safes: input validation + a lightweight global rate limit ----
+// These protect your Anthropic spend from runaway loops or abuse. Tune via env.
+const RPM = Number(process.env.SIMBA_RPM || 60);                  // requests/min (global)
+const MAX_CONCURRENT = Number(process.env.SIMBA_CONCURRENCY || 6);
+const MAX_MESSAGES = Number(process.env.SIMBA_MAX_MESSAGES || 200);
+const MAX_CHARS = Number(process.env.SIMBA_MAX_CHARS || 1_500_000);
+let hits = [];
+let inflight = 0;
+
+function rateLimited() {
+  const now = Date.now();
+  hits = hits.filter((t) => now - t < 60_000);
+  if (hits.length >= RPM) return true;
+  hits.push(now);
+  return false;
+}
+
+function validateMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0)
+    return "Request body must include a non-empty 'messages' array.";
+  if (messages.length > MAX_MESSAGES) return `Too many messages (max ${MAX_MESSAGES}).`;
+  let chars = 0;
+  for (const m of messages) {
+    if (!m || (m.role !== "user" && m.role !== "assistant" && m.role !== "system"))
+      return "Each message must have role 'user', 'assistant', or 'system'.";
+    if (m.content == null) return "Each message must include content.";
+    chars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
   }
-  const { messages } = req.body || {};
-  if (!Array.isArray(messages) || messages.length === 0) {
-    return res.status(400).json({ error: "Request body must include a non-empty 'messages' array." });
+  if (chars > MAX_CHARS) return "Conversation is too large — start a new chat.";
+  return null;
+}
+
+app.post("/api/chat", async (req, res) => {
+  if (!apiKey) return res.status(503).json({ error: "Server is missing ANTHROPIC_API_KEY." });
+
+  const invalid = validateMessages(req.body?.messages);
+  if (invalid) return res.status(400).json({ error: invalid });
+
+  if (rateLimited()) {
+    res.set("Retry-After", "30");
+    return res.status(429).json({ error: "Simba is handling a lot right now. Please retry in a moment." });
+  }
+  if (inflight >= MAX_CONCURRENT) {
+    res.set("Retry-After", "5");
+    return res.status(429).json({ error: "Too many requests in flight. Please retry shortly." });
   }
 
+  inflight++;
   try {
     // Stream so large/long responses don't hit HTTP timeouts; collect the
     // final assembled message (content blocks + stop_reason) for the task pane.
@@ -224,7 +263,7 @@ app.post("/api/chat", async (req, res) => {
       output_config: { effort: "high" },
       system: SYSTEM_PROMPT,
       tools: TOOLS,
-      messages,
+      messages: req.body.messages,
     });
 
     const final = await stream.finalMessage();
@@ -235,13 +274,27 @@ app.post("/api/chat", async (req, res) => {
       model: final.model,
     });
   } catch (err) {
-    console.error("[Simba] /api/chat error:", err?.message || err);
-    const status = err?.status && err.status >= 400 && err.status < 600 ? err.status : 500;
+    const status = err?.status && err.status >= 400 && err.status < 600 ? err.status : 502;
+    console.error(`[Simba] /api/chat error (${status}):`, err?.message || err);
     res.status(status).json({ error: err?.message || "Claude API request failed." });
+  } finally {
+    inflight--;
   }
 });
 
-app.listen(PORT, () => {
+// Unknown API routes return JSON, not the SPA/HTML.
+app.use("/api", (_req, res) => res.status(404).json({ error: "Not found." }));
+
+// Central error handler — always returns JSON (covers malformed JSON bodies, oversized payloads, etc.).
+// eslint-disable-next-line no-unused-vars
+app.use((err, _req, res, _next) => {
+  const status = err.status || err.statusCode || 400;
+  console.error("[Simba] request error:", err?.message || err);
+  const msg = err?.type === "entity.too.large" ? "Request too large." : "Bad request.";
+  res.status(status).json({ error: msg });
+});
+
+const server = app.listen(PORT, () => {
   console.log(`[Simba] listening on http://localhost:${PORT}  (model: ${MODEL})`);
   console.log(
     serveStatic
@@ -249,3 +302,8 @@ app.listen(PORT, () => {
       : `[Simba] no dist/ build found — API only (dev: webpack serves the sidebar)`
   );
 });
+
+// Keep the process alive on unexpected errors; shut down cleanly on SIGTERM.
+process.on("unhandledRejection", (reason) => console.error("[Simba] unhandledRejection:", reason));
+process.on("uncaughtException", (err) => console.error("[Simba] uncaughtException:", err));
+process.on("SIGTERM", () => server.close(() => process.exit(0)));

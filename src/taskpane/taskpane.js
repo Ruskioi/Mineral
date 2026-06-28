@@ -112,6 +112,9 @@ Office.onReady((info) => {
     b.addEventListener("click", () => { els.prompt.value = b.textContent; onSend(); })
   );
 
+  window.addEventListener("unhandledrejection", (e) => console.error("[Simba] unhandled rejection:", e.reason));
+  window.addEventListener("error", (e) => console.error("[Simba] error:", e.message));
+
   refreshContextPill();
   Excel.run(async (ctx) => {
     ctx.workbook.worksheets.onSelectionChanged?.add?.(refreshContextPill);
@@ -139,7 +142,15 @@ const tools = {
       const range = ctx.workbook.getSelectedRange();
       range.load(["address", "values", "formulas", "rowCount", "columnCount"]);
       await ctx.sync();
-      return { address: range.address, rowCount: range.rowCount, columnCount: range.columnCount, values: range.values, formulas: range.formulas };
+      const out = { address: range.address, rowCount: range.rowCount, columnCount: range.columnCount, values: range.values, formulas: range.formulas };
+      const cap = capValues(out.values);
+      if (cap.truncated) {
+        out.values = cap.values;
+        out.formulas = out.formulas.slice(0, cap.shownRows);
+        out.truncated = true;
+        out.note = `Showing the first ${cap.shownRows} of ${cap.totalRows} rows (capped for size).`;
+      }
+      return out;
     });
   },
 
@@ -152,6 +163,13 @@ const tools = {
       await ctx.sync();
       const out = { address: range.address, rowCount: range.rowCount, columnCount: range.columnCount, values: range.values };
       if (include_formulas) { out.formulas = range.formulas; out.numberFormat = range.numberFormat; }
+      const cap = capValues(out.values);
+      if (cap.truncated) {
+        out.values = cap.values;
+        if (out.formulas) out.formulas = out.formulas.slice(0, cap.shownRows);
+        out.truncated = true;
+        out.note = `Showing the first ${cap.shownRows} of ${cap.totalRows} rows (capped for size). Read a smaller range for everything.`;
+      }
       return out;
     });
   },
@@ -213,6 +231,7 @@ const tools = {
   /* ---------------- write / mutate (gated by edit mode) ---------------- */
 
   async write_range({ address, values }) {
+    if (!is2DArray(values)) return { error: "values must be a non-empty 2D array (rows of columns)." };
     const ok = await gateEdit({ kind: "values", address, values });
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
@@ -243,6 +262,7 @@ const tools = {
   },
 
   async set_formulas({ address, formulas }) {
+    if (!is2DArray(formulas)) return { error: "formulas must be a non-empty 2D array of formula strings." };
     const ok = await gateEdit({ kind: "values", address, values: formulas });
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
@@ -430,6 +450,15 @@ const tools = {
 };
 
 /* tool helpers */
+const MAX_READ_CELLS = 20000;
+function is2DArray(v) { return Array.isArray(v) && v.length > 0 && v.every((r) => Array.isArray(r)); }
+function capValues(values) {
+  if (!Array.isArray(values) || values.length === 0) return { truncated: false };
+  const cols = Array.isArray(values[0]) ? Math.max(1, values[0].length) : 1;
+  const maxRows = Math.max(1, Math.floor(MAX_READ_CELLS / cols));
+  if (values.length <= maxRows) return { truncated: false };
+  return { truncated: true, values: values.slice(0, maxRows), shownRows: maxRows, totalRows: values.length };
+}
 function declined(ok) {
   return ok === false
     ? { skipped: true, reason: "User declined the edit." }
@@ -522,6 +551,7 @@ async function onSend() {
 async function runAgentLoop() {
   for (let i = 0; i < 12; i++) {
     const reply = await callBackend(messages);
+    if (!reply || !Array.isArray(reply.content)) throw new Error("Simba returned an unexpected response.");
     messages.push({ role: "assistant", content: reply.content });
 
     for (const b of reply.content) {
@@ -542,6 +572,7 @@ async function runAgentLoop() {
         result = { error: e.message || String(e) };
         isError = true;
       }
+      if (result && result.error) isError = true;
       markToolDone(note);
       results.push({
         type: "tool_result",
@@ -556,14 +587,29 @@ async function runAgentLoop() {
 }
 
 async function callBackend(history) {
-  const res = await fetch(`${API_BASE}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages: history }),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 180000);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: history }),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    throw new Error(
+      e && e.name === "AbortError"
+        ? "Simba took too long to respond. Please try again."
+        : "Can't reach Simba. Check your connection and that the backend is running."
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Simba backend error (${res.status}). ${detail}`.trim());
+    let msg = `Simba backend error (${res.status}).`;
+    try { const j = await res.json(); if (j && j.error) msg = j.error; } catch { /* non-JSON */ }
+    throw new Error(msg);
   }
   return res.json();
 }
@@ -1029,6 +1075,7 @@ function clearWelcome() {
 }
 
 function resetChat() {
+  if (busy) { toast("Hold on — Simba is still working.", "info"); return; }
   messages = [];
   els.messages.innerHTML =
     '<div class="welcome"><h2>New chat</h2><p>What would you like to do with your spreadsheet?</p></div>';

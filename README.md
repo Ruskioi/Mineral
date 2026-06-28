@@ -149,6 +149,25 @@ thing to host, no CORS, and the API key stays server-side.
 The backend holds your Anthropic key and bills your account for every user's
 usage — add **auth, rate limiting, and logging** to `server/server.js` first.
 
+## Development & quality
+
+```bash
+npm test       # ship-safety checks (tool parity, manifest, config, fail-safes)
+npm run check  # test + manifest validation + production build
+npm run build  # production bundle into dist/
+```
+
+CI (`.github/workflows/ci.yml`) runs the tests, manifest validation, build, and a
+server smoke-test (boots, serves the sidebar, validates input) on every push and PR.
+
+**Built-in fail-safes:**
+- Server: input validation, a global rate limit + concurrency cap (tune with
+  `SIMBA_RPM` / `SIMBA_CONCURRENCY` / `SIMBA_MAX_MESSAGES` / `SIMBA_MAX_CHARS`),
+  JSON-only error responses, and process-level crash guards.
+- Client: request timeout, network/over-size error surfacing, malformed-response
+  guards, write-shape validation, a read-size cap to protect the context window,
+  and the Auto/Ask/Off edit gate with a confirmation preview.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Ship-safety checks
+        run: npm test
+
+      - name: Validate manifest
+        run: npm run validate
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke-test the server (boots + serves + validates input)
+        run: |
+          ANTHROPIC_API_KEY=ci-test PORT=3210 node server/server.js &
+          SRV=$!
+          sleep 2
+          curl -fsS http://localhost:3210/api/health | grep -q '"ok":true'
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3210/api/chat \
+            -H 'Content-Type: application/json' -d '{}')
+          test "$code" = "400"
+          curl -fsS http://localhost:3210/taskpane.html > /dev/null
+          kill $SRV
