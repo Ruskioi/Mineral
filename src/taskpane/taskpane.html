@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Simba AI</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <div class="brand-text">
+          <h1>Simba AI</h1>
+          <p id="context-pill" class="context-pill">No selection</p>
+        </div>
+      </div>
+      <button id="new-chat" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
+    </header>
+
+    <main id="messages" class="messages" aria-live="polite">
+      <div class="welcome">
+        <h2>Hello 👋</h2>
+        <p>I'm Simba, your Excel assistant. I can read your sheet, write formulas, clean data, and explain what's going on.</p>
+        <div class="suggestions">
+          <button class="suggestion">Summarize the selected range</button>
+          <button class="suggestion">Write a formula to total column B</button>
+          <button class="suggestion">Find duplicates in my data</button>
+        </div>
+      </div>
+    </main>
+
+    <footer class="composer">
+      <div id="error-bar" class="error-bar" hidden></div>
+      <div class="composer-row">
+        <textarea id="prompt" rows="1" placeholder="Ask Simba about your spreadsheet…"></textarea>
+        <button id="send" class="send-btn" title="Send" aria-label="Send">➤</button>
+      </div>
+      <label class="auto-apply">
+        <input type="checkbox" id="auto-apply" checked />
+        Let Simba edit the sheet
+      </label>
+    </footer>
+  </div>
+
+  <script src="taskpane.js"></script>
+</body>
+</html>
