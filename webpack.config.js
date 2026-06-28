@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import webpack from "webpack";
 import HtmlWebpackPlugin from "html-webpack-plugin";
 import CopyWebpackPlugin from "copy-webpack-plugin";
 import devCerts from "office-addin-dev-certs";
@@ -44,6 +45,10 @@ export default async (env, argv) => {
       ],
     },
     plugins: [
+      // Bake the backend base URL into the bundle. Empty = same origin.
+      new webpack.DefinePlugin({
+        __SIMBA_API_BASE__: JSON.stringify(process.env.SIMBA_API_BASE || ""),
+      }),
       new HtmlWebpackPlugin({
         filename: "taskpane.html",
         template: "./src/taskpane/taskpane.html",

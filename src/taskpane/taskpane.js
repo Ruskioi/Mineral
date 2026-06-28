@@ -9,8 +9,11 @@
 
 import "./taskpane.css";
 
-// Backend base URL. Same origin as the dev server by default.
-const API_BASE = "";
+// Backend base URL. Baked in at build time from SIMBA_API_BASE (see
+// webpack.config.js). Empty string = same origin (dev uses the dev-server
+// proxy; production can point at a separately hosted backend, e.g.
+// SIMBA_API_BASE=https://simba-api.example.com npm run build).
+const API_BASE = (typeof __SIMBA_API_BASE__ !== "undefined" && __SIMBA_API_BASE__) || "";
 
 /** Full conversation in Anthropic message format. */
 let messages = [];

@@ -3,3 +3,6 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Generated production manifest (run `npm run manifest:prod`)
+manifest.prod.xml
