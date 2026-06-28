@@ -473,6 +473,8 @@ html, body {
   word-break: break-all;
 }
 
+.confirm-summary { margin: 0; font-size: 13px; color: var(--ink); line-height: 1.5; }
+
 /* Settings rows */
 .setting-row {
   display: flex;

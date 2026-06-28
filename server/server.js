@@ -33,78 +33,159 @@ if (!apiKey) {
 const client = new Anthropic({ apiKey });
 
 const SYSTEM_PROMPT = `You are Simba, an AI assistant embedded in a sidebar inside Microsoft Excel.
+Your mascot is a friendly Pomeranian. You help the user understand and edit their spreadsheet.
 
-You help the user understand and edit their spreadsheet. You can call tools to read
-and write the workbook — use them rather than guessing about the user's data.
+You have a full set of tools to read, analyze, and edit the workbook. Use them rather
+than guessing about the user's data — read first, then act.
+
+Reading & analysis:
+- get_selection / read_range — read values (and optionally formulas) of the selection or any range.
+- get_sheet_info / list_sheets — inspect the active sheet or enumerate all sheets.
+- find — locate cells containing text.
+
+Editing:
+- write_range / set_formula / set_formulas — write values or formulas.
+- format_range — number formats, bold/italic/underline, font size, font & fill color, alignment, wrap.
+- clear_range — clear contents, formats, or both.
+- insert_rows / delete_rows / insert_columns / delete_columns — change structure.
+- sort_range — sort a range by a column.
+- autofit — size columns/rows to content.
+- create_table — turn a range into an Excel table.
+- create_chart — add a chart from a data range.
+- add_sheet — create a new worksheet.
+- select_range — move the user's selection / navigate (use to show the user where you worked).
 
 Guidelines:
-- When a question is about the user's data, read the relevant range first.
+- Range addresses are A1-style ("B2:D10"), optionally sheet-qualified ("Sheet2!A1:C3").
 - The user's current selection is often appended to their message as
   "[Current selection: ...]". Prefer it when they say "this", "here", "the selection".
-- Range addresses are A1-style ("B2:D10"), optionally sheet-qualified ("Sheet2!A1:C3").
-- write_range expects a 2D array of values matching the target shape.
-- set_formula broadcasts one Excel formula string (e.g. "=SUM(B2:B100)") across the range.
-- Before any edit, briefly say what you're about to change. After editing, confirm what changed.
-- If the user has turned off sheet editing, a write tool returns {skipped:true}. Explain the
-  formula or steps instead, and tell them to enable editing to apply it.
-- Keep replies concise and practical. Use Excel formula syntax the user can paste.`;
+- write_range takes a 2D array matching the target shape; set_formula broadcasts one
+  formula across a range; set_formulas takes a 2D array of per-cell formulas.
+- Colors are hex strings like "#1F7A4D". Alignment is "left" | "center" | "right".
+- Chart types include ColumnClustered, BarClustered, Line, Pie, XYScatter, Area.
+- Before an edit, briefly say what you're about to change. After editing, confirm what changed.
+- If the user has editing set to "off" or declines a confirmation, a tool returns
+  {skipped:true}. Explain what you would have done and how to enable editing.
+- Prefer multiple precise tool calls over one vague change. Keep replies concise and practical.`;
 
 const TOOLS = [
-  {
-    name: "get_selection",
-    description:
-      "Get the address, dimensions, and values of the user's currently selected range.",
-    input_schema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    name: "read_range",
-    description: "Read the values of a specific A1-style range, e.g. 'A1:C20' or 'Sheet2!A1:B5'.",
-    input_schema: {
-      type: "object",
-      properties: {
-        address: { type: "string", description: "A1-style range address." },
-      },
-      required: ["address"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "write_range",
-    description:
-      "Write a 2D array of values into a range. The values array shape must match the range.",
-    input_schema: {
-      type: "object",
-      properties: {
-        address: { type: "string", description: "A1-style target range." },
-        values: {
-          type: "array",
-          description: "2D array of cell values (rows of columns).",
-          items: { type: "array", items: {} },
-        },
-      },
-      required: ["address", "values"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "set_formula",
-    description:
-      "Set a single Excel formula across every cell in a range, e.g. address 'D2:D100', formula '=B2*C2'.",
-    input_schema: {
-      type: "object",
-      properties: {
-        address: { type: "string", description: "A1-style target range." },
-        formula: { type: "string", description: "Excel formula starting with '='." },
-      },
-      required: ["address", "formula"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "get_sheet_info",
-    description: "Get the active sheet name and its used range dimensions.",
-    input_schema: { type: "object", properties: {}, additionalProperties: false },
-  },
+  { name: "get_selection", description: "Get the address, dimensions, values, and formulas of the user's currently selected range.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
+  { name: "read_range", description: "Read a specific A1-style range, e.g. 'A1:C20' or 'Sheet2!A1:B5'. Set include_formulas to also get formulas and number formats.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range address." },
+      include_formulas: { type: "boolean", description: "Also return formulas and number formats." },
+    }, required: ["address"] } },
+
+  { name: "get_sheet_info", description: "Get the active sheet name and its used-range dimensions.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
+  { name: "list_sheets", description: "List all worksheets (name, position, visibility) and which one is active.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
+  { name: "find", description: "Find cells whose value contains the query text. Returns matching cell addresses (active sheet).",
+    input_schema: { type: "object", properties: {
+      query: { type: "string", description: "Text to search for." },
+      match_case: { type: "boolean", description: "Case-sensitive match (default false)." },
+    }, required: ["query"] } },
+
+  { name: "write_range", description: "Write a 2D array of values into a range. The array shape must match the range.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style target range." },
+      values: { type: "array", description: "2D array of cell values (rows of columns).", items: { type: "array", items: {} } },
+    }, required: ["address", "values"] } },
+
+  { name: "set_formula", description: "Set a single Excel formula across every cell in a range, e.g. address 'D2:D100', formula '=B2*C2'.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style target range." },
+      formula: { type: "string", description: "Excel formula starting with '='." },
+    }, required: ["address", "formula"] } },
+
+  { name: "set_formulas", description: "Set a 2D array of per-cell formulas into a range (shape must match the range).",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style target range." },
+      formulas: { type: "array", description: "2D array of formula strings.", items: { type: "array", items: { type: "string" } } },
+    }, required: ["address", "formulas"] } },
+
+  { name: "clear_range", description: "Clear a range's contents, formats, or both.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range." },
+      what: { type: "string", enum: ["contents", "formats", "all"], description: "What to clear (default contents)." },
+    }, required: ["address"] } },
+
+  { name: "format_range", description: "Apply formatting to a range: number format, bold/italic/underline, font size, font/fill color, alignment, wrap.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range." },
+      number_format: { type: "string", description: "Excel number format, e.g. '#,##0.00' or '0.0%' or '$#,##0'." },
+      bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" },
+      font_color: { type: "string", description: "Hex color like '#1F7A4D'." },
+      fill_color: { type: "string", description: "Hex background color." },
+      font_size: { type: "number" },
+      align: { type: "string", enum: ["left", "center", "right"] },
+      wrap: { type: "boolean" },
+    }, required: ["address"] } },
+
+  { name: "insert_rows", description: "Insert blank rows above a given row index (1-based).",
+    input_schema: { type: "object", properties: {
+      index: { type: "integer", description: "1-based row number to insert above." },
+      count: { type: "integer", description: "How many rows (default 1)." },
+    }, required: ["index"] } },
+
+  { name: "delete_rows", description: "Delete rows starting at a given row index (1-based).",
+    input_schema: { type: "object", properties: {
+      index: { type: "integer", description: "1-based starting row number." },
+      count: { type: "integer", description: "How many rows (default 1)." },
+    }, required: ["index"] } },
+
+  { name: "insert_columns", description: "Insert blank columns before a given column letter.",
+    input_schema: { type: "object", properties: {
+      column: { type: "string", description: "Column letter, e.g. 'C'." },
+      count: { type: "integer", description: "How many columns (default 1)." },
+    }, required: ["column"] } },
+
+  { name: "delete_columns", description: "Delete columns starting at a given column letter.",
+    input_schema: { type: "object", properties: {
+      column: { type: "string", description: "Column letter, e.g. 'C'." },
+      count: { type: "integer", description: "How many columns (default 1)." },
+    }, required: ["column"] } },
+
+  { name: "sort_range", description: "Sort a range by one of its columns.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range to sort." },
+      column_index: { type: "integer", description: "0-based column within the range to sort by (default 0)." },
+      ascending: { type: "boolean", description: "Ascending order (default true)." },
+      has_headers: { type: "boolean", description: "Treat the first row as headers (default true)." },
+    }, required: ["address"] } },
+
+  { name: "autofit", description: "Autofit column widths and row heights for a range.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range." },
+    }, required: ["address"] } },
+
+  { name: "create_table", description: "Convert a range into an Excel table.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range including headers." },
+      has_headers: { type: "boolean", description: "First row is headers (default true)." },
+      name: { type: "string", description: "Optional table name." },
+    }, required: ["address"] } },
+
+  { name: "create_chart", description: "Add a chart built from a data range.",
+    input_schema: { type: "object", properties: {
+      data_range: { type: "string", description: "A1-style range of the chart data." },
+      chart_type: { type: "string", description: "e.g. ColumnClustered, BarClustered, Line, Pie, XYScatter, Area." },
+      title: { type: "string", description: "Optional chart title." },
+    }, required: ["data_range"] } },
+
+  { name: "add_sheet", description: "Add a new worksheet and make it active.",
+    input_schema: { type: "object", properties: {
+      name: { type: "string", description: "Optional sheet name." },
+    } } },
+
+  { name: "select_range", description: "Select/navigate to a range so the user can see it.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range." },
+    }, required: ["address"] } },
 ];
 
 const app = express();

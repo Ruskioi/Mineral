@@ -132,58 +132,28 @@ Office.onReady((info) => {
  * ------------------------------------------------------------------ */
 
 const tools = {
+  /* ---------------- read / inspect (no confirmation) ---------------- */
+
   async get_selection() {
     return Excel.run(async (ctx) => {
       const range = ctx.workbook.getSelectedRange();
-      range.load(["address", "values", "rowCount", "columnCount"]);
+      range.load(["address", "values", "formulas", "rowCount", "columnCount"]);
       await ctx.sync();
-      return { address: range.address, rowCount: range.rowCount, columnCount: range.columnCount, values: range.values };
+      return { address: range.address, rowCount: range.rowCount, columnCount: range.columnCount, values: range.values, formulas: range.formulas };
     });
   },
 
-  async read_range({ address }) {
+  async read_range({ address, include_formulas }) {
     return Excel.run(async (ctx) => {
       const range = parseRange(ctx, address);
-      range.load(["address", "values", "rowCount", "columnCount"]);
+      const props = ["address", "values", "rowCount", "columnCount"];
+      if (include_formulas) props.push("formulas", "numberFormat");
+      range.load(props);
       await ctx.sync();
-      return { address: range.address, rowCount: range.rowCount, columnCount: range.columnCount, values: range.values };
+      const out = { address: range.address, rowCount: range.rowCount, columnCount: range.columnCount, values: range.values };
+      if (include_formulas) { out.formulas = range.formulas; out.numberFormat = range.numberFormat; }
+      return out;
     });
-  },
-
-  async write_range({ address, values }) {
-    const ok = await gateEdit({ kind: "values", address, values });
-    if (!ok) return ok === false
-      ? { skipped: true, reason: "User declined the edit." }
-      : { skipped: true, reason: "Sheet editing is turned off." };
-    const result = await Excel.run(async (ctx) => {
-      const range = parseRange(ctx, address);
-      range.values = values;
-      range.load("address");
-      await ctx.sync();
-      return { written: true, address: range.address };
-    });
-    toast(`Wrote ${result.address}`, "success");
-    return result;
-  },
-
-  async set_formula({ address, formula }) {
-    const ok = await gateEdit({ kind: "formula", address, formula });
-    if (!ok) return ok === false
-      ? { skipped: true, reason: "User declined the edit." }
-      : { skipped: true, reason: "Sheet editing is turned off." };
-    const result = await Excel.run(async (ctx) => {
-      const range = parseRange(ctx, address);
-      range.load(["rowCount", "columnCount"]);
-      await ctx.sync();
-      const grid = Array.from({ length: range.rowCount }, () =>
-        Array.from({ length: range.columnCount }, () => formula));
-      range.formulas = grid;
-      range.load("address");
-      await ctx.sync();
-      return { written: true, address: range.address, formula };
-    });
-    toast(`Set formula in ${result.address}`, "success");
-    return result;
   },
 
   async get_sheet_info() {
@@ -201,7 +171,302 @@ const tools = {
       };
     });
   },
+
+  async list_sheets() {
+    return Excel.run(async (ctx) => {
+      const sheets = ctx.workbook.worksheets;
+      const active = ctx.workbook.worksheets.getActiveWorksheet();
+      sheets.load("items/name,items/position,items/visibility");
+      active.load("name");
+      await ctx.sync();
+      return {
+        active: active.name,
+        sheets: sheets.items.map((s) => ({ name: s.name, position: s.position, visibility: s.visibility })),
+      };
+    });
+  },
+
+  async find({ query, match_case = false }) {
+    return Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      const used = sheet.getUsedRangeOrNullObject(true);
+      used.load(["values", "rowIndex", "columnIndex"]);
+      await ctx.sync();
+      if (used.isNullObject) return { matches: [], count: 0 };
+      const q = match_case ? String(query) : String(query).toLowerCase();
+      const matches = [];
+      for (let r = 0; r < used.values.length && matches.length < 200; r++) {
+        for (let c = 0; c < used.values[r].length; c++) {
+          const cell = used.values[r][c];
+          if (cell === "" || cell === null) continue;
+          const hay = match_case ? String(cell) : String(cell).toLowerCase();
+          if (hay.includes(q)) {
+            matches.push({ address: `${colLetter(used.columnIndex + c)}${used.rowIndex + r + 1}`, value: cell });
+            if (matches.length >= 200) break;
+          }
+        }
+      }
+      return { matches, count: matches.length, truncated: matches.length >= 200 };
+    });
+  },
+
+  /* ---------------- write / mutate (gated by edit mode) ---------------- */
+
+  async write_range({ address, values }) {
+    const ok = await gateEdit({ kind: "values", address, values });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.values = values;
+      range.load("address");
+      await ctx.sync();
+      return { written: true, address: range.address };
+    });
+    toast(`Wrote ${result.address}`, "success");
+    return result;
+  },
+
+  async set_formula({ address, formula }) {
+    const ok = await gateEdit({ kind: "formula", address, formula });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.load(["rowCount", "columnCount"]);
+      await ctx.sync();
+      range.formulas = grid(range.rowCount, range.columnCount, formula);
+      range.load("address");
+      await ctx.sync();
+      return { written: true, address: range.address, formula };
+    });
+    toast(`Set formula in ${result.address}`, "success");
+    return result;
+  },
+
+  async set_formulas({ address, formulas }) {
+    const ok = await gateEdit({ kind: "values", address, values: formulas });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.formulas = formulas;
+      range.load("address");
+      await ctx.sync();
+      return { written: true, address: range.address };
+    });
+    toast(`Set formulas in ${result.address}`, "success");
+    return result;
+  },
+
+  async clear_range({ address, what = "contents" }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Clear ${what} of ${address}` });
+    if (!ok) return declined(ok);
+    const map = { contents: "Contents", formats: "Formats", all: "All" };
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.clear(map[what] || "Contents");
+      range.load("address");
+      await ctx.sync();
+      return { cleared: true, address: range.address, what };
+    });
+    toast(`Cleared ${result.address}`, "success");
+    return result;
+  },
+
+  async format_range(opts) {
+    const { address } = opts;
+    const ok = await gateEdit({ kind: "edit", address, summary: describeFormat(opts) });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      const f = range.format;
+      if (opts.bold != null) f.font.bold = !!opts.bold;
+      if (opts.italic != null) f.font.italic = !!opts.italic;
+      if (opts.underline != null) f.font.underline = opts.underline ? "Single" : "None";
+      if (opts.font_color) f.font.color = opts.font_color;
+      if (opts.font_size != null) f.font.size = opts.font_size;
+      if (opts.fill_color) f.fill.color = opts.fill_color;
+      if (opts.align) f.horizontalAlignment = cap(opts.align);
+      if (opts.wrap != null) f.wrapText = !!opts.wrap;
+      if (opts.number_format) {
+        range.load(["rowCount", "columnCount"]);
+        await ctx.sync();
+        range.numberFormat = grid(range.rowCount, range.columnCount, opts.number_format);
+      }
+      range.load("address");
+      await ctx.sync();
+      return { formatted: true, address: range.address };
+    });
+    toast(`Formatted ${result.address}`, "success");
+    return result;
+  },
+
+  async insert_rows({ index, count = 1 }) {
+    const ok = await gateEdit({ kind: "edit", summary: `Insert ${count} row(s) above row ${index}` });
+    if (!ok) return declined(ok);
+    await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      sheet.getRange(`${index}:${index + count - 1}`).insert("Down");
+      await ctx.sync();
+    });
+    toast(`Inserted ${count} row(s)`, "success");
+    return { inserted: true, rows: count, at: index };
+  },
+
+  async delete_rows({ index, count = 1 }) {
+    const ok = await gateEdit({ kind: "edit", summary: `Delete ${count} row(s) starting at row ${index}` });
+    if (!ok) return declined(ok);
+    await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      sheet.getRange(`${index}:${index + count - 1}`).delete("Up");
+      await ctx.sync();
+    });
+    toast(`Deleted ${count} row(s)`, "success");
+    return { deleted: true, rows: count, at: index };
+  },
+
+  async insert_columns({ column, count = 1 }) {
+    const ok = await gateEdit({ kind: "edit", summary: `Insert ${count} column(s) before ${column}` });
+    if (!ok) return declined(ok);
+    const start = colIndex(column);
+    const ref = `${colLetter(start)}:${colLetter(start + count - 1)}`;
+    await Excel.run(async (ctx) => {
+      ctx.workbook.worksheets.getActiveWorksheet().getRange(ref).insert("Right");
+      await ctx.sync();
+    });
+    toast(`Inserted ${count} column(s)`, "success");
+    return { inserted: true, columns: count, before: column };
+  },
+
+  async delete_columns({ column, count = 1 }) {
+    const ok = await gateEdit({ kind: "edit", summary: `Delete ${count} column(s) starting at ${column}` });
+    if (!ok) return declined(ok);
+    const start = colIndex(column);
+    const ref = `${colLetter(start)}:${colLetter(start + count - 1)}`;
+    await Excel.run(async (ctx) => {
+      ctx.workbook.worksheets.getActiveWorksheet().getRange(ref).delete("Left");
+      await ctx.sync();
+    });
+    toast(`Deleted ${count} column(s)`, "success");
+    return { deleted: true, columns: count, at: column };
+  },
+
+  async sort_range({ address, column_index = 0, ascending = true, has_headers = true }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Sort ${address} by column ${column_index + 1} ${ascending ? "A→Z" : "Z→A"}` });
+    if (!ok) return declined(ok);
+    await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.sort.apply([{ key: column_index, ascending }], false, has_headers, "Rows");
+      await ctx.sync();
+    });
+    toast(`Sorted ${address}`, "success");
+    return { sorted: true, address };
+  },
+
+  async autofit({ address }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Autofit ${address}` });
+    if (!ok) return declined(ok);
+    await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.format.autofitColumns();
+      range.format.autofitRows();
+      await ctx.sync();
+    });
+    return { autofit: true, address };
+  },
+
+  async create_table({ address, has_headers = true, name }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Create a table from ${address}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      const table = sheet.tables.add(address, has_headers);
+      if (name) table.name = name;
+      table.load("name");
+      await ctx.sync();
+      return { created: true, table: table.name };
+    });
+    toast(`Created table ${result.table}`, "success");
+    return result;
+  },
+
+  async create_chart({ data_range, chart_type = "ColumnClustered", title }) {
+    const ok = await gateEdit({ kind: "edit", address: data_range, summary: `Create a ${chart_type} chart from ${data_range}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      const chart = sheet.charts.add(chart_type, parseRange(ctx, data_range), "Auto");
+      if (title) chart.title.text = title;
+      chart.load("name");
+      await ctx.sync();
+      return { created: true, chart: chart.name };
+    });
+    toast("Created chart", "success");
+    return result;
+  },
+
+  async add_sheet({ name }) {
+    const ok = await gateEdit({ kind: "edit", summary: `Add a new sheet${name ? ` named "${name}"` : ""}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const ws = ctx.workbook.worksheets.add(name || undefined);
+      ws.activate();
+      ws.load("name");
+      await ctx.sync();
+      return { created: true, sheet: ws.name };
+    });
+    toast(`Added sheet ${result.sheet}`, "success");
+    return result;
+  },
+
+  async select_range({ address }) {
+    return Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.select();
+      range.load("address");
+      await ctx.sync();
+      refreshContextPill();
+      return { selected: true, address: range.address };
+    });
+  },
 };
+
+/* tool helpers */
+function declined(ok) {
+  return ok === false
+    ? { skipped: true, reason: "User declined the edit." }
+    : { skipped: true, reason: "Sheet editing is turned off." };
+}
+function grid(rows, cols, val) {
+  return Array.from({ length: rows }, () => Array.from({ length: cols }, () => val));
+}
+function colLetter(n) {
+  let s = "";
+  n++;
+  while (n) { n--; s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26); }
+  return s;
+}
+function colIndex(letter) {
+  const L = String(letter).toUpperCase().replace(/[^A-Z]/g, "");
+  let n = 0;
+  for (const ch of L) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+function cap(s) {
+  s = String(s).toLowerCase();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function describeFormat(o) {
+  const bits = [];
+  if (o.bold) bits.push("bold");
+  if (o.italic) bits.push("italic");
+  if (o.underline) bits.push("underline");
+  if (o.font_color) bits.push(`text ${o.font_color}`);
+  if (o.fill_color) bits.push(`fill ${o.fill_color}`);
+  if (o.font_size) bits.push(`size ${o.font_size}`);
+  if (o.align) bits.push(`align ${o.align}`);
+  if (o.wrap) bits.push("wrap text");
+  if (o.number_format) bits.push(`format "${o.number_format}"`);
+  return `Format ${o.address}${bits.length ? ": " + bits.join(", ") : ""}`;
+}
 
 /** Returns null (off), false (declined), or true (apply). */
 async function gateEdit(details) {
@@ -331,15 +596,24 @@ function confirmEdit(details) {
     let settled = false;
     const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
 
-    const body = details.kind === "formula"
-      ? `<div class="preview-addr">${escapeHtml(details.address)}</div>
-         <div class="preview-formula">${escapeHtml(details.formula)}</div>`
-      : `<div class="preview-addr">${escapeHtml(details.address)}</div>
-         ${valuesPreviewTable(details.values)}`;
+    const addrPill = details.address
+      ? `<div class="preview-addr">${escapeHtml(details.address)}</div>` : "";
+
+    let body, sub;
+    if (details.kind === "formula") {
+      sub = "Simba wants to set a formula.";
+      body = `${addrPill}<div class="preview-formula">${escapeHtml(details.formula)}</div>`;
+    } else if (details.kind === "values") {
+      sub = "Simba wants to write to the sheet.";
+      body = `${addrPill}${valuesPreviewTable(details.values)}`;
+    } else {
+      sub = "Simba wants to edit the sheet.";
+      body = `${addrPill}<p class="confirm-summary">${escapeHtml(details.summary || "Apply this change?")}</p>`;
+    }
 
     openModal(
       `<h3>Apply this edit?</h3>
-       <p class="sub">Simba wants to ${details.kind === "formula" ? "set a formula" : "write values"}.</p>
+       <p class="sub">${sub}</p>
        ${body}
        <div class="modal-actions">
          <button class="btn" data-act="cancel">Cancel</button>
@@ -430,9 +704,24 @@ function renderToolNote(name, input) {
   const labels = {
     get_selection: "Reading your selection",
     read_range: `Reading ${input?.address || "a range"}`,
+    get_sheet_info: "Inspecting the sheet",
+    list_sheets: "Looking at the workbook",
+    find: `Searching for "${input?.query || ""}"`,
     write_range: `Writing to ${input?.address || "a range"}`,
     set_formula: `Setting a formula in ${input?.address || "a range"}`,
-    get_sheet_info: "Inspecting the sheet",
+    set_formulas: `Setting formulas in ${input?.address || "a range"}`,
+    clear_range: `Clearing ${input?.address || "a range"}`,
+    format_range: `Formatting ${input?.address || "a range"}`,
+    insert_rows: "Inserting rows",
+    delete_rows: "Deleting rows",
+    insert_columns: "Inserting columns",
+    delete_columns: "Deleting columns",
+    sort_range: `Sorting ${input?.address || "a range"}`,
+    autofit: "Autofitting cells",
+    create_table: `Creating a table from ${input?.address || "a range"}`,
+    create_chart: "Creating a chart",
+    add_sheet: "Adding a sheet",
+    select_range: `Selecting ${input?.address || "a range"}`,
   };
   const note = document.createElement("div");
   note.className = "msg assistant";
