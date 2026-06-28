@@ -10,9 +10,15 @@
  */
 
 import "dotenv/config";
+import path from "node:path";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DIST_DIR = path.resolve(__dirname, "../dist");
 
 const PORT = process.env.PORT || 3001;
 const MODEL = process.env.SIMBA_MODEL || "claude-opus-4-8";
@@ -105,6 +111,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "8mb" }));
 
+// Single-deployable mode: if a production build exists, serve the sidebar
+// (dist/) from this same service so the front-end and /api share one origin —
+// no second host, no CORS, and API_BASE="" works as-is. In development the
+// webpack dev server serves the front-end instead and dist/ may be absent.
+const serveStatic = existsSync(DIST_DIR);
+if (serveStatic) {
+  app.use(express.static(DIST_DIR));
+}
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, model: MODEL, keyConfigured: Boolean(apiKey) });
 });
@@ -146,5 +161,10 @@ app.post("/api/chat", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[Simba] backend listening on http://localhost:${PORT}  (model: ${MODEL})`);
+  console.log(`[Simba] listening on http://localhost:${PORT}  (model: ${MODEL})`);
+  console.log(
+    serveStatic
+      ? `[Simba] serving the sidebar from ${DIST_DIR} (single-origin mode)`
+      : `[Simba] no dist/ build found — API only (dev: webpack serves the sidebar)`
+  );
 });

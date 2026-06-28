@@ -103,47 +103,51 @@ To sideload manually instead, see Microsoft's guide:
 Uncheck **"Let Simba edit the sheet"** to keep it read-only — it'll explain
 formulas instead of applying them.
 
-## Deploy & sideload anywhere (production)
+## Deploy to a team (recommended)
 
-Office requires **HTTPS** for every manifest URL — in dev (the `localhost` dev
-cert) and in production (a real CA-signed cert). Two things get hosted:
+The easiest rollout for coworkers on one Microsoft 365 tenant: host Simba as a
+**single service**, then a Global Admin uploads the manifest once via the M365
+admin center (**Integrated Apps**) and assigns it — Simba appears in everyone's
+Excel ribbon automatically, no per-user setup.
 
-- **Front-end** — the built `dist/` (static files): any HTTPS static host
-  (Azure Static Web Apps, Vercel, Netlify, Cloudflare Pages, S3+CloudFront).
-- **Backend** — `server/server.js` (holds the API key): any HTTPS runtime
-  (Azure App Service, Render, Fly.io, Railway, AWS, Cloudflare Workers).
+**👉 Full step-by-step: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 
-The backend base URL and the manifest host are both configurable — no
-hand-editing:
+Short version:
 
 ```bash
-# 1. Build the task pane, pointing it at your hosted backend.
-#    Omit SIMBA_API_BASE if the backend is same-origin as the front-end.
-SIMBA_API_BASE=https://simba-api.example.com npm run build
-#    → dist/ (deploy these static files to your HTTPS front-end host)
+# 1. Build the sidebar (same origin — leave SIMBA_API_BASE empty)
+npm run build
 
-# 2. Generate a production manifest for your front-end domain, with a fresh GUID.
-SIMBA_BASE_URL=https://simba.example.com npm run manifest:prod
-#    → manifest.prod.xml (gitignored)
+# 2. Deploy the project to one HTTPS Node host and start it:
+node server/server.js        # serves BOTH the sidebar and /api on one origin
+#    set ANTHROPIC_API_KEY in the host's environment
 
-# 3. Deploy server/ to your backend host with ANTHROPIC_API_KEY set in its env.
+# 3. Generate the production manifest pointing at that host (fresh GUID)
+SIMBA_BASE_URL=https://YOUR_HOST npm run manifest:prod   # → manifest.prod.xml
 
-# 4. Sideload manifest.prod.xml into Excel — or distribute it org-wide via the
-#    Microsoft 365 admin center → Integrated Apps (no public store needed).
+# 4. Global Admin: admin.microsoft.com → Settings → Integrated apps →
+#    Upload custom apps → manifest.prod.xml → assign users → deploy
 ```
 
-`manifest.xml` stays the localhost dev manifest. `manifest.template.xml` +
-`scripts/make-manifest.mjs` generate host-specific manifests (`npm run manifest`
-with `--base`, `--id`, `--new-id`, `--out`).
+Office requires **HTTPS** with a real CA-signed cert for every manifest URL (the
+`localhost` dev cert is dev-only). When `dist/` is present, `server/server.js`
+serves the front-end and the `/api` proxy on the **same origin**, so there's one
+thing to host, no CORS, and the API key stays server-side.
 
-### Production checklist
-- Backend behind real HTTPS with `ANTHROPIC_API_KEY` set server-side (never shipped to the browser).
-- Fresh `<Id>` GUID (`--new-id` does this) and no `localhost` URLs in the production manifest.
-- The backend is intentionally minimal — add **auth, rate limiting, and logging**
-  before exposing it publicly so others can't run up your Anthropic usage.
-- For the public **AppSource** store you'd additionally need a privacy policy,
-  support URL, real icons, and to pass Partner Center validation. Sideloading and
-  M365 Integrated Apps deployment do not require store review.
+### Other distribution options
+- **Sideload** a single user: Excel on the web → Insert → Add-ins → *Upload My
+  Add-in* → `manifest.prod.xml` (no admin, no tooling).
+- **AppSource** (public store): also needs a privacy policy, support URL, real
+  icons, and Partner Center validation.
+
+### Manifest configuration
+`manifest.xml` stays the localhost dev manifest. `manifest.template.xml` +
+`scripts/make-manifest.mjs` generate host-specific manifests
+(`npm run manifest` with `--base`, `--id`, `--new-id`, `--out`).
+
+### Before a wide rollout
+The backend holds your Anthropic key and bills your account for every user's
+usage — add **auth, rate limiting, and logging** to `server/server.js` first.
 
 ## License
 

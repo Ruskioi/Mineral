@@ -10,6 +10,7 @@
     "dev:api": "node server/server.js",
     "backend": "node server/server.js",
     "build": "webpack --mode production",
+    "start:prod": "npm run build && node server/server.js",
     "manifest": "node scripts/make-manifest.mjs",
     "manifest:prod": "node scripts/make-manifest.mjs --new-id --out manifest.prod.xml",
     "sideload": "office-addin-debugging start manifest.xml",
