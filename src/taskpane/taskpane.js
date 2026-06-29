@@ -836,13 +836,26 @@ async function runAgentLoop() {
       appendStream(live, chunk);
     };
 
-    const reply = await callBackend(messages, onDelta);
-    if (!reply || !Array.isArray(reply.content)) throw new Error("Simba returnerade ett oväntat svar.");
+    let reply;
+    try {
+      reply = await callBackend(messages, onDelta);
+    } catch (e) {
+      if (live) live.wrap.remove();     // drop the half-streamed bubble
+      finalizeToolGroup(group);         // stop the running shimmer on error
+      throw e;
+    }
+    if (!reply || !Array.isArray(reply.content)) {
+      if (live) live.wrap.remove();
+      finalizeToolGroup(group);
+      throw new Error("Simba returnerade ett oväntat svar.");
+    }
     messages.push({ role: "assistant", content: reply.content });
 
     const fullText = reply.content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
-    if (live) finishStream(live, fullText);                // re-render streamed text as rich markdown
-    else if (fullText) {                                   // non-streaming fallback
+    if (live) {
+      if (fullText || live.text.trim()) finishStream(live, fullText); // re-render as rich markdown
+      else live.wrap.remove();                                        // nothing real streamed → drop empty bubble
+    } else if (fullText) {                                            // non-streaming fallback
       if (group) { finalizeToolGroup(group); group = null; }
       renderMessage("assistant", fullText);
     }
@@ -913,6 +926,17 @@ async function callBackend(history, onDelta) {
   const decoder = new TextDecoder();
   let buf = "";
   let final = null;
+  const handleFrame = (raw) => {
+    const ev = parseSSE(raw);
+    if (!ev) return;
+    if (ev.event === "delta") { try { onDelta?.(JSON.parse(ev.data).text); } catch { /* ignore */ } }
+    else if (ev.event === "final") { try { final = JSON.parse(ev.data); } catch { /* ignore */ } }
+    else if (ev.event === "error") {
+      let m = "Claude API request failed.";
+      try { m = JSON.parse(ev.data).error || m; } catch { /* ignore */ }
+      throw new Error(m);
+    }
+  };
   try {
     for (;;) {
       const { value, done } = await reader.read();
@@ -920,19 +944,12 @@ async function callBackend(history, onDelta) {
       buf += decoder.decode(value, { stream: true });
       let i;
       while ((i = buf.indexOf("\n\n")) !== -1) {
-        const raw = buf.slice(0, i);
+        handleFrame(buf.slice(0, i));
         buf = buf.slice(i + 2);
-        const ev = parseSSE(raw);
-        if (!ev) continue;
-        if (ev.event === "delta") { try { onDelta?.(JSON.parse(ev.data).text); } catch { /* ignore */ } }
-        else if (ev.event === "final") { try { final = JSON.parse(ev.data); } catch { /* ignore */ } }
-        else if (ev.event === "error") {
-          let m = "Claude API request failed.";
-          try { m = JSON.parse(ev.data).error || m; } catch { /* ignore */ }
-          throw new Error(m);
-        }
       }
     }
+    buf += decoder.decode();      // flush any trailing multi-byte bytes
+    if (buf.trim()) handleFrame(buf); // parse a final frame not terminated by \n\n
   } finally {
     clearTimeout(timer);
   }
