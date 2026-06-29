@@ -201,7 +201,7 @@ html, body {
   display: flex;
   gap: 9px;
   max-width: 100%;
-  animation: rise 0.26s var(--ease) both;
+  animation: msgIn 0.3s var(--ease) both;
 }
 .msg.user { flex-direction: row-reverse; }
 .msg .avatar {
@@ -220,14 +220,16 @@ html, body {
 .msg.user .body { align-items: flex-end; }
 
 .bubble {
-  padding: 10px 13px;
+  padding: 11px 14px;
   border-radius: var(--radius);
   line-height: 1.55;
   word-wrap: break-word;
   overflow-wrap: anywhere;
+  transition: box-shadow var(--speed), border-color var(--speed);
 }
 .msg.user .bubble {
   background: var(--user-bubble);
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
   border-bottom-right-radius: 5px;
 }
 .msg.assistant .bubble {
@@ -236,6 +238,7 @@ html, body {
   border-bottom-left-radius: 5px;
   box-shadow: var(--shadow-sm);
 }
+.msg.assistant:hover .bubble { box-shadow: 0 3px 12px rgba(40, 35, 28, 0.08); }
 .bubble p { margin: 0 0 8px; }
 .bubble p:last-child { margin-bottom: 0; }
 .bubble code {
@@ -284,33 +287,78 @@ html, body {
 .msg-act:active { transform: scale(0.9); }
 .msg .avatar { box-shadow: var(--shadow-sm); }
 
-/* Tool / action notes */
-.tool-note {
-  align-self: flex-start;
-  font-size: 12px;
-  color: var(--ink-soft);
-  background: var(--accent-tint);
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
-  border-radius: 9px;
-  padding: 6px 11px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  animation: rise 0.24s var(--ease) both;
-}
-.tool-note .spinner {
-  width: 10px; height: 10px;
-  border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+/* Reusable spinner */
+.spinner {
+  display: inline-block;
+  width: 13px; height: 13px;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  animation: spin 0.65s linear infinite;
 }
-.tool-note.done .spinner {
-  border: none;
-  width: auto; height: auto;
-  animation: none;
+.spinner.sm { width: 11px; height: 11px; }
+
+/* Activity group — one collapsible card for all of a turn's tool steps */
+.tool-group { animation: rise 0.26s var(--ease) both; }
+.tg-card {
+  align-self: flex-start;
+  width: 100%;
+  background: color-mix(in srgb, var(--accent-tint) 55%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
-.tool-note.done .spinner::before { content: "✓"; color: var(--success); font-weight: 700; }
+.tg-head {
+  width: 100%;
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 12px;
+  background: none; border: none; cursor: pointer;
+  font: inherit; color: var(--ink); text-align: left;
+  transition: background var(--speed);
+}
+.tg-head:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.tg-ic { flex: none; width: 16px; height: 16px; display: grid; place-items: center; }
+.tg-check { color: var(--success); font-weight: 700; font-size: 13px; animation: popIn 0.3s var(--ease) both; }
+.tg-title {
+  flex: 1; min-width: 0;
+  font-size: 12.5px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tg-count {
+  flex: none; font-size: 11px; font-weight: 600;
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 999px; padding: 1px 8px;
+}
+.tg-chev {
+  flex: none; color: var(--ink-faint); font-size: 16px; line-height: 1;
+  transition: transform var(--speed);
+}
+.tg-card.open .tg-chev { transform: rotate(90deg); }
+
+/* Smooth collapse via animatable grid rows */
+.tg-body {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s var(--ease);
+}
+.tg-card.open .tg-body { grid-template-rows: 1fr; }
+.tg-steps {
+  overflow: hidden;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.tg-step {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px;
+  font-size: 12px; color: var(--ink-soft);
+  animation: rise 0.2s var(--ease) both;
+}
+.tg-step + .tg-step { border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+.tg-step-ic { flex: none; width: 14px; height: 14px; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.tg-step.done .tg-step-ic { color: var(--success); }
+.tg-step.error, .tg-step.error .tg-step-ic { color: var(--danger); }
+.tg-step.done .tg-step-lbl { color: var(--ink); }
+.tg-step-lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Typing indicator */
 .typing { display: inline-flex; gap: 4px; padding: 5px 2px; }
@@ -757,6 +805,7 @@ html, body {
 @keyframes type { from { width: 0; } to { width: 132px; } }
 @keyframes caret { 50% { opacity: 0; } }
 @keyframes popIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: none; } }
+@keyframes msgIn { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
 @keyframes pulseChip {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
   60% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 0%, transparent); }

@@ -28,6 +28,7 @@ const store = {
 
 let messages = [];
 let busy = false;
+let activeTyping = null; // the "thinking" dots; cleared once real content appears
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
@@ -198,6 +199,13 @@ Office.onReady((info) => {
 
   // Copy buttons inside rendered code blocks (event delegation).
   els.messages.addEventListener("click", (e) => {
+    const head = e.target.closest(".tg-head");
+    if (head) {
+      const card = head.closest(".tg-card");
+      const open = card.classList.toggle("open");
+      head.setAttribute("aria-expanded", String(open));
+      return;
+    }
     const act = e.target.closest(".msg-act");
     if (act) {
       const msg = act.closest(".msg");
@@ -758,13 +766,13 @@ async function onSend() {
 
   autoApproveTurn = false; // each new request starts asking again
   setBusy(true);
-  const typing = renderTyping();
+  renderTyping();
   try {
     await runAgentLoop();
   } catch (err) {
     toast(err.message || "Något gick fel i kommunikationen med Simba.", "error", 4000);
   } finally {
-    typing.remove();
+    clearTyping();
     setBusy(false);
   }
 }
@@ -785,33 +793,38 @@ async function regenerate() {
   }
   autoApproveTurn = false;
   setBusy(true);
-  const typing = renderTyping();
+  renderTyping();
   try {
     await runAgentLoop();
   } catch (err) {
     toast(err.message || "Något gick fel i kommunikationen med Simba.", "error", 4000);
   } finally {
-    typing.remove();
+    clearTyping();
     setBusy(false);
   }
 }
 
 async function runAgentLoop() {
+  let group = null; // collapsible activity card for this turn's tool steps
   for (let i = 0; i < 12; i++) {
     const reply = await callBackend(messages);
     if (!reply || !Array.isArray(reply.content)) throw new Error("Simba returnerade ett oväntat svar.");
     messages.push({ role: "assistant", content: reply.content });
 
     for (const b of reply.content) {
-      if (b.type === "text" && b.text.trim()) renderMessage("assistant", b.text);
+      if (b.type === "text" && b.text.trim()) {
+        if (group) { finalizeToolGroup(group); group = null; } // close the activity card before the reply
+        renderMessage("assistant", b.text);
+      }
     }
 
-    if (reply.stop_reason !== "tool_use") return;
+    if (reply.stop_reason !== "tool_use") { finalizeToolGroup(group); return; }
 
     const toolUses = reply.content.filter((b) => b.type === "tool_use");
     const results = [];
     for (const use of toolUses) {
-      const note = renderToolNote(use.name, use.input);
+      if (!group) group = createToolGroup();
+      const step = groupAddStep(group, use.name, use.input);
       let result, isError = false;
       try {
         const fn = tools[use.name];
@@ -821,7 +834,7 @@ async function runAgentLoop() {
         isError = true;
       }
       if (result && result.error) isError = true;
-      markToolDone(note);
+      markStepDone(group, step, isError);
       results.push({
         type: "tool_result",
         tool_use_id: use.id,
@@ -831,6 +844,7 @@ async function runAgentLoop() {
     }
     messages.push({ role: "user", content: results });
   }
+  finalizeToolGroup(group);
   renderMessage("assistant", "_(Stoppade efter för många steg. Försök att avgränsa förfrågan.)_");
 }
 
@@ -1033,6 +1047,7 @@ function openSettings() {
  * ------------------------------------------------------------------ */
 
 function renderMessage(role, text) {
+  clearTyping();
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
   wrap._raw = text;
@@ -1049,7 +1064,7 @@ function renderMessage(role, text) {
   scrollDown();
 }
 
-function renderToolNote(name, input) {
+function toolLabel(name, input) {
   const labels = {
     get_selection: "Läser din markering",
     read_range: `Läser ${input?.address || "ett område"}`,
@@ -1077,28 +1092,86 @@ function renderToolNote(name, input) {
     add_sheet: "Lägger till ett blad",
     select_range: `Markerar ${input?.address || "ett område"}`,
   };
-  const note = document.createElement("div");
-  note.className = "msg assistant";
-  note.innerHTML = `<div class="tool-note"><span class="spinner"></span><span class="lbl">${
-    escapeHtml(labels[name] || name)
-  }</span></div>`;
-  els.messages.append(note);
-  scrollDown();
-  return note;
+  return labels[name] || name;
 }
 
-function markToolDone(note) {
-  note.querySelector(".tool-note")?.classList.add("done");
+/* A single collapsible "activity" card that groups all of Simba's tool steps for
+ * one turn, instead of stacking a separate message per step. Expanded while it
+ * runs; collapses to a tidy summary when done (still clickable to re-open). */
+function createToolGroup() {
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant tool-group";
+  wrap.innerHTML = `
+    <div class="avatar">${MASCOT_IMG}</div>
+    <div class="body">
+      <div class="tg-card open">
+        <button class="tg-head" type="button" aria-expanded="true">
+          <span class="tg-ic"><span class="spinner"></span></span>
+          <span class="tg-title">Arbetar…</span>
+          <span class="tg-count" hidden>0</span>
+          <span class="tg-chev" aria-hidden="true">›</span>
+        </button>
+        <div class="tg-body"><div class="tg-steps"></div></div>
+      </div>`;
+  els.messages.append(wrap);
+  const group = {
+    card: wrap.querySelector(".tg-card"),
+    titleEl: wrap.querySelector(".tg-title"),
+    countEl: wrap.querySelector(".tg-count"),
+    icEl: wrap.querySelector(".tg-ic"),
+    stepsEl: wrap.querySelector(".tg-steps"),
+    count: 0,
+    done: 0,
+  };
+  scrollDown();
+  return group;
+}
+
+function groupAddStep(group, name, input) {
+  group.count++;
+  const step = document.createElement("div");
+  step.className = "tg-step running";
+  step.innerHTML = `<span class="tg-step-ic"><span class="spinner sm"></span></span>` +
+    `<span class="tg-step-lbl">${escapeHtml(toolLabel(name, input))}</span>`;
+  group.stepsEl.append(step);
+  group.titleEl.textContent = toolLabel(name, input);
+  scrollDown();
+  return step;
+}
+
+function markStepDone(group, step, isError) {
+  step.classList.remove("running");
+  step.classList.add(isError ? "error" : "done");
+  step.querySelector(".tg-step-ic").textContent = isError ? "!" : "✓";
+  group.done++;
+}
+
+function finalizeToolGroup(group) {
+  if (!group) return;
+  const n = group.count;
+  group.titleEl.textContent = n === 1 ? "1 åtgärd utförd" : `${n} åtgärder utförda`;
+  group.countEl.textContent = String(n);
+  group.countEl.hidden = false;
+  group.icEl.innerHTML = '<span class="tg-check">✓</span>';
+  group.card.classList.remove("open");           // collapse to a tidy summary
+  group.card.querySelector(".tg-head")?.setAttribute("aria-expanded", "false");
 }
 
 function renderTyping() {
+  clearTyping();
   const el = document.createElement("div");
   el.className = "msg assistant";
   el.innerHTML = `<div class="avatar">${MASCOT_IMG}</div><div class="body"><div class="bubble">
     <span class="typing"><span></span><span></span><span></span></span></div></div>`;
   els.messages.append(el);
+  activeTyping = el;
   scrollDown();
   return el;
+}
+
+function clearTyping() {
+  if (activeTyping) { activeTyping.remove(); activeTyping = null; }
 }
 
 /** Markdown: fenced code (with header), headings, lists, links, quotes, hr, inline. */
