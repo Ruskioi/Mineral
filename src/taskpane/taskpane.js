@@ -35,20 +35,35 @@ const els = {};
 
 // Simba's mascot — a Pomeranian. Used for the brand mark and assistant avatars.
 const POM_SVG = `
-<svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-  <polygon points="6.4,10.2 9.9,0.6 15,8.6" fill="#c2693a"/>
-  <polygon points="25.6,10.2 22.1,0.6 17,8.6" fill="#c2693a"/>
-  <polygon points="8.6,8.6 10.6,3.5 13.8,8.3" fill="#f3b58a"/>
-  <polygon points="23.4,8.6 21.4,3.5 18.2,8.3" fill="#f3b58a"/>
-  <circle cx="16" cy="17.9" r="12.8" fill="#e08a4f"/>
-  <circle cx="16" cy="20.5" r="9.6" fill="#f1c9a0"/>
-  <ellipse cx="16" cy="23" rx="6.6" ry="5" fill="#fbf0e2"/>
-  <circle cx="12.3" cy="16" r="1.7" fill="#36281e"/>
-  <circle cx="19.7" cy="16" r="1.7" fill="#36281e"/>
-  <circle cx="12.9" cy="15.5" r="0.6" fill="#fff"/>
-  <circle cx="20.3" cy="15.5" r="0.6" fill="#fff"/>
-  <ellipse cx="16" cy="20.6" rx="1.7" ry="1.2" fill="#36281e"/>
+<svg viewBox="0 0 64 80" aria-hidden="true" focusable="false">
+  <ellipse cx="13" cy="48" rx="9" ry="11" fill="#e89a52"/>
+  <ellipse cx="13" cy="48" rx="5" ry="7" fill="#f6d3a6"/>
+  <ellipse cx="32" cy="52" rx="22" ry="24" fill="#f0a35c"/>
+  <ellipse cx="32" cy="56" rx="13.5" ry="18" fill="#fbf3e7"/>
+  <ellipse cx="17" cy="73" rx="7.5" ry="5.5" fill="#f3c79a"/>
+  <ellipse cx="47" cy="73" rx="7.5" ry="5.5" fill="#f3c79a"/>
+  <ellipse cx="26" cy="76" rx="5.5" ry="4.5" fill="#fbf3e7"/>
+  <ellipse cx="38" cy="76" rx="5.5" ry="4.5" fill="#fbf3e7"/>
+  <polygon points="13,17 21,1 31,15" fill="#d98441"/>
+  <polygon points="51,17 43,1 33,15" fill="#d98441"/>
+  <polygon points="16,15 21,5 27,14" fill="#f3b176"/>
+  <polygon points="48,15 43,5 37,14" fill="#f3b176"/>
+  <circle cx="32" cy="26" r="19" fill="#f0a35c"/>
+  <ellipse cx="32" cy="31" rx="13" ry="10" fill="#fbf3e7"/>
+  <ellipse cx="20.5" cy="30" rx="3" ry="1.8" fill="#f4a98f" opacity="0.6"/>
+  <ellipse cx="43.5" cy="30" rx="3" ry="1.8" fill="#f4a98f" opacity="0.6"/>
+  <circle cx="25" cy="25" r="3.1" fill="#3a2a1e"/>
+  <circle cx="39" cy="25" r="3.1" fill="#3a2a1e"/>
+  <circle cx="26" cy="24" r="0.9" fill="#fff"/>
+  <circle cx="40" cy="24" r="0.9" fill="#fff"/>
+  <ellipse cx="32" cy="29.5" rx="2.1" ry="1.5" fill="#3a2a1e"/>
+  <path d="M32 31 q-3 3 -5 1.5 M32 31 q3 3 5 1.5" stroke="#7a5a3a" stroke-width="1" fill="none" stroke-linecap="round"/>
+  <ellipse cx="32" cy="33.2" rx="2.1" ry="1.6" fill="#ef9aa0"/>
 </svg>`;
+
+// The mascot sprite. Drop your image at assets/mascot.png to use it everywhere;
+// if it's missing or fails to load, the inline POM_SVG above is shown instead.
+const MASCOT_IMG = '<img class="pom-img" src="assets/mascot.png" alt="Simba" />';
 
 Office.onReady((info) => {
   if (info.host !== Office.HostType.Excel) {
@@ -70,7 +85,7 @@ Office.onReady((info) => {
 
   applyTheme(store.get("simba.theme", "auto"));
   syncEditModeButtons();
-  document.querySelector(".brand-mark").innerHTML = POM_SVG;
+  document.querySelector(".brand-mark").innerHTML = MASCOT_IMG;
 
   els.send.addEventListener("click", onSend);
   els.prompt.addEventListener("keydown", (e) => {
@@ -114,6 +129,15 @@ Office.onReady((info) => {
 
   window.addEventListener("unhandledrejection", (e) => console.error("[Simba] unhandled rejection:", e.reason));
   window.addEventListener("error", (e) => console.error("[Simba] error:", e.message));
+  document.addEventListener("error", (e) => {
+    const t = e.target;
+    if (t && t.tagName === "IMG" && t.classList && t.classList.contains("pom-img")) {
+      const span = document.createElement("span");
+      span.className = "pom-fallback";
+      span.innerHTML = POM_SVG;
+      t.replaceWith(span);
+    }
+  }, true);
 
   refreshContextPill();
   Excel.run(async (ctx) => {
@@ -740,7 +764,7 @@ function renderMessage(role, text) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
   wrap.innerHTML = `
-    <div class="avatar">${role === "user" ? "🙂" : POM_SVG}</div>
+    <div class="avatar">${role === "user" ? "🙂" : MASCOT_IMG}</div>
     <div class="body"><div class="bubble">${formatMarkdown(text)}</div></div>`;
   els.messages.append(wrap);
   scrollDown();
@@ -786,7 +810,7 @@ function markToolDone(note) {
 function renderTyping() {
   const el = document.createElement("div");
   el.className = "msg assistant";
-  el.innerHTML = `<div class="avatar">${POM_SVG}</div><div class="body"><div class="bubble">
+  el.innerHTML = `<div class="avatar">${MASCOT_IMG}</div><div class="body"><div class="bubble">
     <span class="typing"><span></span><span></span><span></span></span></div></div>`;
   els.messages.append(el);
   scrollDown();
@@ -908,7 +932,7 @@ function onbModesArt() {
 function onbHelloArt() {
   return `<div class="onb-art art-hello">
     <span class="spark s1">✦</span><span class="spark s2">✦</span><span class="spark s3">✦</span>
-    <div class="pom-tile">${POM_SVG}</div>
+    <div class="pom-tile">${MASCOT_IMG}</div>
   </div>`;
 }
 
