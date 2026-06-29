@@ -35,6 +35,39 @@ npm run dist        # electron-builder → dmg/zip (mac), nsis (win), AppImage (
 - Cloud files (`list_files`/`open_file`) work in both, using the signed-in user's
   own OneDrive/SharePoint permissions.
 
+## Distribute to your Microsoft 365 organization
+
+Important: the desktop app is a **normal Windows/Mac program**, not an Office
+add-in. So it does **not** go in the M365 admin center → Integrated Apps (that
+path is only for the Excel add-in). You roll the desktop app out with **Microsoft
+Intune** (Endpoint Manager), which is part of Microsoft 365.
+
+**1. Build a signed installer** (on the matching OS, with electron-builder):
+```bash
+cd desktop && npm install && npm run dist
+```
+- **Windows** → an `.exe` (NSIS) or `.msi`. **Code-sign it** with your org's code-
+  signing certificate (set `CSC_LINK`/`CSC_KEY_PASSWORD`), or Windows SmartScreen
+  warns users.
+- **macOS** → a `.dmg`/`.pkg`, **signed with an Apple Developer ID and notarized**
+  (`APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID`), or Gatekeeper blocks it.
+
+**2. Upload to Intune and assign:**
+- Windows: wrap the installer with the **Win32 Content Prep Tool** (`IntuneWinAppUtil`)
+  → `.intunewin`; in Intune → **Apps → Windows → Add → Windows app (Win32)**, set the
+  install command (e.g. `SimbaAI-Setup.exe /S`), an uninstall command, and a detection
+  rule (installed path/registry), then **assign** to a user/device group.
+- macOS: Intune → **Apps → macOS** → upload the `.pkg`, then assign.
+- Users get it pushed silently or installable from **Company Portal**.
+
+**3. (Optional) Auto-update** — electron-builder can publish updates to a feed
+(e.g. a storage bucket) so the app updates itself; otherwise re-deploy via Intune.
+
+> The two surfaces use different distribution channels: the **Excel add-in** →
+> M365 admin center (Integrated Apps / Centralized Deployment, see
+> `../docs/DEPLOYMENT.md`); the **desktop app** → Intune. Both talk to the same
+> backend, so they stay linked (shared account, memory, and conversations).
+
 ## Notes
 - Requires internet (it loads the hosted UI + Office.js).
 - This is a thin shell over the web UI — updates to the hosted app appear
