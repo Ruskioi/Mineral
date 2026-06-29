@@ -130,6 +130,7 @@ sidebar opens. Done.
 | "Simba backend error" in the chat | `/api/health` shows `keyConfigured:false` → set `ANTHROPIC_API_KEY` on the host. |
 | Upload rejected in Integrated apps | Run `npx office-addin-manifest validate manifest.prod.xml`; ensure no `localhost` URLs and a unique GUID (`--new-id`). |
 | Host build fails with `webpack: not found` / "Exited with status 1" | The host set `NODE_ENV=production`, pruning devDependencies. This repo's `.npmrc` (`include=dev`) prevents that — make sure it's deployed. As a fallback, set `NPM_CONFIG_PRODUCTION=false` in the host env, or use build command `npm ci --include=dev && npm run build`. |
+| Host build says `failed to read dockerfile` / uses a Docker runtime | The repo ships a `Dockerfile` (single-service: builds the sidebar, serves it + `/api`). Redeploy and it will be picked up. Alternatively switch the service to the **Node** runtime — build `npm install && npm run build`, start `node server/server.js`. Either way, set `ANTHROPIC_API_KEY` in the host environment. |
 | Edits don't apply to the sheet | The user unchecked "Let Simba edit the sheet" in the sidebar. |
 
 ## Notes on cost & security
