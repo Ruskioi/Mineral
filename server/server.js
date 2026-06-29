@@ -270,7 +270,22 @@ const TOOLS = [
 ];
 
 const app = express();
-app.use(cors());
+app.set("trust proxy", 1); // behind Render/host proxy — needed for correct req.ip
+
+// CORS is locked down by default: in single-origin hosting the add-in and /api
+// share an origin, so no CORS is needed. Set SIMBA_ALLOWED_ORIGINS (comma-list)
+// only if you serve the front-end from a different origin.
+const ALLOWED_ORIGINS = (process.env.SIMBA_ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
+if (ALLOWED_ORIGINS.length) app.use(cors({ origin: ALLOWED_ORIGINS }));
+
+// Conservative security headers. NB: do NOT set X-Frame-Options — Office hosts
+// the task pane in a webview/iframe and DENY/SAMEORIGIN would break it.
+app.use((_req, res, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  next();
+});
+
 app.use(express.json({ limit: "8mb" }));
 
 // Single-deployable mode: if a production build exists, serve the sidebar
@@ -432,14 +447,28 @@ function rateLimited() {
   return false;
 }
 
+// Per-IP limiter so a single abuser can't consume the whole global budget
+// (denial-of-wallet). Tune with SIMBA_IP_RPM.
+const IP_RPM = Number(process.env.SIMBA_IP_RPM || 15);
+const ipHits = new Map();
+function ipRateLimited(ip) {
+  const now = Date.now();
+  const arr = (ipHits.get(ip) || []).filter((t) => now - t < 60_000);
+  if (arr.length >= IP_RPM) { ipHits.set(ip, arr); return true; }
+  arr.push(now);
+  ipHits.set(ip, arr);
+  if (ipHits.size > 5000) ipHits.clear(); // crude memory cap
+  return false;
+}
+
 function validateMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0)
     return "Request body must include a non-empty 'messages' array.";
   if (messages.length > MAX_MESSAGES) return `Too many messages (max ${MAX_MESSAGES}).`;
   let chars = 0;
   for (const m of messages) {
-    if (!m || (m.role !== "user" && m.role !== "assistant" && m.role !== "system"))
-      return "Each message must have role 'user', 'assistant', or 'system'.";
+    if (!m || (m.role !== "user" && m.role !== "assistant"))
+      return "Each message must have role 'user' or 'assistant'.";
     if (m.content == null) return "Each message must include content.";
     chars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
   }
@@ -453,6 +482,10 @@ app.post("/api/chat", async (req, res) => {
   const invalid = validateMessages(req.body?.messages);
   if (invalid) return res.status(400).json({ error: invalid });
 
+  if (ipRateLimited(req.ip)) {
+    res.set("Retry-After", "30");
+    return res.status(429).json({ error: "För många förfrågningar från den här enheten. Försök igen om en stund." });
+  }
   if (rateLimited()) {
     res.set("Retry-After", "30");
     return res.status(429).json({ error: "Simba is handling a lot right now. Please retry in a moment." });
@@ -483,8 +516,8 @@ app.post("/api/chat", async (req, res) => {
       model: final.model,
     });
   } catch (err) {
-    console.error("[Simba] /api/chat error:", err?.message || err);
-    send("error", { error: err?.message || "Claude API request failed." });
+    console.error("[Simba] /api/chat error:", err?.message || err); // detail stays server-side
+    send("error", { error: "Simba kunde inte slutföra svaret. Försök igen." });
   } finally {
     inflight--;
     res.end();

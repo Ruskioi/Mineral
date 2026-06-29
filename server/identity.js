@@ -12,6 +12,7 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const AAD_CLIENT_ID = process.env.AAD_CLIENT_ID || process.env.SIMBA_AAD_CLIENT_ID || "";
+const AAD_TENANT = process.env.AAD_TENANT || ""; // optional: pin to one tenant GUID
 export const ssoConfigured = Boolean(AAD_CLIENT_ID);
 
 // Microsoft signs both v1 and v2 tokens; try the v2 keyset first, then v1.
@@ -51,9 +52,18 @@ export async function verifyToken(token) {
   if (typeof payload.iss !== "string" || !ISSUER_RE.test(payload.iss))
     throw Object.assign(new Error("Token issuer is not Microsoft Entra ID."), { status: 401 });
 
+  // Require the delegated scope this app exposes — a token minted for a
+  // different permission shouldn't be accepted.
+  const scopes = String(payload.scp || "").split(/\s+/).filter(Boolean);
+  if (!scopes.includes("access_as_user"))
+    throw Object.assign(new Error("Token is missing the access_as_user scope."), { status: 401 });
+
   const oid = payload.oid || payload.sub;
-  const tid = payload.tid || "common";
+  const tid = payload.tid; // do not default — a token without a tenant is rejected
   if (!oid) throw Object.assign(new Error("Token has no stable user id."), { status: 401 });
+  if (!tid) throw Object.assign(new Error("Token has no tenant id."), { status: 401 });
+  if (AAD_TENANT && tid !== AAD_TENANT)
+    throw Object.assign(new Error("Token tenant is not allowed."), { status: 401 });
 
   return {
     key: `${tid}:${oid}`, // stable, globally-unique per user

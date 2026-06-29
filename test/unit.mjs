@@ -143,6 +143,18 @@ check("Microsoft SSO + cross-device memory are wired", () => {
   for (const dep of ["jose", "pg"]) assert(pkg.dependencies[dep], `missing dependency: ${dep}`);
 });
 
+check("security hardening from the audit is in place", () => {
+  assert(!/app\.use\(cors\(\)\)/.test(server), "wildcard CORS must be removed (use an allowlist)");
+  assert(/SIMBA_ALLOWED_ORIGINS/.test(server), "CORS should be gated on an allowlist env var");
+  assert(/ipRateLimited/.test(server), "per-IP rate limiting missing");
+  assert(/X-Content-Type-Options/.test(server), "nosniff header missing");
+  assert(!/X-Frame-Options/.test(server), "must NOT set X-Frame-Options (breaks Office embedding)");
+  assert(/&quot;|&#39;/.test(read("src/taskpane/taskpane.js")), "escapeHtml must escape quotes (XSS)");
+  const identity = read("server/identity.js");
+  assert(/access_as_user/.test(identity), "SSO must require the access_as_user scope");
+  assert(/no tenant id|tid\)/.test(identity), "SSO must require a tenant id");
+});
+
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {
   assert(/rateLimited/.test(server), "missing rate limiter");
   assert(/validateMessages/.test(server), "missing message validation");

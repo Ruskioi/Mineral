@@ -35,11 +35,14 @@ function sanitize(notes) {
 async function init() {
   if (!usingPostgres) return;
   // Render/Neon/Supabase require TLS; allow self-signed chains from managed PG.
-  pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.PGSSL_DISABLE ? false : { rejectUnauthorized: false },
-    max: 5,
-  });
+  // TLS: prefer real cert validation when a CA bundle is provided (PGSSL_CA);
+  // PGSSL_DISABLE turns TLS off for local dev. The unverified fallback remains
+  // for managed providers with self-signed chains and no published CA.
+  let ssl;
+  if (process.env.PGSSL_DISABLE) ssl = false;
+  else if (process.env.PGSSL_CA) ssl = { ca: process.env.PGSSL_CA, rejectUnauthorized: true };
+  else ssl = { rejectUnauthorized: false };
+  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl, max: 5 });
   await pool.query(
     `CREATE TABLE IF NOT EXISTS simba_memory (
        user_key  TEXT PRIMARY KEY,
