@@ -325,6 +325,19 @@ html, body {
   font-size: 12.5px; font-weight: 600;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Animated "working" shimmer on the title until the card is done */
+.tg-card:not(.done) .tg-title {
+  background: linear-gradient(90deg,
+    var(--ink-soft) 30%, var(--ink) 50%, var(--ink-soft) 70%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+  animation: shimmer 1.6s linear infinite;
+}
+@keyframes shimmer { from { background-position: 220% 0; } to { background-position: -220% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .tg-card:not(.done) .tg-title { animation: none; }
+}
 .tg-count {
   flex: none; font-size: 11px; font-weight: 600;
   color: var(--accent-strong);

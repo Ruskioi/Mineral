@@ -1261,6 +1261,7 @@ function finalizeToolGroup(group) {
   group.countEl.textContent = String(n);
   group.countEl.hidden = false;
   group.icEl.innerHTML = '<span class="tg-check">✓</span>';
+  group.card.classList.add("done");              // stops the running shimmer
   group.card.classList.remove("open");           // collapse to a tidy summary
   group.card.querySelector(".tg-head")?.setAttribute("aria-expanded", "false");
 }
