@@ -842,6 +842,80 @@ const tools = {
     return { added: true, address };
   },
 
+  async create_pivot_table({ source_range, destination, rows = [], values = [], columns = [], name }) {
+    if (!Array.isArray(values) || values.length === 0) return { error: "Ange minst ett värdefält att summera." };
+    const ok = await gateEdit({ kind: "edit", address: destination, summary: `Skapa en pivottabell från ${source_range}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const src = parseRange(ctx, source_range);
+      const dest = parseRange(ctx, destination);
+      const pivot = ctx.workbook.pivotTables.add(name || "Pivot", src, dest);
+      for (const f of rows) pivot.rowHierarchies.add(pivot.hierarchies.getItem(f));
+      for (const f of columns) pivot.columnHierarchies.add(pivot.hierarchies.getItem(f));
+      for (const f of values) pivot.dataHierarchies.add(pivot.hierarchies.getItem(f));
+      pivot.load("name");
+      await ctx.sync();
+      return { created: true, pivot: pivot.name, destination };
+    });
+    toast(`Skapade pivottabell ${result.pivot}`, "success");
+    return result;
+  },
+
+  async apply_filter({ address, column_index, values }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Filtrera ${address}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      const range = parseRange(ctx, address);
+      const criteria = (typeof column_index === "number" && Array.isArray(values) && values.length)
+        ? { filterOn: Excel.FilterOn.values, values: values.map(String) }
+        : null;
+      if (criteria) sheet.autoFilter.apply(range, column_index, criteria);
+      else sheet.autoFilter.apply(range);
+      range.load("address");
+      await ctx.sync();
+      return { applied: true, address: range.address, filtered: !!criteria };
+    });
+    toast(result.filtered ? "Filtrerade data" : "Slog på filter", "success");
+    return result;
+  },
+
+  async remove_duplicates({ address, columns, has_headers = true }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Ta bort dubbletter i ${address}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.load("address, formulas");
+      await ctx.sync();
+      pushUndo(range.address, range.formulas);
+      const colCount = range.formulas[0] ? range.formulas[0].length : 1;
+      const cols = Array.isArray(columns) && columns.length
+        ? columns
+        : Array.from({ length: colCount }, (_, i) => i);
+      const del = range.removeDuplicates(cols, has_headers);
+      del.load("removed, uniqueRemaining");
+      await ctx.sync();
+      return { removed: del.removed, uniqueRemaining: del.uniqueRemaining, address: range.address };
+    });
+    toast(`Tog bort ${result.removed} dubbletter`, "success");
+    return result;
+  },
+
+  async create_named_range({ name, address }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Namnge ${address} som "${name}"` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.load("address");
+      await ctx.sync();
+      ctx.workbook.names.add(name, range);
+      await ctx.sync();
+      return { created: true, name, address: range.address };
+    });
+    toast(`Skapade namngivet område "${name}"`, "success");
+    return result;
+  },
+
   async create_table({ address, has_headers = true, name }) {
     const ok = await gateEdit({ kind: "edit", address, summary: `Skapa en tabell från ${address}` });
     if (!ok) return declined(ok);
@@ -1528,6 +1602,10 @@ function toolResultHint(name, input, result) {
     case "create_document": return result.filename || "";
     case "find_errors": return typeof result.count === "number" ? `${result.count} fel` : "";
     case "conditional_formatting": case "data_validation": case "add_comment": return result.address || input?.address || "";
+    case "create_pivot_table": return result.pivot || "";
+    case "apply_filter": return result.filtered ? "filtrerat" : (result.applied ? "filter på" : "");
+    case "remove_duplicates": return typeof result.removed === "number" ? `${result.removed} borttagna` : "";
+    case "create_named_range": return result.name || input?.name || "";
     default: return result.address || "";
   }
 }
@@ -1565,6 +1643,10 @@ function toolLabel(name, input) {
     conditional_formatting: `Villkorsformaterar ${input?.address || "ett område"}`,
     data_validation: `Lägger till rullgardin i ${input?.address || "ett område"}`,
     add_comment: `Kommenterar ${input?.address || "en cell"}`,
+    create_pivot_table: `Skapar en pivottabell från ${input?.source_range || "data"}`,
+    apply_filter: `Filtrerar ${input?.address || "ett område"}`,
+    remove_duplicates: `Tar bort dubbletter i ${input?.address || "ett område"}`,
+    create_named_range: `Namnger ${input?.address || "ett område"}${input?.name ? ` som "${input.name}"` : ""}`,
     create_table: `Skapar en tabell från ${input?.address || "ett område"}`,
     create_chart: "Skapar ett diagram",
     add_sheet: "Lägger till ett blad",

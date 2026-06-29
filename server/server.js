@@ -335,6 +335,36 @@ const TOOLS = [
       text: { type: "string", description: "Comment text." },
     }, required: ["address", "text"] } },
 
+  { name: "create_pivot_table", description: "Build a PivotTable summarizing a data range. Specify which header fields go on rows, columns, and values (values are summed). Use for grouped summaries like sales by region, totals by category.",
+    input_schema: { type: "object", properties: {
+      source_range: { type: "string", description: "A1-style range of the source data INCLUDING headers." },
+      destination: { type: "string", description: "A1-style top-left cell where the pivot goes (a clear area, often on another sheet)." },
+      rows: { type: "array", description: "Header field names to put on rows.", items: { type: "string" } },
+      values: { type: "array", description: "Header field names to summarize (summed).", items: { type: "string" } },
+      columns: { type: "array", description: "Optional header field names to put on columns.", items: { type: "string" } },
+      name: { type: "string", description: "Optional pivot table name." },
+    }, required: ["source_range", "destination", "values"] } },
+
+  { name: "apply_filter", description: "Turn on AutoFilter for a range (filter dropdowns), optionally filtering one column to specific values. Use to show only matching rows.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range including headers." },
+      column_index: { type: "integer", description: "0-based column within the range to filter (optional)." },
+      values: { type: "array", description: "Values to keep visible in that column (optional).", items: { type: "string" } },
+    }, required: ["address"] } },
+
+  { name: "remove_duplicates", description: "Remove duplicate rows from a range (keeps the first of each). Returns how many were removed.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range." },
+      columns: { type: "array", description: "0-based column indices to compare (optional; default all).", items: { type: "integer" } },
+      has_headers: { type: "boolean", description: "First row is headers (default true)." },
+    }, required: ["address"] } },
+
+  { name: "create_named_range", description: "Create a workbook named range so a region can be referenced by a friendly name in formulas (e.g. Sales for B2:B100).",
+    input_schema: { type: "object", properties: {
+      name: { type: "string", description: "The name (letters/digits/underscore, no spaces)." },
+      address: { type: "string", description: "A1-style range the name refers to." },
+    }, required: ["name", "address"] } },
+
   { name: "add_sheet", description: "Add a new worksheet and make it active.",
     input_schema: { type: "object", properties: {
       name: { type: "string", description: "Optional sheet name." },
