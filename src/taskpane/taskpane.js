@@ -127,36 +127,48 @@ let modelName = "claude-opus-4-8";
 const els = {};
 
 // Simba's mascot — a Pomeranian. Used for the brand mark and assistant avatars.
+// Simba — a fluffy Pomeranian head, drawn in vector so it stays crisp at every
+// size (16px ribbon icon → splash). Built from layered solid shapes only (no
+// shared gradient IDs) so it renders correctly even when many copies are added
+// and removed from the chat.
 const POM_SVG = `
-<svg viewBox="0 0 64 80" aria-hidden="true" focusable="false">
-  <ellipse cx="13" cy="48" rx="9" ry="11" fill="#e89a52"/>
-  <ellipse cx="13" cy="48" rx="5" ry="7" fill="#f6d3a6"/>
-  <ellipse cx="32" cy="52" rx="22" ry="24" fill="#f0a35c"/>
-  <ellipse cx="32" cy="56" rx="13.5" ry="18" fill="#fbf3e7"/>
-  <ellipse cx="17" cy="73" rx="7.5" ry="5.5" fill="#f3c79a"/>
-  <ellipse cx="47" cy="73" rx="7.5" ry="5.5" fill="#f3c79a"/>
-  <ellipse cx="26" cy="76" rx="5.5" ry="4.5" fill="#fbf3e7"/>
-  <ellipse cx="38" cy="76" rx="5.5" ry="4.5" fill="#fbf3e7"/>
-  <polygon points="13,17 21,1 31,15" fill="#d98441"/>
-  <polygon points="51,17 43,1 33,15" fill="#d98441"/>
-  <polygon points="16,15 21,5 27,14" fill="#f3b176"/>
-  <polygon points="48,15 43,5 37,14" fill="#f3b176"/>
-  <circle cx="32" cy="26" r="19" fill="#f0a35c"/>
-  <ellipse cx="32" cy="31" rx="13" ry="10" fill="#fbf3e7"/>
-  <ellipse cx="20.5" cy="30" rx="3" ry="1.8" fill="#f4a98f" opacity="0.6"/>
-  <ellipse cx="43.5" cy="30" rx="3" ry="1.8" fill="#f4a98f" opacity="0.6"/>
-  <circle cx="25" cy="25" r="3.1" fill="#3a2a1e"/>
-  <circle cx="39" cy="25" r="3.1" fill="#3a2a1e"/>
-  <circle cx="26" cy="24" r="0.9" fill="#fff"/>
-  <circle cx="40" cy="24" r="0.9" fill="#fff"/>
-  <ellipse cx="32" cy="29.5" rx="2.1" ry="1.5" fill="#3a2a1e"/>
-  <path d="M32 31 q-3 3 -5 1.5 M32 31 q3 3 5 1.5" stroke="#7a5a3a" stroke-width="1" fill="none" stroke-linecap="round"/>
-  <ellipse cx="32" cy="33.2" rx="2.1" ry="1.6" fill="#ef9aa0"/>
+<svg viewBox="0 0 80 80" aria-hidden="true" focusable="false">
+  <g fill="#dd854b">
+    <circle cx="40" cy="13" r="9"/><circle cx="55" cy="16" r="9"/><circle cx="65" cy="27" r="9"/>
+    <circle cx="68" cy="41" r="9"/><circle cx="64" cy="55" r="9"/><circle cx="54" cy="64" r="9"/>
+    <circle cx="40" cy="68" r="9"/><circle cx="26" cy="64" r="9"/><circle cx="16" cy="55" r="9"/>
+    <circle cx="12" cy="41" r="9"/><circle cx="15" cy="27" r="9"/><circle cx="25" cy="16" r="9"/>
+  </g>
+  <g fill="#efa863">
+    <circle cx="40" cy="18" r="8"/><circle cx="52" cy="21" r="8"/><circle cx="60" cy="30" r="8"/>
+    <circle cx="62" cy="42" r="8"/><circle cx="58" cy="53" r="8"/><circle cx="49" cy="60" r="8"/>
+    <circle cx="40" cy="62" r="8"/><circle cx="31" cy="60" r="8"/><circle cx="22" cy="53" r="8"/>
+    <circle cx="18" cy="42" r="8"/><circle cx="20" cy="30" r="8"/><circle cx="28" cy="21" r="8"/>
+  </g>
+  <path d="M18 22 L24 6 L34 18 Z" fill="#cf7a42"/>
+  <path d="M62 22 L56 6 L46 18 Z" fill="#cf7a42"/>
+  <path d="M21 20 L24 10 L31 18 Z" fill="#f1bd8b"/>
+  <path d="M59 20 L56 10 L49 18 Z" fill="#f1bd8b"/>
+  <circle cx="40" cy="40" r="22" fill="#f6c891"/>
+  <ellipse cx="40" cy="44" rx="17" ry="16" fill="#fdf4e7"/>
+  <ellipse cx="25" cy="44" rx="4" ry="2.6" fill="#f3a39c" opacity=".55"/>
+  <ellipse cx="55" cy="44" rx="4" ry="2.6" fill="#f3a39c" opacity=".55"/>
+  <path d="M27 32 q4 -2.5 8 -0.5" stroke="#cf7a42" stroke-width="1.4" fill="none" stroke-linecap="round" opacity=".55"/>
+  <path d="M45 31.5 q4 -2 8 0.5" stroke="#cf7a42" stroke-width="1.4" fill="none" stroke-linecap="round" opacity=".55"/>
+  <ellipse cx="31" cy="38" rx="4.2" ry="4.8" fill="#3a2a1e"/>
+  <ellipse cx="49" cy="38" rx="4.2" ry="4.8" fill="#3a2a1e"/>
+  <circle cx="32.6" cy="36.2" r="1.5" fill="#fff"/>
+  <circle cx="50.6" cy="36.2" r="1.5" fill="#fff"/>
+  <circle cx="29.8" cy="39.6" r="0.7" fill="#fff" opacity=".7"/>
+  <circle cx="47.8" cy="39.6" r="0.7" fill="#fff" opacity=".7"/>
+  <path d="M36.5 46 q3.5 3 7 0 q-1 3.1 -3.5 3.1 q-2.5 0 -3.5 -3.1 Z" fill="#41312a"/>
+  <ellipse cx="38.2" cy="46.4" rx="0.8" ry="0.5" fill="#fff" opacity=".5"/>
+  <path d="M40 49 v2.2" stroke="#7a5a3a" stroke-width="1" stroke-linecap="round"/>
+  <path d="M40 51.2 q-3 3 -6 1.2 M40 51.2 q3 3 6 1.2" stroke="#7a5a3a" stroke-width="1.1" fill="none" stroke-linecap="round"/>
 </svg>`;
 
-// The mascot sprite. Drop your image at assets/mascot.png to use it everywhere;
-// if it's missing or fails to load, the inline POM_SVG above is shown instead.
-const MASCOT_IMG = '<img class="pom-img" src="assets/mascot.png" alt="Simba" />';
+// The mascot sprite — the inline vector above, used everywhere so it stays sharp.
+const MASCOT_IMG = POM_SVG;
 
 Office.onReady((info) => {
   if (info.host !== Office.HostType.Excel) {
