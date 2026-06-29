@@ -108,7 +108,8 @@ Office.onReady((info) => {
   els.messages.addEventListener("click", (e) => {
     const btn = e.target.closest(".copy-btn");
     if (!btn) return;
-    const code = btn.parentElement.querySelector("code");
+    const cb = btn.closest(".codeblock");
+    const code = cb && cb.querySelector("code");
     copyText(code ? code.textContent : "").then(() => {
       btn.textContent = "Kopierat";
       btn.classList.add("copied");
@@ -834,25 +835,60 @@ function renderTyping() {
   return el;
 }
 
-/** Minimal, safe markdown: fenced code (highlighted), inline code, bold, italic. */
+/** Markdown: fenced code (with header), headings, lists, links, quotes, hr, inline. */
 function formatMarkdown(text) {
-  // Pull fenced code out of the RAW text first so highlighting sees real chars.
   const blocks = [];
-  const stripped = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, lang, code) => {
+  const src = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const label = (lang || "").toLowerCase();
     const html =
-      `<div class="codeblock"><pre><code>${highlight(code.replace(/\n+$/, ""), lang)}</code></pre>` +
-      `<button class="copy-btn" type="button">Kopiera</button></div>`;
+      `<div class="codeblock">` +
+        `<div class="cb-head"><span class="cb-lang">${escapeHtml(label || "kod")}</span>` +
+        `<button class="copy-btn" type="button">Kopiera</button></div>` +
+        `<pre><code>${highlight(code.replace(/\n+$/, ""), lang)}</code></pre>` +
+      `</div>`;
     blocks.push(html);
     return `\u0000${blocks.length - 1}\u0000`;
   });
 
-  let out = escapeHtml(stripped)
+  const inline = (s) => s
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-    .replace(/\n/g, "<br>");
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
 
-  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[+i]);
+  const lines = escapeHtml(src).split("\n");
+  const isPH = (l) => /^\u0000\d+\u0000$/.test(l.trim());
+  let out = "", i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (isPH(line)) { out += line.trim(); i++; continue; }
+    if (/^\s*(---|\*\*\*|___)\s*$/.test(line)) { out += "<hr>"; i++; continue; }
+    const h = line.match(/^\s*(#{1,4})\s+(.*)$/);
+    if (h) { const lv = Math.min(h[1].length + 2, 6); out += `<h${lv} class="md-h">${inline(h[2])}</h${lv}>`; i++; continue; }
+    if (/^\s*&gt;\s?/.test(line)) {
+      const it = [];
+      while (i < lines.length && /^\s*&gt;\s?/.test(lines[i])) { it.push(inline(lines[i].replace(/^\s*&gt;\s?/, ""))); i++; }
+      out += `<blockquote>${it.join("<br>")}</blockquote>`; continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const it = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { it.push(`<li>${inline(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`); i++; }
+      out += `<ul>${it.join("")}</ul>`; continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const it = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { it.push(`<li>${inline(lines[i].replace(/^\s*\d+\.\s+/, ""))}</li>`); i++; }
+      out += `<ol>${it.join("")}</ol>`; continue;
+    }
+    if (line.trim() === "") { i++; continue; }
+    const para = [];
+    while (i < lines.length && lines[i].trim() !== "" && !isPH(lines[i]) &&
+           !/^\s*(#{1,4}\s|[-*]\s|\d+\.\s|&gt;\s?|---\s*$|\*\*\*\s*$|___\s*$)/.test(lines[i])) {
+      para.push(lines[i]); i++;
+    }
+    out += `<p>${inline(para.join("<br>"))}</p>`;
+  }
+  return out.replace(/\u0000(\d+)\u0000/g, (_, n) => blocks[+n]);
 }
 
 /* ------------------------------------------------------------------ *

@@ -246,36 +246,32 @@ html, body {
   font-size: 12.5px;
 }
 
-/* Code block with copy button */
-.codeblock { position: relative; margin: 8px 0; }
-.codeblock pre {
-  background: var(--code-bg);
-  color: var(--code-ink);
-  padding: 11px 12px;
-  border-radius: 9px;
-  overflow-x: auto;
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-}
+/* Code block with header (language + copy) */
+.codeblock { margin: 9px 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
+.cb-head { display: flex; align-items: center; justify-content: space-between; padding: 5px 8px 5px 11px; background: #211f1a; }
+.cb-lang { font-family: "SF Mono", Consolas, monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #b6ad9c; }
+.codeblock pre { background: var(--code-bg); color: var(--code-ink); padding: 11px 12px; margin: 0; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
 .codeblock pre code { background: transparent; color: inherit; padding: 0; }
-.copy-btn {
-  position: absolute;
-  top: 7px; right: 7px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #f5f2ec;
-  border: none;
-  border-radius: 6px;
-  padding: 3px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--speed), background var(--speed), transform var(--speed);
-}
-.codeblock:hover .copy-btn { opacity: 1; }
-.copy-btn:hover { background: rgba(255, 255, 255, 0.22); }
+.copy-btn { background: rgba(255, 255, 255, 0.1); color: #f0ece2; border: none; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; transition: background var(--speed), transform var(--speed); }
+.copy-btn:hover { background: rgba(255, 255, 255, 0.2); }
 .copy-btn:active { transform: scale(0.92); }
-.copy-btn.copied { background: var(--accent); color: #fff; opacity: 1; }
+.copy-btn.copied { background: var(--accent); color: #fff; }
+
+/* Rich markdown inside bubbles */
+.bubble .md-h { font-family: var(--serif); font-weight: 600; line-height: 1.3; margin: 12px 0 6px; }
+.bubble h4.md-h { font-size: 15px; }
+.bubble h5.md-h { font-size: 13.5px; }
+.bubble h6.md-h { font-size: 12.5px; color: var(--ink-soft); }
+.bubble ul, .bubble ol { margin: 6px 0; padding-left: 20px; }
+.bubble li { margin: 3px 0; }
+.bubble li::marker { color: var(--accent); }
+.bubble a { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 2px; }
+.bubble a:hover { color: var(--accent); }
+.bubble blockquote { margin: 8px 0; padding: 6px 12px; border-left: 3px solid var(--accent); background: var(--bg-soft); border-radius: 0 8px 8px 0; color: var(--ink-soft); }
+.bubble hr { border: none; border-top: 1px solid var(--border); margin: 11px 0; }
+.bubble > :first-child { margin-top: 0; }
+.bubble > :last-child { margin-bottom: 0; }
+.msg .avatar { box-shadow: var(--shadow-sm); }
 
 /* Tool / action notes */
 .tool-note {
