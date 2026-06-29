@@ -418,10 +418,15 @@ const SPEED_MAP = {
 // Per-user memory is appended as a second block AFTER the cache breakpoint, so it
 // can vary per user without invalidating the shared, cached prefix.
 const MAX_MEMORY_CHARS = 4000;
-function buildSystem(memory) {
+function buildSystem(memory, surface) {
   const blocks = [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
   const mem = sanitizeMemory(memory);
   if (mem) blocks.push({ type: "text", text: `[Vad du minns om användaren]\n${mem}` });
+  if (surface === "desktop") blocks.push({ type: "text", text:
+    "[Läge] Du körs som fristående skrivbordsapp utan Excel. Verktyg som läser eller " +
+    "redigerar kalkylarket är inte tillgängliga nu — använd chatt, web_lookup, minne " +
+    "(remember) och molnfiler (list_files/open_file). Om användaren vill redigera ett " +
+    "ark, be dem öppna Simba inuti Excel." });
   return blocks;
 }
 function sanitizeMemory(memory) {
@@ -459,14 +464,14 @@ function withConversationCache(messages) {
 // blocks + stop_reason) for the task pane's agent loop. Fast mode runs on the
 // beta endpoint and has its own rate limit, so we fall back to standard speed if
 // it errors BEFORE any text was streamed (otherwise we can't cleanly recover).
-async function runModel(messages, speed, memory, onText) {
+async function runModel(messages, speed, memory, surface, onText) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
   const base = {
     model: MODEL,
     max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: { effort: cfg.effort },
-    system: buildSystem(memory),
+    system: buildSystem(memory, surface),
     tools: TOOLS,
     messages: withConversationCache(messages),
   };
@@ -559,7 +564,7 @@ app.post("/api/chat", async (req, res) => {
   res.flushHeaders?.();
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
-    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, (t) => send("delta", { text: t }));
+    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }));
     send("final", {
       content: final.content,
       stop_reason: final.stop_reason,

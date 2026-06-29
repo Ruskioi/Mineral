@@ -163,6 +163,17 @@ check("security hardening from the audit is in place", () => {
   assert(/no tenant id|tid\)/.test(identity), "SSO must require a tenant id");
 });
 
+check("desktop mode + Electron app are wired", () => {
+  assert(/IS_EXCEL/.test(taskpane), "client should track an Excel-vs-desktop flag");
+  assert(/function boot\(/.test(taskpane), "client should have a host-agnostic boot()");
+  assert(/applyDesktopMode/.test(taskpane), "client should have a desktop mode");
+  assert(/req\.body\.surface|surface\)/.test(server), "server should honor a surface (excel/desktop) hint");
+  const main = read("desktop/main.js");
+  assert(/BrowserWindow/.test(main) && /loadURL/.test(main), "desktop/main.js should open a window loading the UI");
+  const dpkg = JSON.parse(read("desktop/package.json"));
+  assert(dpkg.devDependencies.electron, "desktop app needs electron");
+});
+
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {
   assert(/rateLimited/.test(server), "missing rate limiter");
   assert(/validateMessages/.test(server), "missing message validation");

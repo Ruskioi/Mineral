@@ -492,6 +492,11 @@ html, body {
 }
 .msg.user .msg-file { align-self: flex-end; }
 
+/* Desktop app mode (no Excel) — hide Excel-only chrome */
+body.desktop .composer-foot,
+body.desktop #undo,
+body.desktop #context-pill { display: none; }
+
 /* Edit-mode segmented control */
 .composer-foot {
   display: flex;

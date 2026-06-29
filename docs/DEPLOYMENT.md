@@ -135,6 +135,22 @@ sidebar opens. Done.
 | Host build says `failed to read dockerfile` / uses a Docker runtime | The repo ships a `Dockerfile` (single-service: builds the sidebar, serves it + `/api`). Redeploy and it will be picked up. Alternatively switch the service to the **Node** runtime — build `npm install && npm run build`, start `node server/server.js`. Either way, set `ANTHROPIC_API_KEY` in the host environment. |
 | Edits don't apply to the sheet | The user unchecked "Let Simba edit the sheet" in the sidebar. |
 
+## Desktop app
+
+`desktop/` is a thin Electron shell that opens the **same** Simba UI from the
+**same** backend, so it's linked to the Excel add-in: same account, same memory
+(when SSO is on), same model. It runs in *desktop mode* (chat, web search, memory,
+OneDrive/SharePoint files, attachments); live worksheet editing stays in Excel.
+
+```bash
+cd desktop && npm install && npm start      # run
+npm run dist                                # package an installer
+SIMBA_URL=https://your-host/taskpane.html npm start   # point at your host
+```
+
+The hosted web UI auto-detects there's no Excel host and switches to desktop mode,
+so no separate build is needed — see `desktop/README.md`.
+
 ## Performance / speed
 
 Simba is tuned for fast answers:

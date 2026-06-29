@@ -30,6 +30,10 @@ let messages = [];
 let busy = false;
 let activeTyping = null; // the "thinking" dots; cleared once real content appears
 let pendingAttachment = null; // {name, kind, block} a user-attached file for the next message
+let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
+// Tools that work in the standalone desktop app (no Excel grid). Everything else
+// requires Office.js and is short-circuited with a friendly message in desktop mode.
+const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "list_files", "open_file"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
@@ -177,12 +181,11 @@ const POM_SVG = `
 // The mascot sprite — the inline vector above, used everywhere so it stays sharp.
 const MASCOT_IMG = POM_SVG;
 
-Office.onReady((info) => {
-  if (info.host !== Office.HostType.Excel) {
-    document.body.innerHTML =
-      "<p style='padding:16px;font-family:sans-serif'>Simba AI runs inside Microsoft Excel.</p>";
-    return;
-  }
+let booted = false;
+function boot(isExcel) {
+  if (booted) return;
+  booted = true;
+  IS_EXCEL = isExcel;
 
   els.messages = document.getElementById("messages");
   els.prompt = document.getElementById("prompt");
@@ -268,11 +271,15 @@ Office.onReady((info) => {
   window.addEventListener("unhandledrejection", (e) => console.error("[Simba] unhandled rejection:", e.reason));
   window.addEventListener("error", (e) => console.error("[Simba] error:", e.message));
 
-  refreshContextPill();
-  Excel.run(async (ctx) => {
-    ctx.workbook.worksheets.onSelectionChanged?.add?.(refreshContextPill);
-    await ctx.sync();
-  }).catch(() => {});
+  if (IS_EXCEL) {
+    refreshContextPill();
+    Excel.run(async (ctx) => {
+      ctx.workbook.worksheets.onSelectionChanged?.add?.(refreshContextPill);
+      await ctx.sync();
+    }).catch(() => {});
+  } else {
+    applyDesktopMode();
+  }
 
   // Pull the configured model name for the settings panel (best effort), then
   // sign the user in (if the server supports SSO) and sync their memory.
@@ -286,7 +293,33 @@ Office.onReady((info) => {
 
   // One-time onboarding tip on first open.
   if (!store.get("simba.onboarded", "")) setTimeout(showOnboarding, 450);
-});
+}
+
+// Boot inside Excel via Office.onReady; otherwise (Electron/desktop or a plain
+// browser) boot in desktop mode. The timeout is a fallback if Office never readies.
+if (typeof Office !== "undefined" && Office.onReady) {
+  Office.onReady((info) => boot(Boolean(info && info.host === Office.HostType.Excel)));
+} else {
+  boot(false);
+}
+setTimeout(() => boot(false), 4000);
+
+function applyDesktopMode() {
+  document.body.classList.add("desktop");          // CSS hides Excel-only chrome
+  if (els.contextPill) els.contextPill.textContent = "Skrivbordsläge";
+  if (els.prompt) els.prompt.placeholder = "Fråga Simba…";
+  const w = document.querySelector(".welcome");
+  if (w) w.innerHTML =
+    `<h2>Hej 👋</h2>` +
+    `<p>Jag är Simba. Här på skrivbordet kan jag svara på frågor, söka på webben, läsa dina bifogade filer och dina OneDrive-filer, och minnas det viktiga. För att läsa och redigera ett kalkylark – öppna Simba inuti Excel.</p>` +
+    `<div class="suggestions">` +
+    `<button class="suggestion">Sök upp dagens USD/SEK-kurs</button>` +
+    `<button class="suggestion">Sammanfatta en bifogad fil</button>` +
+    `<button class="suggestion">Vad kan du hjälpa mig med?</button>` +
+    `</div>`;
+  document.querySelectorAll(".suggestion").forEach((b) =>
+    b.addEventListener("click", () => { els.prompt.value = b.textContent; onSend(); }));
+}
 
 function hideSplash() {
   const s = document.getElementById("splash");
@@ -995,7 +1028,11 @@ async function runAgentLoop() {
       let result, isError = false;
       try {
         const fn = tools[use.name];
-        result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
+        if (!IS_EXCEL && !DESKTOP_TOOLS.has(use.name)) {
+          result = { error: "Det här kräver Excel. Öppna Simba inuti Excel för att läsa eller redigera arket." };
+        } else {
+          result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
+        }
       } catch (e) {
         result = { error: e.message || String(e) };
         isError = true;
@@ -1034,7 +1071,7 @@ async function callBackend(history, onDelta) {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ messages: history, speed, memory: memoryList() }),
+      body: JSON.stringify({ messages: history, speed, memory: memoryList(), surface: IS_EXCEL ? "excel" : "desktop" }),
       signal: ctrl.signal,
     });
   } catch (e) {
