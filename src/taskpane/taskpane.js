@@ -82,6 +82,7 @@ Office.onReady((info) => {
   els.overlay = document.getElementById("modal-overlay");
   els.modalCard = document.getElementById("modal-card");
   els.toasts = document.getElementById("toast-container");
+  els.askDock = document.getElementById("ask-dock");
 
   applyTheme(store.get("simba.theme", "auto"));
   syncEditModeButtons();
@@ -660,15 +661,14 @@ function closeModal() {
   if (r) r(false);
 }
 
-/** Shows an edit preview; resolves true (apply) / false (cancel). */
+/** Slides a small confirmation box up above the input; resolves true/false. */
 function confirmEdit(details) {
   return new Promise((resolve) => {
+    const dock = els.askDock;
     let settled = false;
-    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
 
     const addrPill = details.address
       ? `<div class="preview-addr">${escapeHtml(details.address)}</div>` : "";
-
     let body, sub;
     if (details.kind === "formula") {
       sub = "Simba vill ange en formel.";
@@ -681,19 +681,36 @@ function confirmEdit(details) {
       body = `${addrPill}<p class="confirm-summary">${escapeHtml(details.summary || "Tillämpa ändringen?")}</p>`;
     }
 
-    openModal(
-      `<h3>Tillämpa ändringen?</h3>
-       <p class="sub">${sub}</p>
-       ${body}
-       <div class="modal-actions">
-         <button class="btn" data-act="cancel">Avbryt</button>
-         <button class="btn primary" data-act="apply">Tillämpa</button>
-       </div>`,
-      { onClose: () => finish(false) }
-    );
+    const card = document.createElement("div");
+    card.className = "ask-card";
+    card.innerHTML =
+      `<div class="ask-head"><span class="ask-ic" aria-hidden="true">✦</span><span class="ask-sub">${sub}</span></div>
+       <div class="ask-body">${body}</div>
+       <div class="ask-actions">
+         <button class="btn" type="button" data-act="cancel">Avbryt</button>
+         <button class="btn primary" type="button" data-act="apply">Tillämpa</button>
+       </div>`;
 
-    els.modalCard.querySelector('[data-act="apply"]').onclick = () => { finish(true); closeModalSilently(); };
-    els.modalCard.querySelector('[data-act="cancel"]').onclick = () => { finish(false); closeModalSilently(); };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); finish(false); }
+      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finish(true); }
+    };
+    function finish(v) {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey);
+      card.classList.add("leaving");
+      card.addEventListener("animationend", () => card.remove(), { once: true });
+      setTimeout(() => card.remove(), 260);
+      resolve(v);
+    }
+
+    dock.innerHTML = "";            // one question at a time
+    dock.appendChild(card);
+    card.querySelector('[data-act="apply"]').onclick = () => finish(true);
+    card.querySelector('[data-act="cancel"]').onclick = () => finish(false);
+    document.addEventListener("keydown", onKey);
+    setTimeout(() => card.querySelector('[data-act="apply"]').focus(), 30);
   });
 }
 

@@ -13,8 +13,8 @@
   <DefaultLocale>sv-SE</DefaultLocale>
   <DisplayName DefaultValue="Simba AI" />
   <Description DefaultValue="En AI-assistent i sidofältet för Excel. Ställ frågor om din data, generera formler, städa områden och låt Simba läsa och skriva i ditt kalkylark." />
-  <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-80.png" />
+  <IconUrl DefaultValue="https://localhost:3000/assets/mascot.png" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/mascot.png" />
   <SupportUrl DefaultValue="https://localhost:3000/" />
 
   <!-- Domains outside the add-in root that the task pane may navigate to. -->
@@ -84,9 +84,9 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/icon-16.png" />
-        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/icon-32.png" />
-        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/icon-80.png" />
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/mascot.png" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/mascot.png" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/mascot.png" />
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Commands.Url" DefaultValue="https://localhost:3000/commands.html" />

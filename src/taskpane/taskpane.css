@@ -491,6 +491,30 @@ html, body {
 .setting-row .hint { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
 .setting-meta { font-size: 12px; color: var(--ink-soft); }
 
+/* ---------------- Inline ask box (slides up above the input) ---------------- */
+.ask-dock { display: flex; flex-direction: column; }
+.ask-card {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  padding: 11px 12px;
+  margin-bottom: 9px;
+  max-height: 240px;
+  overflow: auto;
+  animation: askUp 0.22s var(--ease) both;
+}
+.ask-card.leaving { animation: askDown 0.18s var(--ease) forwards; }
+.ask-head { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+.ask-ic { color: var(--accent); font-size: 12px; }
+.ask-sub { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.ask-body { margin-bottom: 10px; }
+.ask-body .preview-addr { margin-bottom: 8px; }
+.ask-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.ask-actions .btn { flex: 0 0 auto; padding: 7px 15px; }
+@keyframes askUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes askDown { to { opacity: 0; transform: translateY(8px); } }
+
 /* ---------------- Toasts ---------------- */
 .toast-container {
   position: fixed;
