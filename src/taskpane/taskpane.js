@@ -30,6 +30,7 @@ let messages = [];
 let busy = false;
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
+let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
 let modelName = "claude-opus-4-8";
 
 const els = {};
@@ -709,7 +710,7 @@ async function callBackend(history) {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: history }),
+      body: JSON.stringify({ messages: history, speed }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -844,6 +845,14 @@ function openSettings() {
        </div>
      </div>
      <div class="setting-row">
+       <div><div class="label">Svarshastighet</div><div class="hint">Snabbare svar eller mer noggrann analys</div></div>
+       <div class="seg" id="speed-seg">
+         <button class="seg-btn ${speed === "fast" ? "active" : ""}" data-speed="fast" title="Snabbast – använder snabbläge">Snabb</button>
+         <button class="seg-btn ${speed === "balanced" ? "active" : ""}" data-speed="balanced" title="Bra balans mellan fart och kvalitet">Balanserad</button>
+         <button class="seg-btn ${speed === "thorough" ? "active" : ""}" data-speed="thorough" title="Mest noggrann – tar längre tid">Noggrann</button>
+       </div>
+     </div>
+     <div class="setting-row">
        <div><div class="label">Modell</div><div class="hint">Drivs av Claude</div></div>
        <div class="setting-meta">${escapeHtml(modelName)}</div>
      </div>
@@ -862,6 +871,14 @@ function openSettings() {
     applyTheme(b.dataset.theme);
     store.set("simba.theme", b.dataset.theme);
     els.modalCard.querySelectorAll("#theme-seg .seg-btn")
+      .forEach((x) => x.classList.toggle("active", x === b));
+  });
+  els.modalCard.querySelector("#speed-seg").addEventListener("click", (e) => {
+    const b = e.target.closest(".seg-btn");
+    if (!b) return;
+    speed = b.dataset.speed;
+    store.set("simba.speed", speed);
+    els.modalCard.querySelectorAll("#speed-seg .seg-btn")
       .forEach((x) => x.classList.toggle("active", x === b));
   });
   els.modalCard.querySelector("#settings-clear").onclick = () => { resetChat(); closeModalSilently(); };

@@ -259,6 +259,68 @@ const MAX_CHARS = Number(process.env.SIMBA_MAX_CHARS || 1_500_000);
 let hits = [];
 let inflight = 0;
 
+// ---- Speed controls -------------------------------------------------------
+// The client sends a per-request speed preference; we map it to thinking effort
+// and (optionally) fast mode. Lower effort and fast mode trade some depth for
+// noticeably quicker answers. Default is tunable via SIMBA_SPEED.
+const DEFAULT_SPEED = process.env.SIMBA_SPEED || "balanced";
+const SPEED_MAP = {
+  thorough: { effort: "high", fast: false },
+  balanced: { effort: "medium", fast: false },
+  fast: { effort: "medium", fast: true },
+};
+
+// Cache the large, static system prompt + tool definitions so every turn after
+// the first skips re-processing them (faster time-to-first-token, lower cost).
+function cachedSystem() {
+  return [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
+}
+
+// Add a cache breakpoint on the last message so the growing conversation prefix
+// is reused on the next turn (the agent loop re-sends full history each time).
+function withConversationCache(messages) {
+  if (!Array.isArray(messages) || !messages.length) return messages;
+  const out = messages.slice();
+  const last = { ...out[out.length - 1] };
+  let content = last.content;
+  if (typeof content === "string") content = [{ type: "text", text: content }];
+  else if (Array.isArray(content)) content = content.map((b) => ({ ...b }));
+  else return messages;
+  const tail = content[content.length - 1];
+  if (tail && typeof tail === "object") {
+    content[content.length - 1] = { ...tail, cache_control: { type: "ephemeral" } };
+    last.content = content;
+    out[out.length - 1] = last;
+  }
+  return out;
+}
+
+// Run the model for one turn, honoring the speed preference. Fast mode runs on
+// the beta endpoint and has its own rate limit, so we fall back to standard
+// speed if it errors rather than failing the whole request.
+async function runModel(messages, speed) {
+  const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
+  const base = {
+    model: MODEL,
+    max_tokens: 32000,
+    thinking: { type: "adaptive" },
+    output_config: { effort: cfg.effort },
+    system: cachedSystem(),
+    tools: TOOLS,
+    messages: withConversationCache(messages),
+  };
+  if (cfg.fast) {
+    try {
+      return await client.beta.messages
+        .stream({ ...base, speed: "fast", betas: ["fast-mode-2026-02-01"] })
+        .finalMessage();
+    } catch (e) {
+      console.warn("[Simba] fast mode unavailable, using standard speed:", e?.status || e?.message);
+    }
+  }
+  return await client.messages.stream(base).finalMessage();
+}
+
 function rateLimited() {
   const now = Date.now();
   hits = hits.filter((t) => now - t < 60_000);
@@ -299,19 +361,10 @@ app.post("/api/chat", async (req, res) => {
 
   inflight++;
   try {
-    // Stream so large/long responses don't hit HTTP timeouts; collect the
-    // final assembled message (content blocks + stop_reason) for the task pane.
-    const stream = client.messages.stream({
-      model: MODEL,
-      max_tokens: 32000,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "high" },
-      system: SYSTEM_PROMPT,
-      tools: TOOLS,
-      messages: req.body.messages,
-    });
-
-    const final = await stream.finalMessage();
+    // Stream internally so large/long responses don't hit HTTP timeouts; collect
+    // the final assembled message (content blocks + stop_reason) for the task pane.
+    // Speed preference + prompt caching are applied inside runModel.
+    const final = await runModel(req.body.messages, req.body.speed);
     res.json({
       content: final.content,
       stop_reason: final.stop_reason,

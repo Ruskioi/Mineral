@@ -135,8 +135,26 @@ sidebar opens. Done.
 | Host build says `failed to read dockerfile` / uses a Docker runtime | The repo ships a `Dockerfile` (single-service: builds the sidebar, serves it + `/api`). Redeploy and it will be picked up. Alternatively switch the service to the **Node** runtime — build `npm install && npm run build`, start `node server/server.js`. Either way, set `ANTHROPIC_API_KEY` in the host environment. |
 | Edits don't apply to the sheet | The user unchecked "Let Simba edit the sheet" in the sidebar. |
 
+## Performance / speed
+
+Simba is tuned for fast answers:
+
+- **Prompt caching** — the system prompt and tool definitions are cached, so every
+  turn after the first skips re-processing them (lower latency and cost).
+- **Speed preference** — users pick **Snabb / Balanserad / Noggrann** in Settings.
+  Balanced (the default) uses `medium` thinking effort; Thorough uses `high`; Fast
+  also enables Opus fast mode (~2.5× faster generation, premium token price; it
+  falls back to standard speed automatically if the fast-mode rate limit is hit).
+- Set the default with `SIMBA_SPEED` (`fast` | `balanced` | `thorough`) in the host env.
+
+For the snappiest experience, keep the host off a free tier (free instances cold-start
+slowly) and near your users' region.
+
 ## Notes on cost & security
 
 The backend holds your Anthropic key and bills your account for every assigned
 user's usage. Before a wide rollout, consider adding **auth, per-user rate
 limiting, and logging** to `server/server.js` so usage stays bounded.
+
+Fast mode bills output tokens at a premium rate — if cost matters more than
+latency, set `SIMBA_SPEED=balanced` (the default) and leave Fast as an opt-in.

@@ -106,6 +106,13 @@ check("backend uses the approved model and adaptive thinking", () => {
   assert(/budget_tokens/.test(server) === false, "budget_tokens is removed on this model");
 });
 
+check("speed + caching optimizations are wired", () => {
+  assert(/cache_control/.test(server), "system/tools prompt caching missing (cache_control)");
+  assert(/req\.body\.speed/.test(server), "server should read a per-request speed preference");
+  assert(/fast-mode-2026-02-01/.test(server), "fast mode beta flag missing");
+  assert(/simba\.speed/.test(taskpane), "client should persist a speed preference");
+});
+
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {
   assert(/rateLimited/.test(server), "missing rate limiter");
   assert(/validateMessages/.test(server), "missing message validation");
