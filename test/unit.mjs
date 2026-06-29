@@ -43,8 +43,12 @@ check(".npmrc keeps devDependencies so host builds don't prune webpack", () => {
   assert(/^\s*include\s*=\s*dev\s*$/m.test(npmrc), ".npmrc must set include=dev (build tools are devDependencies; hosts set NODE_ENV=production)");
 });
 
+// Only the client-facing TOOLS array — not the Anthropic server tools
+// (code_execution/web_search/web_fetch) declared inside endpoint handlers.
+const toolsBlock = server.slice(server.indexOf("const TOOLS = ["), server.indexOf("const app = express()"));
+
 check("client and server expose the exact same tool set", () => {
-  const beTools = [...server.matchAll(/name:\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  const beTools = [...toolsBlock.matchAll(/name:\s*"([a-z_]+)"/g)].map((m) => m[1]);
   const block = taskpane.slice(taskpane.indexOf("const tools = {"), taskpane.indexOf("/* tool helpers */"));
   const feTools = [...block.matchAll(/^\s{2}async ([a-z_]+)\(/gm)].map((m) => m[1]);
   const be = new Set(beTools), fe = new Set(feTools);
@@ -56,8 +60,8 @@ check("client and server expose the exact same tool set", () => {
 });
 
 check("every backend tool has a name, description, and input_schema", () => {
-  const tools = [...server.matchAll(/\{\s*name:\s*"([a-z_]+)",\s*description:\s*"([^"]+)",\s*input_schema:/g)];
-  const names = [...server.matchAll(/name:\s*"([a-z_]+)"/g)];
+  const tools = [...toolsBlock.matchAll(/\{\s*name:\s*"([a-z_]+)",\s*description:\s*"([^"]+)",\s*input_schema:/g)];
+  const names = [...toolsBlock.matchAll(/name:\s*"([a-z_]+)"/g)];
   assert(tools.length === names.length, `${names.length} tools but only ${tools.length} fully-formed (name+description+input_schema)`);
 });
 

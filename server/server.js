@@ -49,6 +49,10 @@ Reading & analysis:
 - capture_view — take a picture of a range/chart and SEE it. Use it to judge
   visual layout, alignment, colours, and chart readability, or to double-check
   how your formatting actually looks. Don't guess about appearance — look.
+- analyze_data — run Python (pandas/numpy) on a range for analysis that formulas
+  can't do well: forecasting, correlation, anomaly/outlier detection, trends.
+- web_lookup — look up current facts on the web (prices, FX, company data) with
+  sources, when the answer isn't in the sheet.
 
 Editing:
 - write_range / set_formula / set_formulas — write values or formulas.
@@ -144,6 +148,17 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range to capture; omit to capture the current selection." },
     } } },
+
+  { name: "analyze_data", description: "Run a deeper statistical analysis on a range using Python (pandas/numpy) on the server — for things plain formulas can't easily do: forecasting, trend/seasonality, correlation, outlier/anomaly detection, distributions. Returns a written analysis in Swedish; it does NOT modify the sheet, so write any results back yourself if asked.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range of the data to analyze (include headers)." },
+      question: { type: "string", description: "What to find out, e.g. forecast next quarter, or flag outliers in column C." },
+    }, required: ["address"] } },
+
+  { name: "web_lookup", description: "Look up current real-world information on the web (prices, FX rates, company facts, definitions, recent events) and get a concise answer with sources. Use when the answer depends on up-to-date data not in the sheet. Returns text; write it into cells yourself if the user wants it in the sheet.",
+    input_schema: { type: "object", properties: {
+      query: { type: "string", description: "The question to research, phrased clearly." },
+    }, required: ["query"] } },
 
   { name: "write_range", description: "Write a 2D array of values into a range. The array shape must match the range.",
     input_schema: { type: "object", properties: {
@@ -532,6 +547,68 @@ app.post("/api/chat", async (req, res) => {
   } finally {
     inflight--;
     res.end();
+  }
+});
+
+// ---- Server-tool helpers: code execution + web search --------------------
+// These run Anthropic's server-side tools inside one isolated call and return
+// just the final text, so the task pane's client-side agent loop stays simple.
+async function runWithServerTools({ system, content, tools }) {
+  const messages = [{ role: "user", content }];
+  for (let i = 0; i < 6; i++) {
+    const resp = await client.messages.create({ model: MODEL, max_tokens: 8000, system, tools, messages });
+    if (resp.stop_reason === "pause_turn") { // server tool still working — resume
+      messages.push({ role: "assistant", content: resp.content });
+      continue;
+    }
+    return resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+  }
+  return "Analysen tog för många steg. Försök avgränsa frågan.";
+}
+
+function preflight(req, res) {
+  if (!apiKey) { res.status(503).json({ error: "Server is missing ANTHROPIC_API_KEY." }); return false; }
+  if (ipRateLimited(req.ip) || rateLimited()) { res.set("Retry-After", "30"); res.status(429).json({ error: "För många förfrågningar. Försök igen om en stund." }); return false; }
+  return true;
+}
+
+// Run Python (pandas/numpy) over the selected data for analysis Excel can't do.
+app.post("/api/analyze", async (req, res) => {
+  if (!preflight(req, res)) return;
+  const data = String(req.body?.data || "").slice(0, 200_000);
+  const question = String(req.body?.question || "").slice(0, 2000);
+  if (!data) return res.status(400).json({ error: "Missing 'data'." });
+  try {
+    const text = await runWithServerTools({
+      system: "You are Simba, a data analyst. Use Python (pandas/numpy) to analyze the user's spreadsheet data and answer concretely. ALWAYS answer in Swedish (svenska). Give the key numbers and a short, plain-language conclusion; do not paste raw code.",
+      content: `Här är data från användarens kalkylark (CSV):\n\n${data}\n\nFråga: ${question || "Sammanfatta och lyft fram det viktigaste, inklusive avvikelser och trender."}`,
+      tools: [{ type: "code_execution_20260521", name: "code_execution" }],
+    });
+    res.json({ text });
+  } catch (err) {
+    console.error("[Simba] /api/analyze error:", err?.message || err);
+    res.status(502).json({ error: "Kunde inte analysera data." });
+  }
+});
+
+// Look something up on the web (with the model's server-side search/fetch).
+app.post("/api/research", async (req, res) => {
+  if (!preflight(req, res)) return;
+  const query = String(req.body?.query || "").slice(0, 2000);
+  if (!query) return res.status(400).json({ error: "Missing 'query'." });
+  try {
+    const text = await runWithServerTools({
+      system: "You are Simba, a research assistant. Use web search/fetch to find current, accurate facts. ALWAYS answer in Swedish (svenska). Be concise and concrete — return the specific answer the user can put in a spreadsheet, and name your source(s). If unsure, say so.",
+      content: query,
+      tools: [
+        { type: "web_search_20260209", name: "web_search" },
+        { type: "web_fetch_20260209", name: "web_fetch" },
+      ],
+    });
+    res.json({ text });
+  } catch (err) {
+    console.error("[Simba] /api/research error:", err?.message || err);
+    res.status(502).json({ error: "Kunde inte söka på webben." });
   }
 });
 

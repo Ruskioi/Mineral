@@ -402,6 +402,40 @@ const tools = {
     }
   },
 
+  async analyze_data({ address, question }) {
+    let csv;
+    try {
+      csv = await Excel.run(async (ctx) => {
+        const range = parseRange(ctx, address);
+        range.load("values");
+        await ctx.sync();
+        return (range.values || []).slice(0, 500).map((r) => r.map(csvCell).join(",")).join("\n");
+      });
+    } catch (e) { return { error: `Kunde inte läsa ${address}${e?.message ? ": " + e.message : ""}.` }; }
+    if (!csv) return { error: "Området är tomt." };
+    try {
+      const r = await fetch(`${API_BASE}/api/analyze`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: csv, question, address }),
+      });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Analysen misslyckades." }; }
+      const j = await r.json();
+      return { analysis: j.text, address };
+    } catch { return { error: "Kunde inte nå analystjänsten." }; }
+  },
+
+  async web_lookup({ query }) {
+    try {
+      const r = await fetch(`${API_BASE}/api/research`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Sökningen misslyckades." }; }
+      const j = await r.json();
+      return { result: j.text };
+    } catch { return { error: "Kunde inte nå söktjänsten." }; }
+  },
+
   /* ---------------- write / mutate (gated by edit mode) ---------------- */
 
   async write_range({ address, values }) {
@@ -729,6 +763,7 @@ function updateUndoButton() {
   if (els.undo) els.undo.disabled = undoStack.length === 0;
 }
 function is2DArray(v) { return Array.isArray(v) && v.length > 0 && v.every((r) => Array.isArray(r)); }
+function csvCell(c) { const s = c == null ? "" : String(c); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
 function capValues(values) {
   if (!Array.isArray(values) || values.length === 0) return { truncated: false };
   const cols = Array.isArray(values[0]) ? Math.max(1, values[0].length) : 1;
@@ -1280,6 +1315,8 @@ function toolLabel(name, input) {
     list_sheets: "Tittar på arbetsboken",
     find: `Söker efter "${input?.query || ""}"`,
     capture_view: `Tittar på ${input?.address || "arket"}`,
+    analyze_data: `Analyserar ${input?.address || "data"}`,
+    web_lookup: `Söker på webben: "${input?.query || ""}"`,
     write_range: `Skriver till ${input?.address || "ett område"}`,
     set_formula: `Anger en formel i ${input?.address || "ett område"}`,
     set_formulas: `Anger formler i ${input?.address || "ett område"}`,
