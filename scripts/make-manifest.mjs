@@ -36,6 +36,7 @@ const flag = (name) => process.argv.includes(`--${name}`);
 const base = (arg("base", process.env.SIMBA_BASE_URL) || DEV_BASE).replace(/\/+$/, "");
 const id = flag("new-id") ? randomUUID() : arg("id", process.env.SIMBA_ADDIN_ID) || DEV_ID;
 const out = arg("out", "manifest.xml");
+const aad = arg("aad", process.env.SIMBA_AAD_CLIENT_ID); // Azure AD app (client) id — enables SSO
 
 if (!/^https:\/\//.test(base)) {
   console.error(`[make-manifest] BASE_URL must be HTTPS (Office requires it): got "${base}"`);
@@ -43,7 +44,20 @@ if (!/^https:\/\//.test(base)) {
 }
 
 const template = readFileSync(resolve(root, "manifest.template.xml"), "utf8");
-const xml = template.replaceAll("{{BASE_URL}}", base).replaceAll("{{ADDIN_ID}}", id);
+let xml = template.replaceAll("{{BASE_URL}}", base).replaceAll("{{ADDIN_ID}}", id);
+
+// The SSO <WebApplicationInfo> block is filled in only when an Azure AD client id
+// is supplied; otherwise it's removed so the manifest has no leftover placeholders.
+if (aad) {
+  const host = base.replace(/^https:\/\//, "");
+  xml = xml
+    .replaceAll("{{AAD_CLIENT_ID}}", aad)
+    .replaceAll("{{AAD_RESOURCE}}", `api://${host}/${aad}`)
+    .replace(/[ \t]*<!-- SSO:BEGIN[\s\S]*?-->\n/, "")
+    .replace(/[ \t]*<!-- SSO:END -->\n/, "");
+} else {
+  xml = xml.replace(/[ \t]*<!-- SSO:BEGIN[\s\S]*?SSO:END -->\n/, "");
+}
 
 writeFileSync(resolve(root, out), xml);
-console.log(`[make-manifest] wrote ${out}\n  base: ${base}\n  id:   ${id}`);
+console.log(`[make-manifest] wrote ${out}\n  base: ${base}\n  id:   ${id}\n  sso:  ${aad ? `enabled (${aad})` : "disabled"}`);

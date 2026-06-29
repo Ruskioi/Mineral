@@ -150,6 +150,42 @@ Simba is tuned for fast answers:
 For the snappiest experience, keep the host off a free tier (free instances cold-start
 slowly) and near your users' region.
 
+## Microsoft 365 sign-in + cross-device memory (optional)
+
+By default Simba's memory is stored per-device (in the browser). To make it follow
+each user across devices, turn on Microsoft 365 single sign-on (SSO) and a database.
+Everything degrades gracefully — if either piece is missing, Simba just keeps memory
+on-device.
+
+**1. Register an Azure AD app** (one-time, in your tenant — Entra admin center → App
+registrations → New registration):
+- Single tenant (or multitenant if your users span tenants).
+- Under **Expose an API**: set the Application ID URI to `api://YOUR_HOST/CLIENT_ID`
+  (e.g. `api://mineral-qd8c.onrender.com/<client-id>`), and add a scope named
+  **`access_as_user`** (admins + users can consent).
+- Under **API permissions**: add the delegated `profile`, `openid`, `email` scopes.
+- Add the Office client app IDs as **authorized client applications** for the
+  `access_as_user` scope (the well-known Office desktop/web app IDs from Microsoft's
+  SSO docs), so Excel can request tokens silently.
+- Copy the **Application (client) ID**.
+
+**2. Bake the client id into the manifest** and re-upload it in Integrated Apps:
+
+```bash
+npm run manifest -- --base https://YOUR_HOST --aad <CLIENT_ID> --new-id --out manifest.prod.xml
+```
+
+This adds the required `<WebApplicationInfo>` block. Without `--aad`, the block is
+omitted (SSO off).
+
+**3. Provision Postgres and set env vars on the host:**
+- `AAD_CLIENT_ID=<client-id>` — turns on token verification.
+- `DATABASE_URL=postgres://…` — a free managed Postgres (Neon, Supabase, or Render).
+  The `simba_memory` table is created automatically on first use.
+
+Verify at `https://YOUR_HOST/api/health` → `{"ssoConfigured":true,"memoryStore":"postgres"}`.
+Memory now syncs to each signed-in user and is keyed to their Microsoft identity.
+
 ## Notes on cost & security
 
 The backend holds your Anthropic key and bills your account for every assigned

@@ -16,6 +16,8 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
+import { verifyToken, bearer, ssoConfigured } from "./identity.js";
+import { getMemory, setMemory, usingPostgres } from "./store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, "../dist");
@@ -281,7 +283,51 @@ if (serveStatic) {
 }
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, model: MODEL, keyConfigured: Boolean(apiKey) });
+  res.json({
+    ok: true,
+    model: MODEL,
+    keyConfigured: Boolean(apiKey),
+    ssoConfigured,
+    memoryStore: usingPostgres ? "postgres" : "ephemeral",
+  });
+});
+
+// ---- Per-user memory (Microsoft 365 identity required) --------------------
+// GET returns the signed-in user's saved notes; PUT replaces them. Both require
+// a valid Office SSO token; without SSO/DB the client keeps memory on-device.
+async function requireUser(req, res) {
+  try {
+    return await verifyToken(bearer(req));
+  } catch (err) {
+    const status = err.status || 401;
+    res.status(status).json({ error: err.message || "Not authorized.", ssoConfigured });
+    return null;
+  }
+}
+
+app.get("/api/memory", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    res.json({ notes: await getMemory(user.key), user: { name: user.name, email: user.email } });
+  } catch (err) {
+    console.error("[Simba] memory read failed:", err?.message || err);
+    res.status(502).json({ error: "Could not read memory." });
+  }
+});
+
+app.put("/api/memory", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const notes = req.body?.notes;
+  if (notes != null && !Array.isArray(notes))
+    return res.status(400).json({ error: "'notes' must be an array of strings." });
+  try {
+    res.json({ notes: await setMemory(user.key, notes || []) });
+  } catch (err) {
+    console.error("[Simba] memory write failed:", err?.message || err);
+    res.status(502).json({ error: "Could not save memory." });
+  }
 });
 
 // ---- Fail-safes: input validation + a lightweight global rate limit ----
@@ -448,6 +494,9 @@ const server = app.listen(PORT, () => {
     serveStatic
       ? `[Simba] serving the sidebar from ${DIST_DIR} (single-origin mode)`
       : `[Simba] no dist/ build found — API only (dev: webpack serves the sidebar)`
+  );
+  console.log(
+    `[Simba] SSO: ${ssoConfigured ? "on" : "off (device-local memory)"} · memory store: ${usingPostgres ? "postgres" : "ephemeral"}`
   );
 });
 

@@ -38,7 +38,10 @@ const MEMORY_MAX = 50;
 function memoryList() {
   try { return JSON.parse(store.get("simba.memory", "[]")) || []; } catch { return []; }
 }
-function memorySave(list) { store.set("simba.memory", JSON.stringify(list.slice(0, MEMORY_MAX))); }
+function memorySave(list) {
+  store.set("simba.memory", JSON.stringify(list.slice(0, MEMORY_MAX)));
+  pushMemory(); // sync up to the user's Microsoft account when signed in
+}
 function memoryAdd(note) {
   const text = String(note || "").trim();
   if (!text) return false;
@@ -49,6 +52,75 @@ function memoryAdd(note) {
   return true;
 }
 function memoryClear() { memorySave([]); }
+function mergeNotes(a, b) {
+  const seen = new Set();
+  const out = [];
+  for (const n of [...(a || []), ...(b || [])]) {
+    const t = String(n || "").trim();
+    if (!t) continue;
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k); out.push(t);
+  }
+  return out.slice(0, MEMORY_MAX);
+}
+
+/* ---- Microsoft 365 sign-in + cross-device memory sync ------------------- *
+ * When the server has SSO configured, we get an Office identity token, pull the
+ * user's saved memory from the backend, and keep it in sync. Without SSO (or if
+ * sign-in fails), memory stays on this device — no regression. */
+let ssoServerConfigured = false;
+let signedIn = false;
+let userLabel = "";
+let pushTimer = null;
+
+async function getSsoToken() {
+  try {
+    if (typeof OfficeRuntime === "undefined" || !OfficeRuntime.auth?.getAccessToken) return null;
+    return await OfficeRuntime.auth.getAccessToken({ allowSignInPrompt: true, allowConsentPrompt: true });
+  } catch {
+    return null; // not configured, user dismissed, or unsupported host
+  }
+}
+
+async function initIdentity() {
+  if (!ssoServerConfigured) return;
+  const token = await getSsoToken();
+  if (!token) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/memory`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) return;
+    const data = await r.json();
+    const serverNotes = Array.isArray(data.notes) ? data.notes : [];
+    const merged = mergeNotes(memoryList(), serverNotes);
+    signedIn = true;
+    userLabel = (data.user && (data.user.name || data.user.email)) || "";
+    store.set("simba.memory", JSON.stringify(merged)); // set without triggering a push yet
+    if (merged.length !== serverNotes.length) pushMemory(); // local had extras → upload
+  } catch { /* stay local */ }
+}
+
+function pushMemory() {
+  if (!signedIn) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(async () => {
+    const token = await getSsoToken();
+    if (!token) return;
+    try {
+      await fetch(`${API_BASE}/api/memory`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ notes: memoryList() }),
+      });
+    } catch { /* best effort */ }
+  }, 600);
+}
+
+function memoryStatusText() {
+  if (signedIn) return `Synkas med ${userLabel || "ditt Microsoft-konto"} – följer dig på alla enheter.`;
+  if (ssoServerConfigured) return "Microsoft-synk är på – öppna sidofältet igen om inget syns.";
+  return "Sparas på den här enheten.";
+}
 let modelName = "claude-opus-4-8";
 
 const els = {};
@@ -177,9 +249,12 @@ Office.onReady((info) => {
     await ctx.sync();
   }).catch(() => {});
 
-  // Pull the configured model name for the settings panel (best effort).
+  // Pull the configured model name for the settings panel (best effort), then
+  // sign the user in (if the server supports SSO) and sync their memory.
   fetch(`${API_BASE}/api/health`).then((r) => r.json()).then((h) => {
     if (h?.model) modelName = h.model;
+    ssoServerConfigured = !!h?.ssoConfigured;
+    initIdentity();
   }).catch(() => {});
 
   // One-time onboarding tip on first open.
@@ -914,7 +989,7 @@ function openSettings() {
        <div class="setting-meta">${escapeHtml(modelName)}</div>
      </div>
      <div class="setting-row" style="align-items:flex-start">
-       <div><div class="label">Minne</div><div class="hint">Vad Simba minns om dig – en rad per sak. Sparas på den här enheten.</div></div>
+       <div><div class="label">Minne</div><div class="hint">Vad Simba minns om dig – en rad per sak. ${escapeHtml(memoryStatusText())}</div></div>
        <button class="btn" id="memory-clear" style="flex:none;padding:7px 12px">Rensa</button>
      </div>
      <textarea id="memory-text" class="memory-text" rows="4" placeholder="Inget sparat än. Be Simba att minnas något, eller skriv här – en rad per sak.">${escapeHtml(memoryList().join("\n"))}</textarea>

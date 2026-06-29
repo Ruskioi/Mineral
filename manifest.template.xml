@@ -105,4 +105,13 @@
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>
+  <!-- SSO:BEGIN (filled in by make-manifest when --aad is supplied; removed otherwise) -->
+  <WebApplicationInfo>
+    <Id>{{AAD_CLIENT_ID}}</Id>
+    <Resource>{{AAD_RESOURCE}}</Resource>
+    <Scopes>
+      <Scope>access_as_user</Scope>
+    </Scopes>
+  </WebApplicationInfo>
+  <!-- SSO:END -->
 </OfficeApp>

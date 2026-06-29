@@ -120,6 +120,21 @@ check("per-user memory is wired client + server", () => {
   assert(/memory:\s*memoryList\(\)/.test(taskpane), "client should send memory with each request");
 });
 
+check("Microsoft SSO + cross-device memory are wired", () => {
+  const identity = read("server/identity.js");
+  const storeFile = read("server/store.js");
+  assert(/verifyToken/.test(identity), "identity.verifyToken missing");
+  assert(/createRemoteJWKSet/.test(identity), "identity should verify against Microsoft's JWKS");
+  assert(/simba_memory/.test(storeFile), "store should define the simba_memory table");
+  assert(/DATABASE_URL/.test(storeFile), "store should use DATABASE_URL for Postgres");
+  assert(/app\.get\("\/api\/memory"/.test(server) && /app\.put\("\/api\/memory"/.test(server), "memory endpoints missing");
+  assert(/getAccessToken/.test(taskpane), "client SSO token fetch missing");
+  const tmpl = read("manifest.template.xml");
+  assert(/WebApplicationInfo/.test(tmpl) && /\{\{AAD_CLIENT_ID\}\}/.test(tmpl), "manifest template missing the SSO block");
+  const pkg = JSON.parse(read("package.json"));
+  for (const dep of ["jose", "pg"]) assert(pkg.dependencies[dep], `missing dependency: ${dep}`);
+});
+
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {
   assert(/rateLimited/.test(server), "missing rate limiter");
   assert(/validateMessages/.test(server), "missing message validation");
