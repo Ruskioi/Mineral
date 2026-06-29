@@ -267,6 +267,9 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range." },
     }, required: ["address"] } },
+
+  { name: "revert_last_change", description: "Undo the most recent value/formula edit you made (restores the previous cell contents). Use when the user asks to undo, revert, or take it back. Covers write_range/set_formula/set_formulas/clear_range; it does not undo formatting or row/column structure changes.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
 ];
 
 const app = express();

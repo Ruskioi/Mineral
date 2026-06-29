@@ -188,6 +188,7 @@ Office.onReady((info) => {
   els.send = document.getElementById("send");
   els.newChat = document.getElementById("new-chat");
   els.settings = document.getElementById("settings");
+  els.undo = document.getElementById("undo");
   els.contextPill = document.getElementById("context-pill");
   els.editMode = document.getElementById("edit-mode");
   els.overlay = document.getElementById("modal-overlay");
@@ -206,6 +207,7 @@ Office.onReady((info) => {
   els.prompt.addEventListener("input", autoGrow);
   els.newChat.addEventListener("click", resetChat);
   els.settings.addEventListener("click", openSettings);
+  els.undo.addEventListener("click", () => { if (!busy) tools.revert_last_change(); });
 
   els.editMode.addEventListener("click", (e) => {
     const btn = e.target.closest(".seg-btn");
@@ -393,8 +395,10 @@ const tools = {
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
       const range = parseRange(ctx, address);
+      range.load(["formulas", "address"]);
+      await ctx.sync();
+      pushUndo(range.address, range.formulas);
       range.values = values;
-      range.load("address");
       await ctx.sync();
       return { written: true, address: range.address };
     });
@@ -407,10 +411,10 @@ const tools = {
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
       const range = parseRange(ctx, address);
-      range.load(["rowCount", "columnCount"]);
+      range.load(["rowCount", "columnCount", "formulas", "address"]);
       await ctx.sync();
+      pushUndo(range.address, range.formulas);
       range.formulas = grid(range.rowCount, range.columnCount, formula);
-      range.load("address");
       await ctx.sync();
       return { written: true, address: range.address, formula };
     });
@@ -424,8 +428,10 @@ const tools = {
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
       const range = parseRange(ctx, address);
+      range.load(["formulas", "address"]);
+      await ctx.sync();
+      pushUndo(range.address, range.formulas);
       range.formulas = formulas;
-      range.load("address");
       await ctx.sync();
       return { written: true, address: range.address };
     });
@@ -439,8 +445,10 @@ const tools = {
     const map = { contents: "Contents", formats: "Formats", all: "All" };
     const result = await Excel.run(async (ctx) => {
       const range = parseRange(ctx, address);
+      range.load(["formulas", "address"]);
+      await ctx.sync();
+      pushUndo(range.address, range.formulas);
       range.clear(map[what] || "Contents");
-      range.load("address");
       await ctx.sync();
       return { cleared: true, address: range.address, what };
     });
@@ -676,10 +684,35 @@ const tools = {
       return { selected: true, address: range.address };
     });
   },
+
+  async revert_last_change() {
+    const snap = undoStack.pop();
+    updateUndoButton();
+    if (!snap) return { reverted: false, reason: "Det finns inget att ångra." };
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, snap.address);
+      range.formulas = snap.formulas;        // restores both formulas and literal values
+      range.select();
+      await ctx.sync();
+      refreshContextPill();
+      return { reverted: true, address: snap.address };
+    });
+    toast(`Ångrade ändringen i ${result.address}`, "success");
+    return result;
+  },
 };
 
 /* tool helpers */
 const MAX_READ_CELLS = 20000;
+const undoStack = []; // {address, formulas} snapshots taken before data edits
+function pushUndo(address, formulas) {
+  undoStack.push({ address, formulas });
+  if (undoStack.length > 30) undoStack.shift();
+  updateUndoButton();
+}
+function updateUndoButton() {
+  if (els.undo) els.undo.disabled = undoStack.length === 0;
+}
 function is2DArray(v) { return Array.isArray(v) && v.length > 0 && v.every((r) => Array.isArray(r)); }
 function capValues(values) {
   if (!Array.isArray(values) || values.length === 0) return { truncated: false };
@@ -1246,6 +1279,7 @@ function toolLabel(name, input) {
     create_chart: "Skapar ett diagram",
     add_sheet: "Lägger till ett blad",
     select_range: `Markerar ${input?.address || "ett område"}`,
+    revert_last_change: "Ångrar senaste ändringen",
   };
   return labels[name] || name;
 }
