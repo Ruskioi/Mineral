@@ -38,6 +38,11 @@ check("package.json is valid JSON with required scripts", () => {
   assert(pkg.engines && pkg.engines.node, "missing engines.node");
 });
 
+check(".npmrc keeps devDependencies so host builds don't prune webpack", () => {
+  const npmrc = read(".npmrc");
+  assert(/^\s*include\s*=\s*dev\s*$/m.test(npmrc), ".npmrc must set include=dev (build tools are devDependencies; hosts set NODE_ENV=production)");
+});
+
 check("client and server expose the exact same tool set", () => {
   const beTools = [...server.matchAll(/name:\s*"([a-z_]+)"/g)].map((m) => m[1]);
   const block = taskpane.slice(taskpane.indexOf("const tools = {"), taskpane.indexOf("/* tool helpers */"));

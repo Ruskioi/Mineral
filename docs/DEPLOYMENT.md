@@ -129,6 +129,7 @@ sidebar opens. Done.
 | Sidebar is blank / won't load | `https://YOUR_HOST/taskpane.html` not reachable, or TLS cert isn't CA-trusted. |
 | "Simba backend error" in the chat | `/api/health` shows `keyConfigured:false` → set `ANTHROPIC_API_KEY` on the host. |
 | Upload rejected in Integrated apps | Run `npx office-addin-manifest validate manifest.prod.xml`; ensure no `localhost` URLs and a unique GUID (`--new-id`). |
+| Host build fails with `webpack: not found` / "Exited with status 1" | The host set `NODE_ENV=production`, pruning devDependencies. This repo's `.npmrc` (`include=dev`) prevents that — make sure it's deployed. As a fallback, set `NPM_CONFIG_PRODUCTION=false` in the host env, or use build command `npm ci --include=dev && npm run build`. |
 | Edits don't apply to the sheet | The user unchecked "Let Simba edit the sheet" in the sidebar. |
 
 ## Notes on cost & security
