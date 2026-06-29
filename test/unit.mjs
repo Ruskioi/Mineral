@@ -163,6 +163,13 @@ check("security hardening from the audit is in place", () => {
   assert(/no tenant id|tid\)/.test(identity), "SSO must require a tenant id");
 });
 
+check("shared conversation history is wired", () => {
+  assert(/simba_conversations/.test(read("server/store.js")), "conversations table missing");
+  assert(/app\.get\("\/api\/conversations"/.test(server) && /app\.put\("\/api\/conversations\/:id"/.test(server), "conversation endpoints missing");
+  assert(/saveConversation/.test(taskpane) && /loadConversations/.test(taskpane), "client conversation sync missing");
+  assert(/renderHistory/.test(taskpane), "client should rebuild chat from stored history");
+});
+
 check("desktop mode + Electron app are wired", () => {
   assert(/IS_EXCEL/.test(taskpane), "client should track an Excel-vs-desktop flag");
   assert(/function boot\(/.test(taskpane), "client should have a host-agnostic boot()");

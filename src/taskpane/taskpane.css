@@ -642,6 +642,15 @@ body.desktop #context-pill { display: none; }
   box-sizing: border-box;
 }
 .memory-text:focus { outline: none; border-color: var(--accent); }
+.conv-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; margin: 2px 0 4px; }
+.conv-item {
+  text-align: left; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 9px; padding: 8px 11px; cursor: pointer; font: inherit; font-size: 12.5px;
+  color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background var(--speed), border-color var(--speed);
+}
+.conv-item:hover { background: var(--bg-soft); border-color: var(--border-strong); }
+.conv-item.active { border-color: var(--accent); color: var(--accent-strong); font-weight: 600; }
 
 /* ---------------- Inline ask box (slides up above the input) ---------------- */
 .ask-dock { display: flex; flex-direction: column; }

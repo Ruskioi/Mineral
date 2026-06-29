@@ -17,7 +17,8 @@ import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
-import { getMemory, setMemory, usingPostgres } from "./store.js";
+import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation } from "./store.js";
+import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile } from "./graph.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -391,6 +392,50 @@ app.put("/api/memory", async (req, res) => {
     console.error("[Simba] memory write failed:", err?.message || err);
     res.status(502).json({ error: "Could not save memory." });
   }
+});
+
+// ---- Shared conversation history (per user, across devices/surfaces) ------
+app.get("/api/conversations", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ conversations: await listConversations(user.key) }); }
+  catch (err) { console.error("[Simba] conv list failed:", err?.message || err); res.status(502).json({ error: "Could not list conversations." }); }
+});
+
+app.post("/api/conversations", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const id = randomUUID();
+    await saveConversation(user.key, id, req.body?.title || "", req.body?.messages || []);
+    res.json({ id });
+  } catch (err) { console.error("[Simba] conv create failed:", err?.message || err); res.status(502).json({ error: "Could not create conversation." }); }
+});
+
+app.get("/api/conversations/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const c = await getConversation(user.key, req.params.id);
+    if (!c) return res.status(404).json({ error: "Not found." });
+    res.json(c);
+  } catch (err) { console.error("[Simba] conv get failed:", err?.message || err); res.status(502).json({ error: "Could not load conversation." }); }
+});
+
+app.put("/api/conversations/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (req.body?.messages != null && !Array.isArray(req.body.messages))
+    return res.status(400).json({ error: "'messages' must be an array." });
+  try { res.json(await saveConversation(user.key, req.params.id, req.body?.title || "", req.body?.messages || [])); }
+  catch (err) { console.error("[Simba] conv save failed:", err?.message || err); res.status(502).json({ error: "Could not save conversation." }); }
+});
+
+app.delete("/api/conversations/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await deleteConversation(user.key, req.params.id); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] conv delete failed:", err?.message || err); res.status(502).json({ error: "Could not delete conversation." }); }
 });
 
 // ---- Fail-safes: input validation + a lightweight global rate limit ----

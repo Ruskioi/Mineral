@@ -108,6 +108,7 @@ async function initIdentity(interactive = false) {
     userLabel = (data.user && (data.user.name || data.user.email)) || "";
     store.set("simba.memory", JSON.stringify(merged)); // set without triggering a push yet
     if (merged.length !== serverNotes.length) pushMemory(); // local had extras → upload
+    loadConversations(); // resume the user's most recent chat across devices
     return true;
   } catch { return false; } // stay local
 }
@@ -948,6 +949,7 @@ async function onSend() {
     clearTyping();
     setBusy(false);
     pruneHeavyHistory();
+    saveConversation();
   }
 }
 
@@ -980,6 +982,7 @@ async function regenerate() {
     clearTyping();
     setBusy(false);
     pruneHeavyHistory();
+    saveConversation();
   }
 }
 
@@ -1274,13 +1277,15 @@ function openSettings() {
      </div>
      <textarea id="memory-text" class="memory-text" rows="4" placeholder="Inget sparat än. Be Simba att minnas något, eller skriv här – en rad per sak.">${escapeHtml(memoryList().join("\n"))}</textarea>
      <div class="setting-row">
-       <div><div class="label">Konversation</div><div class="hint">Rensa den aktuella chatten</div></div>
+       <div><div class="label">Konversation</div><div class="hint">${signedIn ? "Dina chattar synkas mellan Excel och datorn" : "Logga in för att synka chattar mellan enheter"}</div></div>
        <button class="btn" id="settings-clear" style="flex:none;padding:7px 12px">Ny chatt</button>
      </div>
+     ${signedIn ? '<div id="conv-list" class="conv-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>' : ""}
      <div class="modal-actions">
        <button class="btn primary" data-act="done">Klar</button>
      </div>`
   );
+  if (signedIn) populateConvList();
 
   els.modalCard.querySelector("#theme-seg").addEventListener("click", (e) => {
     const b = e.target.closest(".seg-btn");
@@ -1975,6 +1980,111 @@ function resetChat() {
   messages = [];
   els.messages.innerHTML =
     '<div class="welcome"><h2>Ny chatt</h2><p>Vad vill du göra med ditt kalkylark?</p></div>';
+  if (signedIn) {
+    conversationId = null; // a fresh server conversation is created on first save
+  }
+}
+
+/* ---- Shared conversation history (synced per user across devices) -------- */
+let conversationId = null;
+let convSaveTimer = null;
+
+function convTitle() {
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    let t = typeof m.content === "string" ? m.content
+      : Array.isArray(m.content) ? (m.content.find((b) => b && b.type === "text")?.text || "") : "";
+    t = t.replace(/\n\n\[Aktuell markering:[\s\S]*$/, "").trim();
+    if (t) return t.slice(0, 60);
+  }
+  return "Ny chatt";
+}
+
+async function loadConversations() {
+  if (!signedIn) return;
+  try {
+    const token = await getSsoToken(false);
+    if (!token) return;
+    const r = await fetch(`${API_BASE}/api/conversations`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) return;
+    const { conversations } = await r.json();
+    if (Array.isArray(conversations) && conversations.length && !messages.length) {
+      await openConversation(conversations[0].id); // resume the most recent
+    }
+  } catch { /* stay local */ }
+}
+
+async function openConversation(id) {
+  try {
+    const token = await getSsoToken(false);
+    if (!token) return;
+    const r = await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) return;
+    const c = await r.json();
+    conversationId = c.id;
+    messages = Array.isArray(c.messages) ? c.messages : [];
+    renderHistory(messages);
+  } catch { /* ignore */ }
+}
+
+function saveConversation() {
+  if (!signedIn || !messages.length) return;
+  clearTimeout(convSaveTimer);
+  convSaveTimer = setTimeout(async () => {
+    try {
+      const token = await getSsoToken(false);
+      if (!token) return;
+      if (!conversationId) {
+        const r = await fetch(`${API_BASE}/api/conversations`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ title: convTitle(), messages }),
+        });
+        if (r.ok) conversationId = (await r.json()).id;
+        return;
+      }
+      await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}`, {
+        method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title: convTitle(), messages }),
+      });
+    } catch { /* best effort */ }
+  }, 800);
+}
+
+async function populateConvList() {
+  const el = els.modalCard.querySelector("#conv-list");
+  if (!el) return;
+  try {
+    const token = await getSsoToken(false);
+    const r = token && await fetch(`${API_BASE}/api/conversations`, { headers: { Authorization: `Bearer ${token}` } });
+    const list = r && r.ok ? (await r.json()).conversations : [];
+    if (!list.length) { el.innerHTML = '<div class="hint" style="padding:4px 2px">Inga sparade chattar än.</div>'; return; }
+    el.innerHTML = list.slice(0, 12).map((c) =>
+      `<button class="conv-item${c.id === conversationId ? " active" : ""}" data-id="${escapeHtml(c.id)}">${escapeHtml(c.title || "Namnlös chatt")}</button>`).join("");
+    el.querySelectorAll(".conv-item").forEach((b) =>
+      b.addEventListener("click", async () => { await openConversation(b.dataset.id); closeModalSilently(); }));
+  } catch { el.innerHTML = '<div class="hint" style="padding:4px 2px">Kunde inte hämta chattar.</div>'; }
+}
+
+// Rebuild the visible chat from a stored message list (skips tool plumbing).
+function renderHistory(msgs) {
+  els.messages.innerHTML = "";
+  for (const m of msgs) {
+    if (m.role === "user") {
+      const c = m.content;
+      const isToolResult = Array.isArray(c) && c.some((b) => b && b.type === "tool_result");
+      if (isToolResult) continue;
+      let text = typeof c === "string" ? c
+        : Array.isArray(c) ? (c.find((b) => b && b.type === "text")?.text || "") : "";
+      text = text.replace(/\n\n\[Aktuell markering:[\s\S]*$/, "");
+      const hasFile = Array.isArray(c) && c.some((b) => b && (b.type === "image" || b.type === "document"));
+      if (text.trim() || hasFile) renderMessage("user", text, hasFile ? { file: "bifogad fil" } : null);
+    } else if (m.role === "assistant" && Array.isArray(m.content)) {
+      const text = m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
+      if (text) renderMessage("assistant", text);
+    }
+  }
+  if (!els.messages.children.length) clearWelcome();
+  scrollDown();
 }
 
 function escapeHtml(s) {
