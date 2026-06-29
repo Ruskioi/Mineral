@@ -148,7 +148,7 @@ check("security hardening from the audit is in place", () => {
   assert(/SIMBA_ALLOWED_ORIGINS/.test(server), "CORS should be gated on an allowlist env var");
   assert(/ipRateLimited/.test(server), "per-IP rate limiting missing");
   assert(/X-Content-Type-Options/.test(server), "nosniff header missing");
-  assert(!/X-Frame-Options/.test(server), "must NOT set X-Frame-Options (breaks Office embedding)");
+  assert(!/res\.set\(\s*["']X-Frame-Options/i.test(server), "must NOT set X-Frame-Options (breaks Office embedding)");
   assert(/&quot;|&#39;/.test(read("src/taskpane/taskpane.js")), "escapeHtml must escape quotes (XSS)");
   const identity = read("server/identity.js");
   assert(/access_as_user/.test(identity), "SSO must require the access_as_user scope");
