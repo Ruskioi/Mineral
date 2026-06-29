@@ -75,22 +75,27 @@ let signedIn = false;
 let userLabel = "";
 let pushTimer = null;
 
-async function getSsoToken() {
+// Silent by default: only show Office's sign-in/consent dialog when the user
+// explicitly asks (interactive = true), so opening the pane never pops a prompt.
+async function getSsoToken(interactive = false) {
   try {
     if (typeof OfficeRuntime === "undefined" || !OfficeRuntime.auth?.getAccessToken) return null;
-    return await OfficeRuntime.auth.getAccessToken({ allowSignInPrompt: true, allowConsentPrompt: true });
+    return await OfficeRuntime.auth.getAccessToken({
+      allowSignInPrompt: interactive,
+      allowConsentPrompt: interactive,
+    });
   } catch {
-    return null; // not configured, user dismissed, or unsupported host
+    return null; // not configured, not signed in, user dismissed, or unsupported host
   }
 }
 
-async function initIdentity() {
-  if (!ssoServerConfigured) return;
-  const token = await getSsoToken();
-  if (!token) return;
+async function initIdentity(interactive = false) {
+  if (!ssoServerConfigured) return false;
+  const token = await getSsoToken(interactive);
+  if (!token) return false;
   try {
     const r = await fetch(`${API_BASE}/api/memory`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!r.ok) return;
+    if (!r.ok) return false;
     const data = await r.json();
     const serverNotes = Array.isArray(data.notes) ? data.notes : [];
     const merged = mergeNotes(memoryList(), serverNotes);
@@ -98,7 +103,8 @@ async function initIdentity() {
     userLabel = (data.user && (data.user.name || data.user.email)) || "";
     store.set("simba.memory", JSON.stringify(merged)); // set without triggering a push yet
     if (merged.length !== serverNotes.length) pushMemory(); // local had extras → upload
-  } catch { /* stay local */ }
+    return true;
+  } catch { return false; } // stay local
 }
 
 function pushMemory() {
@@ -253,15 +259,6 @@ Office.onReady((info) => {
 
   window.addEventListener("unhandledrejection", (e) => console.error("[Simba] unhandled rejection:", e.reason));
   window.addEventListener("error", (e) => console.error("[Simba] error:", e.message));
-  document.addEventListener("error", (e) => {
-    const t = e.target;
-    if (t && t.tagName === "IMG" && t.classList && t.classList.contains("pom-img")) {
-      const span = document.createElement("span");
-      span.className = "pom-fallback";
-      span.innerHTML = POM_SVG;
-      t.replaceWith(span);
-    }
-  }, true);
 
   refreshContextPill();
   Excel.run(async (ctx) => {
@@ -1093,8 +1090,11 @@ function openSettings() {
        <div class="setting-meta">${escapeHtml(modelName)}</div>
      </div>
      <div class="setting-row" style="align-items:flex-start">
-       <div><div class="label">Minne</div><div class="hint">Vad Simba minns om dig – en rad per sak. ${escapeHtml(memoryStatusText())}</div></div>
-       <button class="btn" id="memory-clear" style="flex:none;padding:7px 12px">Rensa</button>
+       <div><div class="label">Minne</div><div class="hint" id="memory-status">Vad Simba minns om dig – en rad per sak. ${escapeHtml(memoryStatusText())}</div></div>
+       <div style="display:flex;gap:6px;flex:none">
+         ${ssoServerConfigured && !signedIn ? `<button class="btn" id="memory-signin" style="padding:7px 12px">Logga in</button>` : ""}
+         <button class="btn" id="memory-clear" style="padding:7px 12px">Rensa</button>
+       </div>
      </div>
      <textarea id="memory-text" class="memory-text" rows="4" placeholder="Inget sparat än. Be Simba att minnas något, eller skriv här – en rad per sak.">${escapeHtml(memoryList().join("\n"))}</textarea>
      <div class="setting-row">
@@ -1128,6 +1128,22 @@ function openSettings() {
     memorySave(list);
   };
   els.modalCard.querySelector("#memory-clear").onclick = () => { memoryTextEl.value = ""; memoryClear(); };
+  const signinBtn = els.modalCard.querySelector("#memory-signin");
+  if (signinBtn) signinBtn.onclick = async () => {
+    signinBtn.disabled = true;
+    signinBtn.textContent = "Loggar in…";
+    const ok = await initIdentity(true); // interactive: user asked, so a prompt is fine
+    const status = els.modalCard.querySelector("#memory-status");
+    if (status) status.textContent = `Vad Simba minns om dig – en rad per sak. ${memoryStatusText()}`;
+    if (ok) {
+      memoryTextEl.value = memoryList().join("\n");
+      signinBtn.remove();
+    } else {
+      signinBtn.disabled = false;
+      signinBtn.textContent = "Logga in";
+      toast("Kunde inte logga in. Försök igen.", "error", 3000);
+    }
+  };
   els.modalCard.querySelector("#settings-clear").onclick = () => { resetChat(); closeModalSilently(); };
   els.modalCard.querySelector('[data-act="done"]').onclick = () => { saveMemoryFromText(); closeModalSilently(); };
 }

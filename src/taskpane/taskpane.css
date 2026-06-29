@@ -138,8 +138,6 @@ html, body {
 }
 .brand-mark svg { width: 28px; height: 28px; display: block; }
 .avatar svg { width: 21px; height: 21px; display: block; }
-.pom-img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.pom-fallback { display: grid; place-items: center; width: 100%; height: 100%; }
 .brand-text { min-width: 0; }
 .brand-text h1 {
   margin: 0;
