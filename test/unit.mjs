@@ -61,6 +61,15 @@ check("every backend tool has a name, description, and input_schema", () => {
   assert(tools.length === names.length, `${names.length} tools but only ${tools.length} fully-formed (name+description+input_schema)`);
 });
 
+check("HTML templates don't manually include the bundle (build injects it once)", () => {
+  // A manual <script src="taskpane.js"> plus the auto-injected one loads the app
+  // twice -> doubled event handlers -> doubled chat messages. Guard against it.
+  const tp = read("src/taskpane/taskpane.html");
+  const cm = read("src/commands/commands.html");
+  assert(!/<script[^>]*src=["']taskpane\.js["']/.test(tp), "taskpane.html must not manually load taskpane.js");
+  assert(!/<script[^>]*src=["']commands\.js["']/.test(cm), "commands.html must not manually load commands.js");
+});
+
 check("source files contain no stray NUL/control bytes", () => {
   for (const f of ["src/taskpane/taskpane.js", "src/taskpane/taskpane.css", "src/taskpane/taskpane.html", "server/server.js"]) {
     const buf = readFileSync(resolve(root, f));
