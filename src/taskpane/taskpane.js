@@ -387,6 +387,21 @@ const tools = {
     });
   },
 
+  async capture_view({ address } = {}) {
+    try {
+      const result = await Excel.run(async (ctx) => {
+        const range = address ? parseRange(ctx, address) : ctx.workbook.getSelectedRange();
+        range.load("address");
+        const img = range.getImage(); // ExcelApi 1.9
+        await ctx.sync();
+        return { address: range.address, data: img.value };
+      });
+      return { captured: true, address: result.address, image: { media_type: "image/png", data: result.data } };
+    } catch (e) {
+      return { error: `Kunde inte fånga bilden${e?.message ? ": " + e.message : ""} (kräver en nyare version av Excel).` };
+    }
+  },
+
   /* ---------------- write / mutate (gated by edit mode) ---------------- */
 
   async write_range({ address, values }) {
@@ -907,12 +922,17 @@ async function runAgentLoop() {
       }
       if (result && result.error) isError = true;
       markStepDone(group, step, isError, toolResultHint(use.name, use.input, result));
-      results.push({
-        type: "tool_result",
-        tool_use_id: use.id,
-        content: JSON.stringify(result),
-        is_error: isError,
-      });
+      let content;
+      if (result && result.image && result.image.data) {
+        // Image tool result so the vision model can SEE the captured range/chart.
+        content = [
+          { type: "image", source: { type: "base64", media_type: result.image.media_type || "image/png", data: result.image.data } },
+          { type: "text", text: `(bild av ${result.address || "området"})` },
+        ];
+      } else {
+        content = JSON.stringify(result);
+      }
+      results.push({ type: "tool_result", tool_use_id: use.id, content, is_error: isError });
     }
     messages.push({ role: "user", content: results });
   }
@@ -1240,7 +1260,7 @@ function toolResultHint(name, input, result) {
   switch (name) {
     case "write_range": case "set_formula": case "set_formulas":
     case "format_range": case "select_range": return result.address || "";
-    case "read_range": return input?.address || "";
+    case "read_range": case "capture_view": return result.address || input?.address || "";
     case "create_table": return result.table || "";
     case "create_chart": return result.chart || "";
     case "add_sheet": return result.sheet || "";
@@ -1259,6 +1279,7 @@ function toolLabel(name, input) {
     get_sheet_info: "Granskar arket",
     list_sheets: "Tittar på arbetsboken",
     find: `Söker efter "${input?.query || ""}"`,
+    capture_view: `Tittar på ${input?.address || "arket"}`,
     write_range: `Skriver till ${input?.address || "ett område"}`,
     set_formula: `Anger en formel i ${input?.address || "ett område"}`,
     set_formulas: `Anger formler i ${input?.address || "ett område"}`,

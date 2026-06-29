@@ -46,6 +46,9 @@ Reading & analysis:
 - get_selection / read_range — read values (and optionally formulas) of the selection or any range.
 - get_sheet_info / list_sheets — inspect the active sheet or enumerate all sheets.
 - find — locate cells containing text.
+- capture_view — take a picture of a range/chart and SEE it. Use it to judge
+  visual layout, alignment, colours, and chart readability, or to double-check
+  how your formatting actually looks. Don't guess about appearance — look.
 
 Editing:
 - write_range / set_formula / set_formulas — write values or formulas.
@@ -136,6 +139,11 @@ const TOOLS = [
       query: { type: "string", description: "Text to search for." },
       match_case: { type: "boolean", description: "Case-sensitive match (default false)." },
     }, required: ["query"] } },
+
+  { name: "capture_view", description: "Take a picture of a range (or the current selection) and SEE it, so you can judge layout, alignment, colours, spacing, and charts the way a person would. Use it when the user asks how something looks, to review a chart, or to visually verify your own formatting.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range to capture; omit to capture the current selection." },
+    } } },
 
   { name: "write_range", description: "Write a 2D array of values into a range. The array shape must match the range.",
     input_schema: { type: "object", properties: {
