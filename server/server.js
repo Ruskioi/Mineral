@@ -68,7 +68,10 @@ Guidelines:
 - Before an edit, briefly say what you're about to change. After editing, confirm what changed.
 - If the user has editing set to "off" or declines a confirmation, a tool returns
   {skipped:true}. Explain what you would have done and how to enable editing.
-- Prefer multiple precise tool calls over one vague change. Keep replies concise and practical.`;
+- Batch your edits: each edit asks the user for confirmation, so minimize the
+  number of edit tool calls. Write a whole region in ONE write_range/set_formulas
+  call instead of many single-cell calls, and combine formatting where you can.
+  Prefer the fewest edit calls that get the job done. Keep replies concise and practical.`;
 
 const TOOLS = [
   { name: "get_selection", description: "Get the address, dimensions, values, and formulas of the user's currently selected range.",

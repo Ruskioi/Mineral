@@ -29,6 +29,7 @@ const store = {
 let messages = [];
 let busy = false;
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
+let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let modelName = "claude-opus-4-8";
 
 const els = {};
@@ -536,7 +537,7 @@ function describeFormat(o) {
 /** Returns null (off), false (declined), or true (apply). */
 async function gateEdit(details) {
   if (editMode === "off") return null;
-  if (editMode === "auto") return true;
+  if (editMode === "auto" || autoApproveTurn) return true;
   return confirmEdit(details);
 }
 
@@ -572,6 +573,7 @@ async function onSend() {
   messages.push({ role: "user", content: text + selectionNote });
   renderMessage("user", text);
 
+  autoApproveTurn = false; // each new request starts asking again
   setBusy(true);
   const typing = renderTyping();
   try {
@@ -598,6 +600,7 @@ async function regenerate() {
     let n = lastUser.nextElementSibling;
     while (n) { const nx = n.nextElementSibling; n.remove(); n = nx; }
   }
+  autoApproveTurn = false;
   setBusy(true);
   const typing = renderTyping();
   try {
@@ -725,26 +728,31 @@ function confirmEdit(details) {
        <div class="ask-body">${body}</div>
        <div class="ask-actions">
          <button class="btn" type="button" data-act="cancel">Avbryt</button>
+         <button class="btn ghost" type="button" data-act="all" title="Godkänn alla ändringar i den här förfrågan">Tillämpa alla</button>
          <button class="btn primary" type="button" data-act="apply">Tillämpa</button>
-       </div>`;
+       </div>
+       <p class="ask-hint">Enter för att tillämpa · Esc för att avbryta</p>`;
 
     const onKey = (e) => {
       if (e.key === "Escape") { e.preventDefault(); finish(false); }
-      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finish(true); }
+      else if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); finish("all"); }
+      else if (e.key === "Enter") { e.preventDefault(); finish(true); }
     };
     function finish(v) {
       if (settled) return;
       settled = true;
+      if (v === "all") autoApproveTurn = true; // skip prompts for the rest of this request
       document.removeEventListener("keydown", onKey);
       card.classList.add("leaving");
       card.addEventListener("animationend", () => card.remove(), { once: true });
       setTimeout(() => card.remove(), 260);
-      resolve(v);
+      resolve(v === "all" ? true : v);
     }
 
     dock.innerHTML = "";            // one question at a time
     dock.appendChild(card);
     card.querySelector('[data-act="apply"]').onclick = () => finish(true);
+    card.querySelector('[data-act="all"]').onclick = () => finish("all");
     card.querySelector('[data-act="cancel"]').onclick = () => finish(false);
     document.addEventListener("keydown", onKey);
     setTimeout(() => card.querySelector('[data-act="apply"]').focus(), 30);

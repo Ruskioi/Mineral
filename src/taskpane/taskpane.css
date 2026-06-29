@@ -450,6 +450,8 @@ html, body {
 .btn:active { transform: scale(0.97); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { background: var(--accent-strong); }
+.btn.ghost { background: transparent; color: var(--accent); border-color: transparent; }
+.btn.ghost:hover { background: var(--bg-soft); }
 
 /* Edit preview inside modal */
 .preview-addr {
@@ -519,6 +521,7 @@ html, body {
 .ask-body .preview-addr { margin-bottom: 8px; }
 .ask-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .ask-actions .btn { flex: 0 0 auto; padding: 7px 15px; }
+.ask-hint { margin: 8px 0 0; font-size: 11px; color: var(--ink-faint); text-align: right; }
 @keyframes askUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 @keyframes askDown { to { opacity: 0; transform: translateY(8px); } }
 
