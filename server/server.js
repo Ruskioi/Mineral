@@ -662,8 +662,7 @@ app.post("/api/files/open", async (req, res) => {
   if (!id) return res.status(400).json({ error: "Missing 'id'." });
   try {
     const gt = await oboGraphToken(bearer(req));
-    const { name, size, buffer } = await downloadFile(gt, id);
-    if (size > FILE_OPEN_MAX) return res.status(413).json({ error: "Filen är för stor (max 8 MB)." });
+    const { name, buffer } = await downloadFile(gt, id, FILE_OPEN_MAX);
     const lower = name.toLowerCase();
     if (/\.(csv|tsv|txt|md|json|tab|xml|log)$/.test(lower)) {
       res.json({ kind: "text", name, text: buffer.toString("utf8").slice(0, 200_000) });

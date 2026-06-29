@@ -443,7 +443,7 @@ const tools = {
   },
 
   async list_files({ query } = {}) {
-    const token = await getSsoToken(true);
+    const token = await getSsoToken(false); // silent — never pop a dialog mid-answer
     if (!token) return { error: "Logga in med Microsoft för att nå dina filer (Inställningar → Logga in)." };
     try {
       const r = await fetch(`${API_BASE}/api/files?q=${encodeURIComponent(query || "")}`, { headers: { Authorization: `Bearer ${token}` } });
@@ -454,8 +454,8 @@ const tools = {
   },
 
   async open_file({ id, name }) {
-    const token = await getSsoToken(true);
-    if (!token) return { error: "Logga in med Microsoft först." };
+    const token = await getSsoToken(false); // silent — never pop a dialog mid-answer
+    if (!token) return { error: "Logga in med Microsoft först (Inställningar → Logga in)." };
     try {
       const r = await fetch(`${API_BASE}/api/files/open`, {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -914,6 +914,7 @@ async function onSend() {
   } finally {
     clearTyping();
     setBusy(false);
+    pruneHeavyHistory();
   }
 }
 
@@ -945,6 +946,7 @@ async function regenerate() {
   } finally {
     clearTyping();
     setBusy(false);
+    pruneHeavyHistory();
   }
 }
 
@@ -1542,6 +1544,21 @@ function renderAttachChip() {
 function clearAttachment() {
   pendingAttachment = null;
   renderAttachChip();
+}
+
+/* After a turn finishes, drop the heavy base64 (attached/opened images & PDFs,
+ * captured screenshots) from the conversation history so it isn't re-uploaded on
+ * every later turn — keeps requests small and the chat continuable. The model
+ * already saw them during the turn; it can re-open/re-capture if needed. */
+function pruneHeavyHistory() {
+  const lighten = (b) => {
+    if (!b || typeof b !== "object") return b;
+    if ((b.type === "image" || b.type === "document") && b.source?.data)
+      return { type: "text", text: b.type === "image" ? "(bild – borttagen ur historiken)" : "(dokument – borttaget ur historiken)" };
+    if (b.type === "tool_result" && Array.isArray(b.content)) return { ...b, content: b.content.map(lighten) };
+    return b;
+  };
+  for (const m of messages) if (Array.isArray(m.content)) m.content = m.content.map(lighten);
 }
 
 /** Markdown: fenced code (with header), headings, lists, links, quotes, hr, inline. */

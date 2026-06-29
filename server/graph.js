@@ -63,13 +63,17 @@ export async function searchFiles(graphToken, query) {
     .slice(0, 25);
 }
 
-/** Download a file's bytes (with its name/size). */
-export async function downloadFile(graphToken, id) {
+/** Download a file's bytes (with its name/size). Rejects oversized files BEFORE
+ * fetching content, so a huge drive item can't be buffered into server memory. */
+export async function downloadFile(graphToken, id, maxBytes = Infinity) {
   const metaR = await graphGet(`/me/drive/items/${encodeURIComponent(id)}?$select=name,size`, graphToken);
   if (!metaR.ok) throw Object.assign(new Error("File not found."), { status: metaR.status });
   const meta = await metaR.json();
+  if (typeof meta.size === "number" && meta.size > maxBytes)
+    throw Object.assign(new Error("File too large."), { status: 413 });
   const contentR = await graphGet(`/me/drive/items/${encodeURIComponent(id)}/content`, graphToken);
   if (!contentR.ok) throw Object.assign(new Error("File download failed."), { status: contentR.status });
   const buffer = Buffer.from(await contentR.arrayBuffer());
+  if (buffer.length > maxBytes) throw Object.assign(new Error("File too large."), { status: 413 }); // defense-in-depth
   return { name: meta.name, size: meta.size ?? buffer.length, buffer };
 }
