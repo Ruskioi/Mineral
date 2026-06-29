@@ -807,15 +807,23 @@ async function regenerate() {
 async function runAgentLoop() {
   let group = null; // collapsible activity card for this turn's tool steps
   for (let i = 0; i < 12; i++) {
-    const reply = await callBackend(messages);
+    let live = null; // the streaming reply bubble for this iteration
+    const onDelta = (chunk) => {
+      if (!chunk) return;
+      if (group) { finalizeToolGroup(group); group = null; } // close the card before the reply
+      if (!live) live = startStream();
+      appendStream(live, chunk);
+    };
+
+    const reply = await callBackend(messages, onDelta);
     if (!reply || !Array.isArray(reply.content)) throw new Error("Simba returnerade ett oväntat svar.");
     messages.push({ role: "assistant", content: reply.content });
 
-    for (const b of reply.content) {
-      if (b.type === "text" && b.text.trim()) {
-        if (group) { finalizeToolGroup(group); group = null; } // close the activity card before the reply
-        renderMessage("assistant", b.text);
-      }
+    const fullText = reply.content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
+    if (live) finishStream(live, fullText);                // re-render streamed text as rich markdown
+    else if (fullText) {                                   // non-streaming fallback
+      if (group) { finalizeToolGroup(group); group = null; }
+      renderMessage("assistant", fullText);
     }
 
     if (reply.stop_reason !== "tool_use") { finalizeToolGroup(group); return; }
@@ -834,7 +842,7 @@ async function runAgentLoop() {
         isError = true;
       }
       if (result && result.error) isError = true;
-      markStepDone(group, step, isError);
+      markStepDone(group, step, isError, toolResultHint(use.name, use.input, result));
       results.push({
         type: "tool_result",
         tool_use_id: use.id,
@@ -848,32 +856,76 @@ async function runAgentLoop() {
   renderMessage("assistant", "_(Stoppade efter för många steg. Försök att avgränsa förfrågan.)_");
 }
 
-async function callBackend(history) {
+async function callBackend(history, onDelta) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 180000);
   let res;
   try {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify({ messages: history, speed, memory: memoryList() }),
       signal: ctrl.signal,
     });
   } catch (e) {
+    clearTimeout(timer);
     throw new Error(
       e && e.name === "AbortError"
         ? "Simba tog för lång tid på sig att svara. Försök igen."
         : "Kan inte nå Simba. Kontrollera din anslutning och att servern körs."
     );
-  } finally {
-    clearTimeout(timer);
   }
   if (!res.ok) {
+    clearTimeout(timer);
     let msg = `Simba serverfel (${res.status}).`;
     try { const j = await res.json(); if (j && j.error) msg = j.error; } catch { /* non-JSON */ }
     throw new Error(msg);
   }
-  return res.json();
+  const ctype = res.headers.get("content-type") || "";
+  // Fallback for a non-streaming server (e.g. mid-rollout): plain JSON reply.
+  if (!ctype.includes("text/event-stream") || !res.body?.getReader) {
+    clearTimeout(timer);
+    return res.json();
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let final = null;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) {
+        const raw = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        const ev = parseSSE(raw);
+        if (!ev) continue;
+        if (ev.event === "delta") { try { onDelta?.(JSON.parse(ev.data).text); } catch { /* ignore */ } }
+        else if (ev.event === "final") { try { final = JSON.parse(ev.data); } catch { /* ignore */ } }
+        else if (ev.event === "error") {
+          let m = "Claude API request failed.";
+          try { m = JSON.parse(ev.data).error || m; } catch { /* ignore */ }
+          throw new Error(m);
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!final) throw new Error("Simba returnerade ett ofullständigt svar.");
+  return final;
+}
+
+function parseSSE(block) {
+  let event = "message", data = "";
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data += (data ? "\n" : "") + line.slice(5).replace(/^ /, "");
+  }
+  return data ? { event, data } : null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1064,6 +1116,55 @@ function renderMessage(role, text) {
   scrollDown();
 }
 
+/* Live streaming reply: show plain text as it arrives, then swap to rich
+ * markdown (with code highlighting + hover actions) once the turn completes. */
+function startStream() {
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  wrap.innerHTML = `<div class="avatar">${MASCOT_IMG}</div><div class="body"><div class="bubble streaming"></div></div>`;
+  els.messages.append(wrap);
+  scrollDown();
+  return { wrap, bubble: wrap.querySelector(".bubble"), text: "" };
+}
+
+function appendStream(live, chunk) {
+  live.text += chunk;
+  live.bubble.textContent = live.text;
+  scrollDown();
+}
+
+function finishStream(live, fullText) {
+  const text = (fullText || live.text || "").trim();
+  live.wrap._raw = text;
+  live.bubble.classList.remove("streaming");
+  live.bubble.innerHTML = formatMarkdown(text);
+  live.wrap.querySelector(".body").insertAdjacentHTML("beforeend",
+    `<div class="msg-actions">` +
+    `<button class="msg-act" data-act="copy" type="button" title="Kopiera svar" aria-label="Kopiera svar">⧉</button>` +
+    `<button class="msg-act" data-act="regen" type="button" title="Generera om" aria-label="Generera om">↻</button>` +
+    `</div>`);
+  scrollDown();
+}
+
+function toolResultHint(name, input, result) {
+  if (!result || result.error) return "";
+  if (result.skipped) return "hoppades över";
+  switch (name) {
+    case "write_range": case "set_formula": case "set_formulas":
+    case "format_range": case "select_range": return result.address || "";
+    case "read_range": return input?.address || "";
+    case "create_table": return result.table || "";
+    case "create_chart": return result.chart || "";
+    case "add_sheet": return result.sheet || "";
+    case "find": return typeof result.count === "number" ? `${result.count} träffar` : "";
+    case "set_column_width": return result.width === "auto" ? "auto" : (result.width != null ? `${result.width} pt` : "");
+    case "set_row_height": return result.height === "auto" ? "auto" : (result.height != null ? `${result.height} pt` : "");
+    case "remember": return result.saved ? "sparat" : "";
+    default: return result.address || "";
+  }
+}
+
 function toolLabel(name, input) {
   const labels = {
     get_selection: "Läser din markering",
@@ -1140,10 +1241,16 @@ function groupAddStep(group, name, input) {
   return step;
 }
 
-function markStepDone(group, step, isError) {
+function markStepDone(group, step, isError, hint) {
   step.classList.remove("running");
   step.classList.add(isError ? "error" : "done");
   step.querySelector(".tg-step-ic").textContent = isError ? "!" : "✓";
+  if (hint) {
+    const meta = document.createElement("span");
+    meta.className = "tg-step-meta";
+    meta.textContent = hint;
+    step.append(meta);
+  }
   group.done++;
 }
 

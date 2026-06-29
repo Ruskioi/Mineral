@@ -106,6 +106,14 @@ check("backend uses the approved model and adaptive thinking", () => {
   assert(/budget_tokens/.test(server) === false, "budget_tokens is removed on this model");
 });
 
+check("replies stream to the task pane (SSE)", () => {
+  assert(/text\/event-stream/.test(server), "server should send Server-Sent Events");
+  assert(/event: \$\{event\}|event: final|send\("final"/.test(server), "server should emit a final SSE event");
+  assert(/getReader\(\)/.test(taskpane), "client should read the SSE stream");
+  assert(/function parseSSE/.test(taskpane), "client SSE parser missing");
+  assert(/function startStream|function appendStream/.test(taskpane), "client streaming bubble missing");
+});
+
 check("speed + caching optimizations are wired", () => {
   assert(/cache_control/.test(server), "system/tools prompt caching missing (cache_control)");
   assert(/req\.body\.speed/.test(server), "server should read a per-request speed preference");

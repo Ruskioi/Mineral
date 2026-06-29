@@ -391,10 +391,12 @@ function withConversationCache(messages) {
   return out;
 }
 
-// Run the model for one turn, honoring the speed preference. Fast mode runs on
-// the beta endpoint and has its own rate limit, so we fall back to standard
-// speed if it errors rather than failing the whole request.
-async function runModel(messages, speed, memory) {
+// Run the model for one turn, honoring the speed preference. Streams text to
+// `onText` as it's generated, and returns the assembled final message (content
+// blocks + stop_reason) for the task pane's agent loop. Fast mode runs on the
+// beta endpoint and has its own rate limit, so we fall back to standard speed if
+// it errors BEFORE any text was streamed (otherwise we can't cleanly recover).
+async function runModel(messages, speed, memory, onText) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
   const base = {
     model: MODEL,
@@ -405,16 +407,21 @@ async function runModel(messages, speed, memory) {
     tools: TOOLS,
     messages: withConversationCache(messages),
   };
+  let emitted = false;
+  const run = async (params, beta) => {
+    const s = (beta ? client.beta.messages : client.messages).stream(params);
+    s.on("text", (t) => { emitted = true; if (onText) onText(t); });
+    return await s.finalMessage();
+  };
   if (cfg.fast) {
     try {
-      return await client.beta.messages
-        .stream({ ...base, speed: "fast", betas: ["fast-mode-2026-02-01"] })
-        .finalMessage();
+      return await run({ ...base, speed: "fast", betas: ["fast-mode-2026-02-01"] }, true);
     } catch (e) {
+      if (emitted) throw e; // already streamed output — don't restart
       console.warn("[Simba] fast mode unavailable, using standard speed:", e?.status || e?.message);
     }
   }
-  return await client.messages.stream(base).finalMessage();
+  return await run(base);
 }
 
 function rateLimited() {
@@ -456,23 +463,31 @@ app.post("/api/chat", async (req, res) => {
   }
 
   inflight++;
+  // Stream the reply to the task pane as Server-Sent Events: `delta` events carry
+  // text as it's generated (token-by-token feel), then one `final` event carries
+  // the assembled content blocks + stop_reason for the agent loop to act on.
+  res.set({
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no", // don't let proxies buffer the stream
+  });
+  res.flushHeaders?.();
+  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
-    // Stream internally so large/long responses don't hit HTTP timeouts; collect
-    // the final assembled message (content blocks + stop_reason) for the task pane.
-    // Speed preference + prompt caching are applied inside runModel.
-    const final = await runModel(req.body.messages, req.body.speed, req.body.memory);
-    res.json({
+    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, (t) => send("delta", { text: t }));
+    send("final", {
       content: final.content,
       stop_reason: final.stop_reason,
       usage: final.usage,
       model: final.model,
     });
   } catch (err) {
-    const status = err?.status && err.status >= 400 && err.status < 600 ? err.status : 502;
-    console.error(`[Simba] /api/chat error (${status}):`, err?.message || err);
-    res.status(status).json({ error: err?.message || "Claude API request failed." });
+    console.error("[Simba] /api/chat error:", err?.message || err);
+    send("error", { error: err?.message || "Claude API request failed." });
   } finally {
     inflight--;
+    res.end();
   }
 });
 
