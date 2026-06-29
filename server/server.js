@@ -18,6 +18,7 @@ import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
 import { getMemory, setMemory, usingPostgres } from "./store.js";
+import { graphConfigured, oboGraphToken, searchFiles, downloadFile } from "./graph.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, "../dist");
@@ -58,6 +59,10 @@ Attached files: the user can attach a file to their message. It arrives inline a
 an image, a PDF document, or text (e.g. a CSV). Read it directly. When it's tabular
 data the user likely wants it in the sheet — offer to import it with write_range
 (into the current selection or a sensible empty area), well-structured.
+
+Cloud files: the user's OneDrive/SharePoint files are reachable with list_files
+(search by name) and open_file (read by id). Use them when the user refers to a
+file they have in Microsoft 365 rather than one they attached.
 
 Editing:
 - write_range / set_formula / set_formulas — write values or formulas.
@@ -164,6 +169,17 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       query: { type: "string", description: "The question to research, phrased clearly." },
     }, required: ["query"] } },
+
+  { name: "list_files", description: "List or search the signed-in user's OneDrive/SharePoint files (Microsoft 365). Use when the user refers to a file by name or asks to open/import something from their cloud storage. Returns id + name for each; pass the id to open_file.",
+    input_schema: { type: "object", properties: {
+      query: { type: "string", description: "Search text (file name/keywords). Omit to list recent files." },
+    } } },
+
+  { name: "open_file", description: "Open a OneDrive/SharePoint file by id (from list_files) and read its contents — text/CSV is returned as text, images and PDFs are returned so you can see/read them. For tabular data, offer to import it into the sheet with write_range.",
+    input_schema: { type: "object", properties: {
+      id: { type: "string", description: "The file id from list_files." },
+      name: { type: "string", description: "Optional file name, for display." },
+    }, required: ["id"] } },
 
   { name: "write_range", description: "Write a 2D array of values into a range. The array shape must match the range.",
     input_schema: { type: "object", properties: {
@@ -334,6 +350,7 @@ app.get("/api/health", (_req, res) => {
     model: MODEL,
     keyConfigured: Boolean(apiKey),
     ssoConfigured,
+    graphConfigured,
     memoryStore: usingPostgres ? "postgres" : "ephemeral",
   });
 });
@@ -617,6 +634,50 @@ app.post("/api/research", async (req, res) => {
   } catch (err) {
     console.error("[Simba] /api/research error:", err?.message || err);
     res.status(502).json({ error: "Kunde inte söka på webben." });
+  }
+});
+
+// ---- OneDrive / SharePoint files via Microsoft Graph (OBO) ---------------
+// Requires SSO + a client secret + the Files.Read delegated permission.
+const FILE_OPEN_MAX = 8 * 1024 * 1024;
+
+app.get("/api/files", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!graphConfigured) return res.status(501).json({ error: "Molnfiler är inte aktiverade på servern.", graphConfigured: false });
+  try {
+    const gt = await oboGraphToken(bearer(req));
+    res.json({ files: await searchFiles(gt, req.query.q) });
+  } catch (err) {
+    console.error("[Simba] /api/files error:", err?.message || err);
+    res.status(err.status || 502).json({ error: "Kunde inte hämta dina filer." });
+  }
+});
+
+app.post("/api/files/open", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!graphConfigured) return res.status(501).json({ error: "Molnfiler är inte aktiverade på servern." });
+  const id = String(req.body?.id || "");
+  if (!id) return res.status(400).json({ error: "Missing 'id'." });
+  try {
+    const gt = await oboGraphToken(bearer(req));
+    const { name, size, buffer } = await downloadFile(gt, id);
+    if (size > FILE_OPEN_MAX) return res.status(413).json({ error: "Filen är för stor (max 8 MB)." });
+    const lower = name.toLowerCase();
+    if (/\.(csv|tsv|txt|md|json|tab|xml|log)$/.test(lower)) {
+      res.json({ kind: "text", name, text: buffer.toString("utf8").slice(0, 200_000) });
+    } else if (/\.(png|jpe?g|gif|webp|bmp)$/.test(lower)) {
+      const media_type = lower.endsWith(".png") ? "image/png" : /\.jpe?g$/.test(lower) ? "image/jpeg" : lower.endsWith(".gif") ? "image/gif" : lower.endsWith(".webp") ? "image/webp" : "image/png";
+      res.json({ kind: "image", name, media_type, data: buffer.toString("base64") });
+    } else if (/\.pdf$/.test(lower)) {
+      res.json({ kind: "pdf", name, data: buffer.toString("base64") });
+    } else {
+      res.status(415).json({ error: `Filtypen stöds inte ännu (${name}). Stödjer text/CSV, bilder och PDF.` });
+    }
+  } catch (err) {
+    console.error("[Simba] /api/files/open error:", err?.message || err);
+    res.status(err.status || 502).json({ error: "Kunde inte öppna filen." });
   }
 });
 

@@ -442,6 +442,34 @@ const tools = {
     } catch { return { error: "Kunde inte nå söktjänsten." }; }
   },
 
+  async list_files({ query } = {}) {
+    const token = await getSsoToken(true);
+    if (!token) return { error: "Logga in med Microsoft för att nå dina filer (Inställningar → Logga in)." };
+    try {
+      const r = await fetch(`${API_BASE}/api/files?q=${encodeURIComponent(query || "")}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Kunde inte hämta filer." }; }
+      const j = await r.json();
+      return { files: (j.files || []).map((f) => ({ id: f.id, name: f.name, size: f.size, modified: f.modified })) };
+    } catch { return { error: "Kunde inte nå filtjänsten." }; }
+  },
+
+  async open_file({ id, name }) {
+    const token = await getSsoToken(true);
+    if (!token) return { error: "Logga in med Microsoft först." };
+    try {
+      const r = await fetch(`${API_BASE}/api/files/open`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ id }),
+      });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Kunde inte öppna filen." }; }
+      const j = await r.json();
+      if (j.kind === "text") return { name: j.name, text: j.text };
+      if (j.kind === "image") return { name: j.name, image: { media_type: j.media_type, data: j.data } };
+      if (j.kind === "pdf") return { name: j.name, document: { media_type: "application/pdf", data: j.data } };
+      return { error: "Okänt filinnehåll." };
+    } catch { return { error: "Kunde inte nå filtjänsten." }; }
+  },
+
   /* ---------------- write / mutate (gated by edit mode) ---------------- */
 
   async write_range({ address, values }) {
@@ -974,10 +1002,16 @@ async function runAgentLoop() {
       markStepDone(group, step, isError, toolResultHint(use.name, use.input, result));
       let content;
       if (result && result.image && result.image.data) {
-        // Image tool result so the vision model can SEE the captured range/chart.
+        // Image tool result so the vision model can SEE the captured range/chart/file.
         content = [
           { type: "image", source: { type: "base64", media_type: result.image.media_type || "image/png", data: result.image.data } },
-          { type: "text", text: `(bild av ${result.address || "området"})` },
+          { type: "text", text: `(bild: ${result.name || result.address || "fil"})` },
+        ];
+      } else if (result && result.document && result.document.data) {
+        // PDF document tool result (e.g. an opened OneDrive PDF).
+        content = [
+          { type: "document", source: { type: "base64", media_type: result.document.media_type || "application/pdf", data: result.document.data } },
+          { type: "text", text: `(dokument: ${result.name || "fil"})` },
         ];
       } else {
         content = JSON.stringify(result);
@@ -1320,6 +1354,8 @@ function toolResultHint(name, input, result) {
     case "set_column_width": return result.width === "auto" ? "auto" : (result.width != null ? `${result.width} pt` : "");
     case "set_row_height": return result.height === "auto" ? "auto" : (result.height != null ? `${result.height} pt` : "");
     case "remember": return result.saved ? "sparat" : "";
+    case "list_files": return Array.isArray(result.files) ? `${result.files.length} filer` : "";
+    case "open_file": return result.name || "";
     default: return result.address || "";
   }
 }
@@ -1334,6 +1370,8 @@ function toolLabel(name, input) {
     capture_view: `Tittar på ${input?.address || "arket"}`,
     analyze_data: `Analyserar ${input?.address || "data"}`,
     web_lookup: `Söker på webben: "${input?.query || ""}"`,
+    list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",
+    open_file: `Öppnar ${input?.name || "fil"}`,
     write_range: `Skriver till ${input?.address || "ett område"}`,
     set_formula: `Anger en formel i ${input?.address || "ett område"}`,
     set_formulas: `Anger formler i ${input?.address || "ett område"}`,

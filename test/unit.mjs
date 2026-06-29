@@ -141,6 +141,10 @@ check("Microsoft SSO + cross-device memory are wired", () => {
   assert(/DATABASE_URL/.test(storeFile), "store should use DATABASE_URL for Postgres");
   assert(/app\.get\("\/api\/memory"/.test(server) && /app\.put\("\/api\/memory"/.test(server), "memory endpoints missing");
   assert(/getAccessToken/.test(taskpane), "client SSO token fetch missing");
+  const graph = read("server/graph.js");
+  assert(/on_behalf_of/.test(graph), "Graph OBO flow missing");
+  assert(/Files\.Read/.test(graph), "Graph should request the Files.Read scope");
+  assert(/app\.get\("\/api\/files"/.test(server), "cloud files endpoint missing");
   const tmpl = read("manifest.template.xml");
   assert(/WebApplicationInfo/.test(tmpl) && /\{\{AAD_CLIENT_ID\}\}/.test(tmpl), "manifest template missing the SSO block");
   const pkg = JSON.parse(read("package.json"));

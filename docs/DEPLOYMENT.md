@@ -183,6 +183,15 @@ omitted (SSO off).
 - `DATABASE_URL=postgres://…` — a free managed Postgres (Neon, Supabase, or Render).
   The `simba_memory` table is created automatically on first use.
 
+**4. (Optional) OneDrive/SharePoint files** — to let Simba list/open the user's
+Microsoft 365 files (`list_files` / `open_file`):
+- In the Azure app, add the **delegated** Microsoft Graph permission **`Files.Read`**
+  (grant admin consent), and create a **client secret**.
+- Set `AAD_CLIENT_SECRET=<secret>` on the host. The server uses the on-behalf-of
+  flow to exchange the user's SSO token for a Graph token — files are read with the
+  signed-in user's own permissions, and the secret never leaves the server.
+- Verify at `/api/health` → `"graphConfigured":true`.
+
 Verify at `https://YOUR_HOST/api/health` → `{"ssoConfigured":true,"memoryStore":"postgres"}`.
 Memory now syncs to each signed-in user and is keyed to their Microsoft identity.
 
