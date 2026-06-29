@@ -667,8 +667,8 @@ app.post("/api/files/open", async (req, res) => {
     const lower = name.toLowerCase();
     if (/\.(csv|tsv|txt|md|json|tab|xml|log)$/.test(lower)) {
       res.json({ kind: "text", name, text: buffer.toString("utf8").slice(0, 200_000) });
-    } else if (/\.(png|jpe?g|gif|webp|bmp)$/.test(lower)) {
-      const media_type = lower.endsWith(".png") ? "image/png" : /\.jpe?g$/.test(lower) ? "image/jpeg" : lower.endsWith(".gif") ? "image/gif" : lower.endsWith(".webp") ? "image/webp" : "image/png";
+    } else if (/\.(png|jpe?g|gif|webp)$/.test(lower)) {
+      const media_type = /\.jpe?g$/.test(lower) ? "image/jpeg" : lower.endsWith(".gif") ? "image/gif" : lower.endsWith(".webp") ? "image/webp" : "image/png";
       res.json({ kind: "image", name, media_type, data: buffer.toString("base64") });
     } else if (/\.pdf$/.test(lower)) {
       res.json({ kind: "pdf", name, data: buffer.toString("base64") });

@@ -1507,10 +1507,13 @@ async function handleAttach(file) {
       const data = (await readFile(file, true)).split(",")[1];
       pendingAttachment = { name, kind: "PDF",
         block: { type: "document", source: { type: "base64", media_type: "application/pdf", data } } };
-    } else if (/^image\//.test(type)) {
+    } else if (/^image\/(png|jpeg|gif|webp)$/.test(type)) {
       const data = (await readFile(file, true)).split(",")[1];
       pendingAttachment = { name, kind: "bild",
         block: { type: "image", source: { type: "base64", media_type: type, data } } };
+    } else if (/^image\//.test(type)) {
+      toast("Bildformatet stöds inte (använd PNG, JPG, GIF eller WebP).", "error", 3500);
+      return;
     } else if (isText) {
       let text = await readFile(file, false);
       if (text.length > ATTACH_TEXT_MAX) text = text.slice(0, ATTACH_TEXT_MAX) + "\n…(avkortad)";
