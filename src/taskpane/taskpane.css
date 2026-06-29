@@ -93,6 +93,7 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  font-optical-sizing: auto;
 }
 
 #app { display: flex; flex-direction: column; height: 100vh; }
@@ -142,9 +143,9 @@ html, body {
 .brand-text h1 {
   margin: 0;
   font-family: var(--serif);
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 600;
-  letter-spacing: 0.1px;
+  letter-spacing: -0.01em;
 }
 .context-pill {
   margin: 1px 0 0;
@@ -185,8 +186,8 @@ html, body {
 }
 
 .welcome { animation: rise var(--speed) var(--ease) both; }
-.welcome h2 { margin: 2px 0 6px; font-family: var(--serif); font-size: 20px; font-weight: 600; }
-.welcome p { margin: 0 0 16px; color: var(--ink-soft); line-height: 1.55; }
+.welcome h2 { margin: 2px 0 7px; font-family: var(--serif); font-size: 23px; font-weight: 600; line-height: 1.15; letter-spacing: -0.015em; }
+.welcome p { margin: 0 0 16px; color: var(--ink-soft); line-height: 1.6; font-size: 14px; }
 .suggestions { display: flex; flex-direction: column; gap: 8px; }
 .suggestion {
   text-align: left;
@@ -267,10 +268,10 @@ html, body {
 .copy-btn.copied { background: var(--accent); color: #fff; }
 
 /* Rich markdown inside bubbles */
-.bubble .md-h { font-family: var(--serif); font-weight: 600; line-height: 1.3; margin: 12px 0 6px; }
-.bubble h4.md-h { font-size: 15px; }
-.bubble h5.md-h { font-size: 13.5px; }
-.bubble h6.md-h { font-size: 12.5px; color: var(--ink-soft); }
+.bubble .md-h { font-family: var(--serif); font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin: 14px 0 6px; }
+.bubble h4.md-h { font-size: 16.5px; }
+.bubble h5.md-h { font-size: 14px; }
+.bubble h6.md-h { font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; font-family: var(--font); color: var(--ink-soft); }
 .bubble ul, .bubble ol { margin: 6px 0; padding-left: 20px; }
 .bubble li { margin: 3px 0; }
 .bubble li::marker { color: var(--accent); }
@@ -281,7 +282,7 @@ html, body {
 .bubble > :first-child { margin-top: 0; }
 .bubble > :last-child { margin-bottom: 0; }
 .bubble .md-tablewrap { overflow-x: auto; margin: 8px 0; }
-.bubble .md-table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.bubble .md-table { border-collapse: collapse; font-size: 12.5px; width: 100%; font-variant-numeric: tabular-nums; }
 .bubble .md-table th, .bubble .md-table td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; }
 .bubble .md-table thead th { background: var(--bg-soft); font-weight: 600; }
 .bubble .md-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-soft) 55%, transparent); }
@@ -731,7 +732,7 @@ html, body {
 .onb-step .onb-title { animation: riseSoft 0.5s var(--ease) both; animation-delay: 0.12s; }
 .onb-step .onb-body { animation: riseSoft 0.5s var(--ease) both; animation-delay: 0.19s; }
 
-.onb-title { margin: 4px 0 0; font-family: var(--serif); font-size: 20px; font-weight: 600; }
+.onb-title { margin: 4px 0 0; font-family: var(--serif); font-size: 22px; font-weight: 600; line-height: 1.15; letter-spacing: -0.015em; }
 .onb-body { margin: 8px 0 0; font-size: 13.5px; line-height: 1.55; color: var(--ink-soft); max-width: 286px; }
 
 /* Step artwork */
