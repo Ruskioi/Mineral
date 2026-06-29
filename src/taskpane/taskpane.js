@@ -31,6 +31,24 @@ let busy = false;
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
+
+/* Per-user memory: short durable notes kept in localStorage and sent with each
+ * request so Simba personalizes across chats. Stays on this device. */
+const MEMORY_MAX = 50;
+function memoryList() {
+  try { return JSON.parse(store.get("simba.memory", "[]")) || []; } catch { return []; }
+}
+function memorySave(list) { store.set("simba.memory", JSON.stringify(list.slice(0, MEMORY_MAX))); }
+function memoryAdd(note) {
+  const text = String(note || "").trim();
+  if (!text) return false;
+  const list = memoryList();
+  if (list.some((n) => n.toLowerCase() === text.toLowerCase())) return false;
+  list.push(text);
+  memorySave(list);
+  return true;
+}
+function memoryClear() { memorySave([]); }
 let modelName = "claude-opus-4-8";
 
 const els = {};
@@ -433,6 +451,45 @@ const tools = {
     return { autofit: true, address };
   },
 
+  async set_column_width({ columns, width, autofit = false }) {
+    const ok = await gateEdit({ kind: "edit", address: columns, summary: autofit ? `Autopassa bredd för ${columns}` : `Sätt kolumnbredd ${width} pt för ${columns}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, columns);
+      if (autofit) range.format.autofitColumns();
+      else if (width != null) range.format.columnWidth = width;
+      range.load("address");
+      await ctx.sync();
+      return { sized: true, address: range.address, width: autofit ? "auto" : width };
+    });
+    toast(autofit ? `Autopassade ${columns}` : `Satte bredd ${width} pt`, "success");
+    return result;
+  },
+
+  async set_row_height({ rows, height, autofit = false }) {
+    const ok = await gateEdit({ kind: "edit", address: rows, summary: autofit ? `Autopassa höjd för ${rows}` : `Sätt radhöjd ${height} pt för ${rows}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, rows);
+      if (autofit) range.format.autofitRows();
+      else if (height != null) range.format.rowHeight = height;
+      range.load("address");
+      await ctx.sync();
+      return { sized: true, address: range.address, height: autofit ? "auto" : height };
+    });
+    toast(autofit ? `Autopassade ${rows}` : `Satte höjd ${height} pt`, "success");
+    return result;
+  },
+
+  async remember({ note }) {
+    const text = String(note || "").trim();
+    if (!text) return { error: "Tom anteckning." };
+    const added = memoryAdd(text);
+    if (!added) return { saved: false, reason: "Detta minns jag redan." };
+    toast("Sparade i minnet", "success");
+    return { saved: true, note: text };
+  },
+
   async merge_cells({ address, across = false }) {
     const ok = await gateEdit({ kind: "edit", address, summary: `Sammanfoga ${address}` });
     if (!ok) return declined(ok);
@@ -710,7 +767,7 @@ async function callBackend(history) {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: history, speed }),
+      body: JSON.stringify({ messages: history, speed, memory: memoryList() }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -856,6 +913,11 @@ function openSettings() {
        <div><div class="label">Modell</div><div class="hint">Drivs av Claude</div></div>
        <div class="setting-meta">${escapeHtml(modelName)}</div>
      </div>
+     <div class="setting-row" style="align-items:flex-start">
+       <div><div class="label">Minne</div><div class="hint">Vad Simba minns om dig – en rad per sak. Sparas på den här enheten.</div></div>
+       <button class="btn" id="memory-clear" style="flex:none;padding:7px 12px">Rensa</button>
+     </div>
+     <textarea id="memory-text" class="memory-text" rows="4" placeholder="Inget sparat än. Be Simba att minnas något, eller skriv här – en rad per sak.">${escapeHtml(memoryList().join("\n"))}</textarea>
      <div class="setting-row">
        <div><div class="label">Konversation</div><div class="hint">Rensa den aktuella chatten</div></div>
        <button class="btn" id="settings-clear" style="flex:none;padding:7px 12px">Ny chatt</button>
@@ -881,8 +943,14 @@ function openSettings() {
     els.modalCard.querySelectorAll("#speed-seg .seg-btn")
       .forEach((x) => x.classList.toggle("active", x === b));
   });
+  const memoryTextEl = els.modalCard.querySelector("#memory-text");
+  const saveMemoryFromText = () => {
+    const list = memoryTextEl.value.split("\n").map((s) => s.trim()).filter(Boolean);
+    memorySave(list);
+  };
+  els.modalCard.querySelector("#memory-clear").onclick = () => { memoryTextEl.value = ""; memoryClear(); };
   els.modalCard.querySelector("#settings-clear").onclick = () => { resetChat(); closeModalSilently(); };
-  els.modalCard.querySelector('[data-act="done"]').onclick = closeModalSilently;
+  els.modalCard.querySelector('[data-act="done"]').onclick = () => { saveMemoryFromText(); closeModalSilently(); };
 }
 
 /* ------------------------------------------------------------------ *
@@ -924,6 +992,11 @@ function renderToolNote(name, input) {
     delete_columns: "Tar bort kolumner",
     sort_range: `Sorterar ${input?.address || "ett område"}`,
     autofit: "Autopassar celler",
+    set_column_width: input?.autofit ? "Autopassar kolumnbredd" : `Ändrar kolumnbredd för ${input?.columns || "kolumner"}`,
+    set_row_height: input?.autofit ? "Autopassar radhöjd" : `Ändrar radhöjd för ${input?.rows || "rader"}`,
+    merge_cells: `Sammanfogar ${input?.address || "celler"}`,
+    freeze_panes: "Låser rutor",
+    remember: "Sparar i minnet",
     create_table: `Skapar en tabell från ${input?.address || "ett område"}`,
     create_chart: "Skapar ett diagram",
     add_sheet: "Lägger till ett blad",

@@ -53,6 +53,10 @@ Editing:
 - insert_rows / delete_rows / insert_columns / delete_columns — change structure.
 - sort_range — sort a range by a column.
 - autofit — size columns/rows to content. Call this at the end of anything you build.
+- set_column_width — set column width in POINTS, or autofit. Excel's default column is
+  about 48 points; to make columns WIDER use a larger number (e.g. 90-150), not a smaller
+  one. (format_range also accepts column_width, in the same points unit.)
+- set_row_height — set row height in points, or autofit.
 - merge_cells — merge cells into one. Use for a title banner spanning the columns of a table.
 - freeze_panes — freeze top rows and/or leading columns so headers stay visible while scrolling.
   Call this after building any table taller than a screen.
@@ -73,6 +77,17 @@ Guidelines:
 - Before an edit, briefly say what you're about to change. After editing, confirm what changed.
 - If the user has editing set to "off" or declines a confirmation, a tool returns
   {skipped:true}. Explain what you would have done and how to enable editing.
+
+Memory:
+- You have a per-user memory. Durable facts the user has told you are provided to you
+  under a heading like "[Vad du minns om användaren]". Use them to personalize your help
+  without being asked again (their name, role, language quirks, recurring tasks,
+  preferred formats, domain terminology, the structure of their workbooks).
+- When the user tells you something worth remembering for next time, call the remember
+  tool with a short note. Save preferences and stable facts only — not one-off requests.
+  Never store passwords, API keys, or other secrets.
+- Keep notes short and specific (one fact each). If something you remember is now wrong,
+  save the corrected version.
 
 Building well-structured output:
 When you create something (a table, summary, report, schedule, budget, or model),
@@ -156,7 +171,7 @@ const TOOLS = [
       wrap: { type: "boolean" },
       border: { type: "string", enum: ["none", "top", "bottom", "outline", "all"], description: "Add borders: 'top' for a totals separator, 'bottom' under a header, 'outline' around the block, 'all' for a full grid." },
       border_color: { type: "string", description: "Hex border color (default a medium gray)." },
-      column_width: { type: "number", description: "Set the width (in points) of the columns the range covers." },
+      column_width: { type: "number", description: "Set column width in POINTS (Excel default is about 48; use 90-150 to make columns wider)." },
     }, required: ["address"] } },
 
   { name: "insert_rows", description: "Insert blank rows above a given row index (1-based).",
@@ -195,6 +210,25 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range." },
     }, required: ["address"] } },
+
+  { name: "set_column_width", description: "Set the width of one or more columns, in POINTS (Excel default is about 48; to make columns WIDER use a larger value like 90-150). Or pass autofit to size to content. Accepts a column range like 'A:D' or any A1 range whose columns you want to size.",
+    input_schema: { type: "object", properties: {
+      columns: { type: "string", description: "Column range like 'A:D', a single column 'B:B', or an A1 range like 'B2:E2'." },
+      width: { type: "number", description: "Width in points. Larger is wider. Ignored when autofit is true." },
+      autofit: { type: "boolean", description: "Size columns to their content instead of a fixed width." },
+    }, required: ["columns"] } },
+
+  { name: "set_row_height", description: "Set the height of one or more rows, in points, or autofit to content. Accepts a row range like '1:1' or any A1 range whose rows you want to size.",
+    input_schema: { type: "object", properties: {
+      rows: { type: "string", description: "Row range like '1:1', '2:10', or an A1 range like 'B2:E2'." },
+      height: { type: "number", description: "Height in points. Ignored when autofit is true." },
+      autofit: { type: "boolean", description: "Size rows to their content instead of a fixed height." },
+    }, required: ["rows"] } },
+
+  { name: "remember", description: "Save a short, durable fact about the user to your per-user memory so you recall it in future chats (e.g. their name, role, preferred formats, recurring tasks, domain terms). Use for stable preferences and facts only, never one-off requests or secrets.",
+    input_schema: { type: "object", properties: {
+      note: { type: "string", description: "A single short fact to remember, phrased so it is useful later." },
+    }, required: ["note"] } },
 
   { name: "merge_cells", description: "Merge a range into a single cell. Use for a title banner spanning the columns of a table, then center and enlarge it with format_range.",
     input_schema: { type: "object", properties: {
@@ -272,8 +306,24 @@ const SPEED_MAP = {
 
 // Cache the large, static system prompt + tool definitions so every turn after
 // the first skips re-processing them (faster time-to-first-token, lower cost).
-function cachedSystem() {
-  return [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
+// Per-user memory is appended as a second block AFTER the cache breakpoint, so it
+// can vary per user without invalidating the shared, cached prefix.
+const MAX_MEMORY_CHARS = 4000;
+function buildSystem(memory) {
+  const blocks = [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
+  const mem = sanitizeMemory(memory);
+  if (mem) blocks.push({ type: "text", text: `[Vad du minns om användaren]\n${mem}` });
+  return blocks;
+}
+function sanitizeMemory(memory) {
+  let notes = [];
+  if (Array.isArray(memory)) notes = memory;
+  else if (typeof memory === "string" && memory.trim()) notes = memory.split("\n");
+  notes = notes.map((n) => String(n).trim()).filter(Boolean).slice(0, 50);
+  if (!notes.length) return "";
+  let text = notes.map((n) => `- ${n}`).join("\n");
+  if (text.length > MAX_MEMORY_CHARS) text = text.slice(0, MAX_MEMORY_CHARS);
+  return text;
 }
 
 // Add a cache breakpoint on the last message so the growing conversation prefix
@@ -298,14 +348,14 @@ function withConversationCache(messages) {
 // Run the model for one turn, honoring the speed preference. Fast mode runs on
 // the beta endpoint and has its own rate limit, so we fall back to standard
 // speed if it errors rather than failing the whole request.
-async function runModel(messages, speed) {
+async function runModel(messages, speed, memory) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
   const base = {
     model: MODEL,
     max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: { effort: cfg.effort },
-    system: cachedSystem(),
+    system: buildSystem(memory),
     tools: TOOLS,
     messages: withConversationCache(messages),
   };
@@ -364,7 +414,7 @@ app.post("/api/chat", async (req, res) => {
     // Stream internally so large/long responses don't hit HTTP timeouts; collect
     // the final assembled message (content blocks + stop_reason) for the task pane.
     // Speed preference + prompt caching are applied inside runModel.
-    const final = await runModel(req.body.messages, req.body.speed);
+    const final = await runModel(req.body.messages, req.body.speed, req.body.memory);
     res.json({
       content: final.content,
       stop_reason: final.stop_reason,

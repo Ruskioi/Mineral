@@ -113,6 +113,13 @@ check("speed + caching optimizations are wired", () => {
   assert(/simba\.speed/.test(taskpane), "client should persist a speed preference");
 });
 
+check("per-user memory is wired client + server", () => {
+  assert(/req\.body\.memory/.test(server), "server should read per-user memory from the request");
+  assert(/buildSystem/.test(server), "server should inject memory into the system blocks");
+  assert(/simba\.memory/.test(taskpane), "client should persist memory in localStorage");
+  assert(/memory:\s*memoryList\(\)/.test(taskpane), "client should send memory with each request");
+});
+
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {
   assert(/rateLimited/.test(server), "missing rate limiter");
   assert(/validateMessages/.test(server), "missing message validation");
