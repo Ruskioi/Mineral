@@ -312,6 +312,29 @@ const TOOLS = [
       title: { type: "string", description: "Optional chart title." },
     }, required: ["data_range"] } },
 
+  { name: "find_errors", description: "Scan the active sheet for formula errors (#REF!, #DIV/0!, #VALUE!, #NAME?, #N/A, #NULL!, #NUM!) and return the cells that contain them. Use when the user asks what's broken or to fix errors.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
+  { name: "conditional_formatting", description: "Add conditional formatting to a range: data bars, a red-yellow-green colour scale, a highlight rule (cells greater/less/equal than a value), or highlight duplicates. Use to make data easier to read at a glance.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range." },
+      type: { type: "string", enum: ["data_bar", "color_scale", "greater_than", "less_than", "equal_to", "duplicates"], description: "Kind of rule." },
+      value: { type: "number", description: "Threshold for greater_than/less_than/equal_to." },
+      color: { type: "string", description: "Hex highlight/fill colour for the rule (e.g. '#FFC7CE')." },
+    }, required: ["address", "type"] } },
+
+  { name: "data_validation", description: "Add a dropdown list (data validation) to a range so users can only pick from set options. Use for status columns, categories, yes/no, etc.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range to apply the dropdown to." },
+      values: { type: "array", description: "Allowed options.", items: { type: "string" } },
+    }, required: ["address", "values"] } },
+
+  { name: "add_comment", description: "Attach a comment/note to a cell (e.g. an explanation or a flag for the user).",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style single cell." },
+      text: { type: "string", description: "Comment text." },
+    }, required: ["address", "text"] } },
+
   { name: "add_sheet", description: "Add a new worksheet and make it active.",
     input_schema: { type: "object", properties: {
       name: { type: "string", description: "Optional sheet name." },

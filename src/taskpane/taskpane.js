@@ -760,6 +760,88 @@ const tools = {
     return { frozen: true, rows, columns };
   },
 
+  async find_errors() {
+    return Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      const used = sheet.getUsedRangeOrNullObject(true);
+      used.load(["values", "rowIndex", "columnIndex"]);
+      await ctx.sync();
+      if (used.isNullObject) return { errors: [], count: 0 };
+      const ERR = /^#(REF|DIV\/0|VALUE|NAME\?|N\/A|NULL|NUM)/i;
+      const errors = [];
+      for (let r = 0; r < used.values.length && errors.length < 200; r++) {
+        for (let c = 0; c < used.values[r].length; c++) {
+          const v = used.values[r][c];
+          if (typeof v === "string" && v[0] === "#" && ERR.test(v))
+            errors.push({ address: `${colLetter(used.columnIndex + c)}${used.rowIndex + r + 1}`, error: v });
+        }
+      }
+      return { errors, count: errors.length };
+    });
+  },
+
+  async conditional_formatting({ address, type, value, color }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Villkorsstyrd formatering (${type}) på ${address}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      const cfs = range.conditionalFormats;
+      const fill = color || "#FFC7CE";
+      if (type === "data_bar") {
+        cfs.add(Excel.ConditionalFormatType.dataBar);
+      } else if (type === "color_scale") {
+        const cf = cfs.add(Excel.ConditionalFormatType.colorScale);
+        cf.colorScale.criteria = {
+          minimum: { formula: null, type: Excel.ConditionalFormatColorCriterionType.lowestValue, color: "#F8696B" },
+          midpoint: { formula: "50", type: Excel.ConditionalFormatColorCriterionType.percentile, color: "#FFEB84" },
+          maximum: { formula: null, type: Excel.ConditionalFormatColorCriterionType.highestValue, color: "#63BE7B" },
+        };
+      } else if (type === "duplicates") {
+        const cf = cfs.add(Excel.ConditionalFormatType.presetCriteria);
+        cf.preset.format.fill.color = fill;
+        cf.preset.rule = { criterion: Excel.ConditionalFormatPresetCriterion.duplicateValues };
+      } else {
+        const opMap = { greater_than: "GreaterThan", less_than: "LessThan", equal_to: "EqualTo" };
+        const cf = cfs.add(Excel.ConditionalFormatType.cellValue);
+        cf.cellValue.format.fill.color = fill;
+        cf.cellValue.rule = { formula1: String(value ?? 0), operator: opMap[type] || "GreaterThan" };
+      }
+      range.load("address");
+      await ctx.sync();
+      return { applied: true, address: range.address, type };
+    });
+    toast(`Villkorsformaterade ${result.address}`, "success");
+    return result;
+  },
+
+  async data_validation({ address, values }) {
+    const list = Array.isArray(values) ? values : String(values || "").split(",");
+    const source = list.map((v) => String(v).trim()).filter(Boolean).join(",");
+    if (!source) return { error: "Inga alternativ angavs." };
+    const ok = await gateEdit({ kind: "edit", address, summary: `Rullgardin (${source}) på ${address}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.dataValidation.rule = { list: { inCellDropDown: true, source: source.slice(0, 255) } };
+      range.load("address");
+      await ctx.sync();
+      return { applied: true, address: range.address, options: list.length };
+    });
+    toast(`La till rullgardin i ${result.address}`, "success");
+    return result;
+  },
+
+  async add_comment({ address, text }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Kommentar på ${address}` });
+    if (!ok) return declined(ok);
+    await Excel.run(async (ctx) => {
+      ctx.workbook.comments.add(address, String(text || ""));
+      await ctx.sync();
+    });
+    toast(`La till kommentar i ${address}`, "success");
+    return { added: true, address };
+  },
+
   async create_table({ address, has_headers = true, name }) {
     const ok = await gateEdit({ kind: "edit", address, summary: `Skapa en tabell från ${address}` });
     if (!ok) return declined(ok);
@@ -1444,6 +1526,8 @@ function toolResultHint(name, input, result) {
     case "list_files": return Array.isArray(result.files) ? `${result.files.length} filer` : "";
     case "open_file": return result.name || "";
     case "create_document": return result.filename || "";
+    case "find_errors": return typeof result.count === "number" ? `${result.count} fel` : "";
+    case "conditional_formatting": case "data_validation": case "add_comment": return result.address || input?.address || "";
     default: return result.address || "";
   }
 }
@@ -1477,6 +1561,10 @@ function toolLabel(name, input) {
     merge_cells: `Sammanfogar ${input?.address || "celler"}`,
     freeze_panes: "Låser rutor",
     remember: "Sparar i minnet",
+    find_errors: "Söker efter formelfel",
+    conditional_formatting: `Villkorsformaterar ${input?.address || "ett område"}`,
+    data_validation: `Lägger till rullgardin i ${input?.address || "ett område"}`,
+    add_comment: `Kommenterar ${input?.address || "en cell"}`,
     create_table: `Skapar en tabell från ${input?.address || "ett område"}`,
     create_chart: "Skapar ett diagram",
     add_sheet: "Lägger till ett blad",
