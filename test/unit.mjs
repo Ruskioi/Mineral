@@ -170,15 +170,24 @@ check("shared conversation history is wired", () => {
   assert(/renderHistory/.test(taskpane), "client should rebuild chat from stored history");
 });
 
-check("desktop mode + Electron app are wired", () => {
+check("desktop mode + Electron app (with auto-update) are wired", () => {
   assert(/IS_EXCEL/.test(taskpane), "client should track an Excel-vs-desktop flag");
   assert(/function boot\(/.test(taskpane), "client should have a host-agnostic boot()");
   assert(/applyDesktopMode/.test(taskpane), "client should have a desktop mode");
   assert(/req\.body\.surface|surface\)/.test(server), "server should honor a surface (excel/desktop) hint");
   const main = read("desktop/main.js");
   assert(/BrowserWindow/.test(main) && /loadURL/.test(main), "desktop/main.js should open a window loading the UI");
+  assert(/electron-updater/.test(main), "desktop app should wire auto-update");
   const dpkg = JSON.parse(read("desktop/package.json"));
   assert(dpkg.devDependencies.electron, "desktop app needs electron");
+  assert(dpkg.dependencies["electron-updater"], "desktop app needs electron-updater");
+  assert(dpkg.build.publish, "electron-builder needs a publish feed for updates");
+});
+
+check("document generation (Skills) is wired", () => {
+  assert(/app\.post\("\/api\/document"/.test(server), "document endpoint missing");
+  assert(/skills-2025-10-02/.test(server) && /code-execution-2025-08-25/.test(server), "document gen should use the skills + code-execution betas");
+  assert(/renderDownload/.test(taskpane) && /saveBase64/.test(taskpane), "client should render a downloadable file");
 });
 
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {

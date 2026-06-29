@@ -492,6 +492,20 @@ html, body {
 }
 .msg.user .msg-file { align-self: flex-end; }
 
+/* Generated-file download card */
+.dl-card {
+  display: inline-flex; align-items: center; gap: 9px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  border-radius: 12px; padding: 10px 13px; cursor: pointer; font: inherit;
+  color: var(--ink); box-shadow: var(--shadow-sm);
+  transition: transform var(--speed) var(--ease), border-color var(--speed), box-shadow var(--speed);
+}
+.dl-card:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: var(--shadow-md); }
+.dl-card:active { transform: translateY(0) scale(.99); }
+.dl-ic { font-size: 16px; color: var(--accent); }
+.dl-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; max-width: 200px; white-space: nowrap; }
+.dl-go { font-size: 11.5px; color: var(--accent-strong); }
+
 /* Desktop app mode (no Excel) — hide Excel-only chrome */
 body.desktop .composer-foot,
 body.desktop #undo,

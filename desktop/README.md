@@ -60,8 +60,13 @@ cd desktop && npm install && npm run dist
 - macOS: Intune → **Apps → macOS** → upload the `.pkg`, then assign.
 - Users get it pushed silently or installable from **Company Portal**.
 
-**3. (Optional) Auto-update** — electron-builder can publish updates to a feed
-(e.g. a storage bucket) so the app updates itself; otherwise re-deploy via Intune.
+**3. Auto-update** — built in via `electron-updater`. On launch a packaged app
+checks the feed in `package.json` → `build.publish` (a `generic` URL, default
+`/updates/`), downloads a newer version, and installs it on quit. To publish a
+release: bump `version`, run `npm run publish` (or `npm run dist` and upload the
+output), so the installer **and** `latest.yml`/`latest-mac.yml` land at that URL.
+Point the feed at your own host by editing `build.publish[0].url`. With this,
+you only push to Intune for the first install; later updates are automatic.
 
 > The two surfaces use different distribution channels: the **Excel add-in** →
 > M365 admin center (Integrated Apps / Centralized Deployment, see

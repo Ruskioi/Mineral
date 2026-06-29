@@ -33,7 +33,7 @@ let pendingAttachment = null; // {name, kind, block} a user-attached file for th
 let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "list_files", "open_file"]);
+const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "list_files", "open_file", "create_document"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
@@ -474,6 +474,19 @@ const tools = {
       const j = await r.json();
       return { result: j.text };
     } catch { return { error: "Kunde inte nå söktjänsten." }; }
+  },
+
+  async create_document({ kind, instructions }) {
+    try {
+      const r = await fetch(`${API_BASE}/api/document`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, instructions }),
+      });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Kunde inte skapa dokumentet." }; }
+      const j = await r.json();
+      renderDownload(j.filename, j.data, j.media_type); // show a clickable download in the chat
+      return { created: true, filename: j.filename };
+    } catch { return { error: "Kunde inte nå dokumenttjänsten." }; }
   },
 
   async list_files({ query } = {}) {
@@ -1353,6 +1366,36 @@ function renderMessage(role, text, opts) {
   scrollDown();
 }
 
+/* A generated file (pptx/docx/xlsx/pdf) shown as a click-to-download card. The
+ * base64 is decoded to a Blob and saved on the user's click (a user gesture, so
+ * it works in the Office webview and the desktop app). */
+function renderDownload(filename, base64, mediaType) {
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  wrap.innerHTML =
+    `<div class="avatar">${MASCOT_IMG}</div>` +
+    `<div class="body"><button class="dl-card" type="button">` +
+    `<span class="dl-ic">⬇</span><span class="dl-name">${escapeHtml(filename)}</span>` +
+    `<span class="dl-go">Ladda ner</span></button></div>`;
+  wrap.querySelector(".dl-card").onclick = () => saveBase64(base64, filename, mediaType);
+  els.messages.append(wrap);
+  scrollDown();
+}
+
+function saveBase64(base64, filename, mediaType) {
+  try {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: mediaType || "application/octet-stream" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = filename || "simba-fil";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch { toast("Kunde inte spara filen.", "error", 3000); }
+}
+
 /* Live streaming reply: show plain text as it arrives, then swap to rich
  * markdown (with code highlighting + hover actions) once the turn completes. */
 function startStream() {
@@ -1400,6 +1443,7 @@ function toolResultHint(name, input, result) {
     case "remember": return result.saved ? "sparat" : "";
     case "list_files": return Array.isArray(result.files) ? `${result.files.length} filer` : "";
     case "open_file": return result.name || "";
+    case "create_document": return result.filename || "";
     default: return result.address || "";
   }
 }
@@ -1414,6 +1458,7 @@ function toolLabel(name, input) {
     capture_view: `Tittar på ${input?.address || "arket"}`,
     analyze_data: `Analyserar ${input?.address || "data"}`,
     web_lookup: `Söker på webben: "${input?.query || ""}"`,
+    create_document: `Skapar ${(input?.kind || "dokument").toUpperCase()}`,
     list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",
     open_file: `Öppnar ${input?.name || "fil"}`,
     write_range: `Skriver till ${input?.address || "ett område"}`,

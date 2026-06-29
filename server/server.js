@@ -55,6 +55,9 @@ Reading & analysis:
   can't do well: forecasting, correlation, anomaly/outlier detection, trends.
 - web_lookup — look up current facts on the web (prices, FX, company data) with
   sources, when the answer isn't in the sheet.
+- create_document — generate a downloadable PowerPoint, Word, Excel or PDF from
+  instructions (decks, reports, memos). Put the actual data/figures in the
+  instructions; the file is returned for download, not written into the sheet.
 
 Attached files: the user can attach a file to their message. It arrives inline as
 an image, a PDF document, or text (e.g. a CSV). Read it directly. When it's tabular
@@ -170,6 +173,12 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       query: { type: "string", description: "The question to research, phrased clearly." },
     }, required: ["query"] } },
+
+  { name: "create_document", description: "Generate a polished file the user can download — a PowerPoint (pptx), Word (docx), Excel (xlsx) or PDF — from instructions. Use for requests like make a deck/report/memo from this. Give clear, detailed instructions (and include the data/figures to use). Returns the file for download; it is NOT written into the current sheet.",
+    input_schema: { type: "object", properties: {
+      kind: { type: "string", enum: ["pptx", "docx", "xlsx", "pdf"], description: "File type to produce." },
+      instructions: { type: "string", description: "What the document should contain — structure, sections, data, tone. Be specific." },
+    }, required: ["kind", "instructions"] } },
 
   { name: "list_files", description: "List or search the signed-in user's OneDrive/SharePoint files (Microsoft 365). Use when the user refers to a file by name or asks to open/import something from their cloud storage. Returns id + name for each; pass the id to open_file.",
     input_schema: { type: "object", properties: {
@@ -646,6 +655,68 @@ function preflight(req, res) {
   if (ipRateLimited(req.ip) || rateLimited()) { res.set("Retry-After", "30"); res.status(429).json({ error: "För många förfrågningar. Försök igen om en stund." }); return false; }
   return true;
 }
+
+// ---- Document generation (PowerPoint/Word/Excel/PDF via Claude Skills) -----
+const DOC_SKILL = { pptx: "pptx", powerpoint: "pptx", docx: "docx", word: "docx", xlsx: "xlsx", excel: "xlsx", pdf: "pdf" };
+const DOC_MEDIA = {
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pdf: "application/pdf",
+};
+function findFileId(content) {
+  let id = null;
+  const walk = (x) => {
+    if (!x) return;
+    if (Array.isArray(x)) return x.forEach(walk);
+    if (typeof x === "object") {
+      if (typeof x.file_id === "string") id = x.file_id; // last one wins (final artifact)
+      for (const k in x) walk(x[k]);
+    }
+  };
+  walk(content);
+  return id;
+}
+async function generateDocument(skillId, instructions) {
+  const messages = [{ role: "user", content: instructions }];
+  let last;
+  for (let i = 0; i < 8; i++) {
+    last = await client.beta.messages.create({
+      model: MODEL,
+      max_tokens: 16000,
+      betas: ["code-execution-2025-08-25", "skills-2025-10-02"],
+      container: { skills: [{ type: "anthropic", skill_id: skillId, version: "latest" }] },
+      tools: [{ type: "code_execution_20260521", name: "code_execution" }],
+      messages,
+    });
+    if (last.stop_reason === "pause_turn") { messages.push({ role: "assistant", content: last.content }); continue; }
+    break;
+  }
+  const fileId = findFileId(last?.content);
+  if (!fileId) {
+    const text = (last?.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    throw Object.assign(new Error(text || "No document produced."), { status: 502 });
+  }
+  const dl = await client.beta.files.download(fileId);
+  const buffer = Buffer.from(await dl.arrayBuffer());
+  let filename = `simba.${skillId}`;
+  try { const meta = await client.beta.files.retrieveMetadata(fileId); if (meta?.filename) filename = meta.filename; } catch { /* keep default */ }
+  return { filename, data: buffer.toString("base64") };
+}
+
+app.post("/api/document", async (req, res) => {
+  if (!preflight(req, res)) return;
+  const skillId = DOC_SKILL[String(req.body?.kind || "pdf").toLowerCase()] || "pdf";
+  const instructions = String(req.body?.instructions || "").slice(0, 8000);
+  if (!instructions) return res.status(400).json({ error: "Missing 'instructions'." });
+  try {
+    const { filename, data } = await generateDocument(skillId, instructions);
+    res.json({ filename, data, media_type: DOC_MEDIA[skillId] });
+  } catch (err) {
+    console.error("[Simba] /api/document error:", err?.message || err);
+    res.status(err.status || 502).json({ error: "Kunde inte skapa dokumentet." });
+  }
+});
 
 // Run Python (pandas/numpy) over the selected data for analysis Excel can't do.
 app.post("/api/analyze", async (req, res) => {
