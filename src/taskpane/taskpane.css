@@ -458,6 +458,40 @@ html, body {
 .send-btn:disabled { opacity: 0.45; cursor: default; }
 .send-btn.sent { animation: pop 0.3s var(--ease); }
 
+/* Attach button + attachment chip */
+.attach-btn {
+  border: none; background: transparent; color: var(--ink-soft);
+  width: 30px; height: 30px; border-radius: 9px; flex: none;
+  cursor: pointer; font-size: 16px; display: grid; place-items: center;
+  transition: background var(--speed), color var(--speed), transform var(--speed);
+}
+.attach-btn:hover { background: var(--bg-soft); color: var(--ink); }
+.attach-btn:active { transform: scale(0.9); }
+.attach-chip {
+  display: flex; align-items: center; gap: 7px;
+  margin-bottom: 8px; padding: 7px 10px;
+  background: var(--accent-tint);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 10px; font-size: 12.5px; color: var(--ink);
+  animation: rise 0.2s var(--ease) both;
+}
+.attach-chip .ac-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-chip .ac-kind { color: var(--ink-faint); font-size: 11px; }
+.attach-chip .ac-x {
+  margin-left: auto; flex: none; border: none; background: transparent;
+  color: var(--ink-soft); cursor: pointer; font-size: 16px; line-height: 1;
+  width: 20px; height: 20px; border-radius: 6px;
+}
+.attach-chip .ac-x:hover { background: var(--bg-soft); color: var(--ink); }
+.msg-file {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--ink-soft);
+  background: var(--bg-soft); border: 1px solid var(--border);
+  border-radius: 8px; padding: 3px 9px;
+}
+.msg.user .msg-file { align-self: flex-end; }
+
 /* Edit-mode segmented control */
 .composer-foot {
   display: flex;

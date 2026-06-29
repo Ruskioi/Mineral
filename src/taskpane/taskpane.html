@@ -109,7 +109,10 @@
 
     <footer class="composer">
       <div id="ask-dock" class="ask-dock" aria-live="polite"></div>
+      <div id="attach-chip" class="attach-chip" hidden></div>
       <div class="composer-row">
+        <button id="attach" class="attach-btn" title="Bifoga en fil (CSV, text, bild eller PDF)" aria-label="Bifoga fil">📎</button>
+        <input type="file" id="file-input" accept=".csv,.tsv,.txt,.md,.json,.tab,image/*,application/pdf" hidden />
         <textarea id="prompt" rows="1" placeholder="Fråga Simba om ditt kalkylark…"></textarea>
         <button id="send" class="send-btn" title="Skicka" aria-label="Skicka">➤</button>
       </div>

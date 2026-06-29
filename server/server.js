@@ -54,6 +54,11 @@ Reading & analysis:
 - web_lookup — look up current facts on the web (prices, FX, company data) with
   sources, when the answer isn't in the sheet.
 
+Attached files: the user can attach a file to their message. It arrives inline as
+an image, a PDF document, or text (e.g. a CSV). Read it directly. When it's tabular
+data the user likely wants it in the sheet — offer to import it with write_range
+(into the current selection or a sensible empty area), well-structured.
+
 Editing:
 - write_range / set_formula / set_formulas — write values or formulas.
 - format_range — number formats, bold/italic/underline, font size, font & fill color,
@@ -312,7 +317,7 @@ app.use((_req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: "8mb" }));
+app.use(express.json({ limit: "25mb" })); // headroom for attached images/PDFs (base64)
 
 // Single-deployable mode: if a production build exists, serve the sidebar
 // (dist/) from this same service so the front-end and /api share one origin —
@@ -496,7 +501,10 @@ function validateMessages(messages) {
     if (!m || (m.role !== "user" && m.role !== "assistant"))
       return "Each message must have role 'user' or 'assistant'.";
     if (m.content == null) return "Each message must include content.";
-    chars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
+    // Count only text toward the budget; image/PDF/tool_result blocks are bounded
+    // by the request body limit, not this character cap.
+    if (typeof m.content === "string") chars += m.content.length;
+    else if (Array.isArray(m.content)) for (const b of m.content) if (b && b.type === "text" && typeof b.text === "string") chars += b.text.length;
   }
   if (chars > MAX_CHARS) return "Conversation is too large — start a new chat.";
   return null;

@@ -29,6 +29,7 @@ const store = {
 let messages = [];
 let busy = false;
 let activeTyping = null; // the "thinking" dots; cleared once real content appears
+let pendingAttachment = null; // {name, kind, block} a user-attached file for the next message
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
@@ -189,6 +190,9 @@ Office.onReady((info) => {
   els.newChat = document.getElementById("new-chat");
   els.settings = document.getElementById("settings");
   els.undo = document.getElementById("undo");
+  els.attach = document.getElementById("attach");
+  els.fileInput = document.getElementById("file-input");
+  els.attachChip = document.getElementById("attach-chip");
   els.contextPill = document.getElementById("context-pill");
   els.editMode = document.getElementById("edit-mode");
   els.overlay = document.getElementById("modal-overlay");
@@ -208,6 +212,8 @@ Office.onReady((info) => {
   els.newChat.addEventListener("click", resetChat);
   els.settings.addEventListener("click", openSettings);
   els.undo.addEventListener("click", () => { if (!busy) tools.revert_last_change(); });
+  els.attach.addEventListener("click", () => els.fileInput.click());
+  els.fileInput.addEventListener("change", (e) => { const f = e.target.files?.[0]; if (f) handleAttach(f); e.target.value = ""; });
 
   els.editMode.addEventListener("click", (e) => {
     const btn = e.target.closest(".seg-btn");
@@ -847,7 +853,7 @@ function parseRange(ctx, address) {
 
 async function onSend() {
   const text = els.prompt.value.trim();
-  if (!text || busy) return;
+  if ((!text && !pendingAttachment) || busy) return;
 
   clearWelcome();
   els.prompt.value = "";
@@ -862,8 +868,13 @@ async function onSend() {
     selectionNote = `\n\n[Aktuell markering: ${sel.address} (${sel.rowCount}×${sel.columnCount})]`;
   } catch { /* no active selection */ }
 
-  messages.push({ role: "user", content: text + selectionNote });
-  renderMessage("user", text);
+  const attach = pendingAttachment;
+  const promptText = (text || (attach ? `Titta på den bifogade filen "${attach.name}".` : "")) + selectionNote;
+  // With an attachment, content is a block array (file first, then the question).
+  const content = attach ? [attach.block, { type: "text", text: promptText }] : promptText;
+  messages.push({ role: "user", content });
+  renderMessage("user", text, attach ? { file: `${attach.name} (${attach.kind})` } : null);
+  clearAttachment();
 
   autoApproveTurn = false; // each new request starts asking again
   setBusy(true);
@@ -882,7 +893,11 @@ async function regenerate() {
   if (busy) return;
   let idx = -1;
   for (let k = messages.length - 1; k >= 0; k--) {
-    if (messages[k].role === "user" && typeof messages[k].content === "string") { idx = k; break; }
+    // last real user turn (string text, or a block array — e.g. with an attachment),
+    // not a tool_result user turn (those are arrays of tool_result blocks)
+    const c = messages[k].content;
+    const isToolResult = Array.isArray(c) && c.some((b) => b && b.type === "tool_result");
+    if (messages[k].role === "user" && !isToolResult) { idx = k; break; }
   }
   if (idx < 0) return;
   messages.length = idx + 1;                 // drop the last reply + any tool turns
@@ -1240,7 +1255,7 @@ function openSettings() {
  * Rendering
  * ------------------------------------------------------------------ */
 
-function renderMessage(role, text) {
+function renderMessage(role, text, opts) {
   clearTyping();
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
@@ -1251,9 +1266,11 @@ function renderMessage(role, text) {
       `<button class="msg-act" data-act="regen" type="button" title="Generera om" aria-label="Generera om">↻</button>` +
       `</div>`
     : "";
+  const fileChip = opts?.file ? `<div class="msg-file">📎 ${escapeHtml(opts.file)}</div>` : "";
+  const body = text ? `<div class="bubble">${formatMarkdown(text)}</div>` : "";
   wrap.innerHTML = `
     <div class="avatar">${role === "user" ? "🙂" : MASCOT_IMG}</div>
-    <div class="body"><div class="bubble">${formatMarkdown(text)}</div>${actions}</div>`;
+    <div class="body">${fileChip}${body}${actions}</div>`;
   els.messages.append(wrap);
   scrollDown();
 }
@@ -1426,6 +1443,64 @@ function renderTyping() {
 
 function clearTyping() {
   if (activeTyping) { activeTyping.remove(); activeTyping = null; }
+}
+
+/* ---- File attachments (user-initiated; the add-in sandbox can't browse the
+ * disk, but the user can attach a file and Simba reads it) ---------------- */
+const ATTACH_MAX_BYTES = 5 * 1024 * 1024;       // 5 MB
+const ATTACH_TEXT_MAX = 200_000;                 // chars of text content kept
+
+function readFile(file, asDataUrl) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error("Kunde inte läsa filen."));
+    fr.onload = () => resolve(fr.result);
+    asDataUrl ? fr.readAsDataURL(file) : fr.readAsText(file);
+  });
+}
+
+async function handleAttach(file) {
+  if (file.size > ATTACH_MAX_BYTES) { toast("Filen är för stor (max 5 MB).", "error", 3500); return; }
+  const name = file.name || "fil";
+  const type = file.type || "";
+  const isText = /^text\//.test(type) || /\.(csv|tsv|txt|md|json|tab)$/i.test(name);
+  try {
+    if (type === "application/pdf" || /\.pdf$/i.test(name)) {
+      const data = (await readFile(file, true)).split(",")[1];
+      pendingAttachment = { name, kind: "PDF",
+        block: { type: "document", source: { type: "base64", media_type: "application/pdf", data } } };
+    } else if (/^image\//.test(type)) {
+      const data = (await readFile(file, true)).split(",")[1];
+      pendingAttachment = { name, kind: "bild",
+        block: { type: "image", source: { type: "base64", media_type: type, data } } };
+    } else if (isText) {
+      let text = await readFile(file, false);
+      if (text.length > ATTACH_TEXT_MAX) text = text.slice(0, ATTACH_TEXT_MAX) + "\n…(avkortad)";
+      pendingAttachment = { name, kind: "text",
+        block: { type: "text", text: `Bifogad fil "${name}":\n\n${text}` } };
+    } else {
+      toast("Filtypen stöds inte (CSV, text, bild eller PDF).", "error", 3500);
+      return;
+    }
+    renderAttachChip();
+  } catch (e) {
+    toast(e.message || "Kunde inte läsa filen.", "error", 3500);
+  }
+}
+
+function renderAttachChip() {
+  if (!pendingAttachment) { els.attachChip.hidden = true; els.attachChip.innerHTML = ""; return; }
+  els.attachChip.hidden = false;
+  els.attachChip.innerHTML =
+    `<span class="ac-ic">📎</span><span class="ac-name">${escapeHtml(pendingAttachment.name)}</span>` +
+    `<span class="ac-kind">${pendingAttachment.kind}</span>` +
+    `<button class="ac-x" type="button" title="Ta bort" aria-label="Ta bort bilaga">×</button>`;
+  els.attachChip.querySelector(".ac-x").onclick = clearAttachment;
+}
+
+function clearAttachment() {
+  pendingAttachment = null;
+  renderAttachChip();
 }
 
 /** Markdown: fenced code (with header), headings, lists, links, quotes, hr, inline. */
