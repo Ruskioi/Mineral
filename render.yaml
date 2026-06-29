@@ -1,0 +1,21 @@
+# Render Blueprint — deterministic single-service deploy for Simba AI.
+#
+# This pins the build to the Dockerfile, which builds dist/ and runs the
+# PRODUCTION server (node server/server.js) that serves the sidebar + /api on
+# one origin. It avoids the trap of Render defaulting Start Command to
+# `npm start`, which runs the *development* webpack-dev-server instead.
+#
+# To use: in Render, "New +" → "Blueprint" → point at this repo. Or, on an
+# existing service, set Runtime = Docker (Dockerfile path: ./Dockerfile).
+services:
+  - type: web
+    name: simba-ai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter            # 'free' spins down when idle (slow cold start → Excel load timeouts)
+    healthCheckPath: /api/health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set this in the Render dashboard; never commit it
+      - key: NODE_ENV
+        value: production

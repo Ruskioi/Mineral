@@ -127,6 +127,8 @@ sidebar opens. Done.
 |---|---|
 | Add-in doesn't appear after deploying | Propagation delay (wait, then restart Excel). Confirm the user is in the assigned group. |
 | Sidebar is blank / won't load | `https://YOUR_HOST/taskpane.html` not reachable, or TLS cert isn't CA-trusted. |
+| **"Error loading add-in" in Excel even though the app appears** | The host isn't serving the built sidebar. First open `https://YOUR_HOST/taskpane.html` in a browser: if it 404s, `dist/` was never built/served. Root cause is almost always the **Start Command set to `npm start`** (that runs the *dev* webpack server, not production). Fix on the host: **Build** `npm ci && npm run build`, **Start** `node server/server.js` (or `npm run start:prod`); or switch the service to **Docker** (use the bundled `Dockerfile` / `render.yaml`). |
+| First load is slow then errors, later loads work | Free-tier hosts (e.g. Render Free) spin down when idle; the cold start exceeds Excel's load timeout. Upgrade off the free plan, or hit `https://YOUR_HOST/api/health` once to wake it before opening Excel. |
 | "Simba backend error" in the chat | `/api/health` shows `keyConfigured:false` → set `ANTHROPIC_API_KEY` on the host. |
 | Upload rejected in Integrated apps | Run `npx office-addin-manifest validate manifest.prod.xml`; ensure no `localhost` URLs and a unique GUID (`--new-id`). |
 | Host build fails with `webpack: not found` / "Exited with status 1" | The host set `NODE_ENV=production`, pruning devDependencies. This repo's `.npmrc` (`include=dev`) prevents that — make sure it's deployed. As a fallback, set `NPM_CONFIG_PRODUCTION=false` in the host env, or use build command `npm ci --include=dev && npm run build`. |
