@@ -8,8 +8,49 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
   <script src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script>
+  <!-- Self-contained splash styles: must work before the JS bundle injects the main CSS. -->
+  <style id="splash-style">
+    #splash {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+      background: #faf9f5; transition: opacity .45s ease;
+    }
+    #splash.hide { opacity: 0; pointer-events: none; }
+    .splash-badge { position: relative; width: 86px; height: 86px; display: grid; place-items: center; }
+    .splash-badge img { width: 58px; height: 58px; object-fit: contain; animation: splashBob 1.8s ease-in-out infinite; }
+    .splash-ring {
+      position: absolute; inset: 0; border-radius: 50%;
+      border: 3px solid rgba(217,119,87,.18); border-top-color: #d97757;
+      animation: splashSpin .9s linear infinite;
+    }
+    .splash-word {
+      font-family: "Fraunces", Georgia, "Times New Roman", serif;
+      font-size: 21px; font-weight: 600; letter-spacing: .01em;
+      background: linear-gradient(90deg, #bdb5a6 30%, #2b2a27 50%, #bdb5a6 70%);
+      background-size: 220% 100%; -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; color: transparent;
+      animation: splashShim 1.6s linear infinite;
+    }
+    @keyframes splashSpin { to { transform: rotate(360deg); } }
+    @keyframes splashBob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+    @keyframes splashShim { from { background-position: 220% 0; } to { background-position: -220% 0; } }
+    @media (prefers-color-scheme: dark) {
+      #splash { background: #201f1c; }
+      .splash-word { background: linear-gradient(90deg, #5b554b 30%, #f2efe8 50%, #5b554b 70%); background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .splash-badge img, .splash-ring, .splash-word { animation: none; }
+    }
+  </style>
 </head>
 <body>
+  <div id="splash" role="status" aria-label="Laddar Simba">
+    <div class="splash-badge">
+      <span class="splash-ring"></span>
+      <img src="assets/mascot.png" alt="" />
+    </div>
+    <div class="splash-word">Simba</div>
+  </div>
   <div id="app">
     <header class="app-header">
       <div class="brand">

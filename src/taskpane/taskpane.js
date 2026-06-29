@@ -265,9 +265,18 @@ Office.onReady((info) => {
     initIdentity();
   }).catch(() => {});
 
+  hideSplash();
+
   // One-time onboarding tip on first open.
   if (!store.get("simba.onboarded", "")) setTimeout(showOnboarding, 450);
 });
+
+function hideSplash() {
+  const s = document.getElementById("splash");
+  if (!s) return;
+  s.classList.add("hide");
+  setTimeout(() => s.remove(), 500);
+}
 
 /* ------------------------------------------------------------------ *
  * Excel tools — the functions Claude can call.
