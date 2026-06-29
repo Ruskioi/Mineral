@@ -13,38 +13,38 @@
         <span class="brand-mark" aria-hidden="true">S</span>
         <div class="brand-text">
           <h1>Simba AI</h1>
-          <p id="context-pill" class="context-pill">No selection</p>
+          <p id="context-pill" class="context-pill">Ingen markering</p>
         </div>
       </div>
       <div class="header-actions">
-        <button id="settings" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
-        <button id="new-chat" class="icon-btn" title="New chat" aria-label="New chat">＋</button>
+        <button id="settings" class="icon-btn" title="Inställningar" aria-label="Inställningar">⚙</button>
+        <button id="new-chat" class="icon-btn" title="Ny chatt" aria-label="Ny chatt">＋</button>
       </div>
     </header>
 
     <main id="messages" class="messages" aria-live="polite">
       <div class="welcome">
-        <h2>Hello 👋</h2>
-        <p>I'm Simba, your Excel assistant. I can read your sheet, write formulas, clean data, and explain what's going on.</p>
+        <h2>Hej 👋</h2>
+        <p>Jag är Simba, din Excel-assistent. Jag kan läsa ditt ark, skriva formler, städa data och förklara vad som händer.</p>
         <div class="suggestions">
-          <button class="suggestion">Summarize the selected range</button>
-          <button class="suggestion">Write a formula to total column B</button>
-          <button class="suggestion">Find duplicates in my data</button>
+          <button class="suggestion">Sammanfatta det markerade området</button>
+          <button class="suggestion">Skriv en formel som summerar kolumn B</button>
+          <button class="suggestion">Hitta dubbletter i min data</button>
         </div>
       </div>
     </main>
 
     <footer class="composer">
       <div class="composer-row">
-        <textarea id="prompt" rows="1" placeholder="Ask Simba about your spreadsheet…"></textarea>
-        <button id="send" class="send-btn" title="Send" aria-label="Send">➤</button>
+        <textarea id="prompt" rows="1" placeholder="Fråga Simba om ditt kalkylark…"></textarea>
+        <button id="send" class="send-btn" title="Skicka" aria-label="Skicka">➤</button>
       </div>
       <div class="composer-foot">
-        <span class="foot-label">Sheet editing</span>
-        <div class="seg" id="edit-mode" role="group" aria-label="Sheet editing mode">
-          <button class="seg-btn" data-mode="auto" title="Apply edits automatically">Auto</button>
-          <button class="seg-btn active" data-mode="ask" title="Ask before each edit">Ask</button>
-          <button class="seg-btn" data-mode="off" title="Never edit the sheet">Off</button>
+        <span class="foot-label">Redigering</span>
+        <div class="seg" id="edit-mode" role="group" aria-label="Läge för arkredigering">
+          <button class="seg-btn" data-mode="auto" title="Tillämpa ändringar automatiskt">Auto</button>
+          <button class="seg-btn active" data-mode="ask" title="Fråga före varje ändring">Fråga</button>
+          <button class="seg-btn" data-mode="off" title="Redigera aldrig arket">Av</button>
         </div>
       </div>
     </footer>

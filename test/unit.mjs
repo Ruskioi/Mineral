@@ -87,6 +87,10 @@ check("manifest.template.xml has both placeholders and no localhost leak", () =>
   assert(!/localhost/.test(t), "template should not hardcode localhost");
 });
 
+check("assistant is instructed to respond in Swedish", () => {
+  assert(/respond in Swedish|svenska/i.test(server), "system prompt must instruct Swedish responses");
+});
+
 check("backend uses the approved model and adaptive thinking", () => {
   assert(/claude-opus-4-8/.test(server), "expected default model claude-opus-4-8");
   assert(/type:\s*"adaptive"/.test(server), "expected adaptive thinking");

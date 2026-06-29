@@ -10,9 +10,9 @@
   <Id>b6f3e1a2-7c4d-4f9a-9e2b-1a2c3d4e5f60</Id>
   <Version>1.0.0.0</Version>
   <ProviderName>Simba AI</ProviderName>
-  <DefaultLocale>en-US</DefaultLocale>
+  <DefaultLocale>sv-SE</DefaultLocale>
   <DisplayName DefaultValue="Simba AI" />
-  <Description DefaultValue="An AI assistant sidebar for Excel. Ask questions about your data, generate formulas, clean ranges, and let Simba read and write your spreadsheet for you." />
+  <Description DefaultValue="En AI-assistent i sidofältet för Excel. Ställ frågor om din data, generera formler, städa områden och låt Simba läsa och skriva i ditt kalkylark." />
   <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-80.png" />
   <SupportUrl DefaultValue="https://localhost:3000/" />
@@ -94,14 +94,14 @@
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://localhost:3000/" />
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="GetStarted.Title" DefaultValue="Simba AI is ready." />
+        <bt:String id="GetStarted.Title" DefaultValue="Simba AI är redo." />
         <bt:String id="Simba.Group.Label" DefaultValue="Simba AI" />
-        <bt:String id="Simba.OpenTaskpane.Label" DefaultValue="Ask Simba" />
-        <bt:String id="Simba.OpenTaskpane.Title" DefaultValue="Open the Simba AI sidebar" />
+        <bt:String id="Simba.OpenTaskpane.Label" DefaultValue="Fråga Simba" />
+        <bt:String id="Simba.OpenTaskpane.Title" DefaultValue="Öppna Simba AI-sidofältet" />
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="GetStarted.Description" DefaultValue="Click 'Ask Simba' on the Home tab to open the AI assistant." />
-        <bt:String id="Simba.OpenTaskpane.Tooltip" DefaultValue="Open the Simba AI assistant to chat about your data, generate formulas, and edit ranges." />
+        <bt:String id="GetStarted.Description" DefaultValue="Klicka på 'Fråga Simba' på fliken Start för att öppna AI-assistenten." />
+        <bt:String id="Simba.OpenTaskpane.Tooltip" DefaultValue="Öppna Simba AI-assistenten för att chatta om din data, generera formler och redigera områden." />
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>

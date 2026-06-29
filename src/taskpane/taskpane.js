@@ -94,9 +94,9 @@ Office.onReady((info) => {
     if (!btn) return;
     const code = btn.parentElement.querySelector("code");
     copyText(code ? code.textContent : "").then(() => {
-      btn.textContent = "Copied";
+      btn.textContent = "Kopierat";
       btn.classList.add("copied");
-      setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1400);
+      setTimeout(() => { btn.textContent = "Kopiera"; btn.classList.remove("copied"); }, 1400);
     });
   });
 
@@ -148,7 +148,7 @@ const tools = {
         out.values = cap.values;
         out.formulas = out.formulas.slice(0, cap.shownRows);
         out.truncated = true;
-        out.note = `Showing the first ${cap.shownRows} of ${cap.totalRows} rows (capped for size).`;
+        out.note = `Visar de första ${cap.shownRows} av ${cap.totalRows} raderna (begränsat för storlek).`;
       }
       return out;
     });
@@ -168,7 +168,7 @@ const tools = {
         out.values = cap.values;
         if (out.formulas) out.formulas = out.formulas.slice(0, cap.shownRows);
         out.truncated = true;
-        out.note = `Showing the first ${cap.shownRows} of ${cap.totalRows} rows (capped for size). Read a smaller range for everything.`;
+        out.note = `Visar de första ${cap.shownRows} av ${cap.totalRows} raderna (begränsat för storlek). Läs ett mindre område för allt.`;
       }
       return out;
     });
@@ -231,7 +231,7 @@ const tools = {
   /* ---------------- write / mutate (gated by edit mode) ---------------- */
 
   async write_range({ address, values }) {
-    if (!is2DArray(values)) return { error: "values must be a non-empty 2D array (rows of columns)." };
+    if (!is2DArray(values)) return { error: "values måste vara en icke-tom 2D-array (rader av kolumner)." };
     const ok = await gateEdit({ kind: "values", address, values });
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
@@ -241,7 +241,7 @@ const tools = {
       await ctx.sync();
       return { written: true, address: range.address };
     });
-    toast(`Wrote ${result.address}`, "success");
+    toast(`Skrev ${result.address}`, "success");
     return result;
   },
 
@@ -257,12 +257,12 @@ const tools = {
       await ctx.sync();
       return { written: true, address: range.address, formula };
     });
-    toast(`Set formula in ${result.address}`, "success");
+    toast(`Angav formel i ${result.address}`, "success");
     return result;
   },
 
   async set_formulas({ address, formulas }) {
-    if (!is2DArray(formulas)) return { error: "formulas must be a non-empty 2D array of formula strings." };
+    if (!is2DArray(formulas)) return { error: "formulas måste vara en icke-tom 2D-array med formelsträngar." };
     const ok = await gateEdit({ kind: "values", address, values: formulas });
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
@@ -272,12 +272,12 @@ const tools = {
       await ctx.sync();
       return { written: true, address: range.address };
     });
-    toast(`Set formulas in ${result.address}`, "success");
+    toast(`Angav formler i ${result.address}`, "success");
     return result;
   },
 
   async clear_range({ address, what = "contents" }) {
-    const ok = await gateEdit({ kind: "edit", address, summary: `Clear ${what} of ${address}` });
+    const ok = await gateEdit({ kind: "edit", address, summary: `Rensa ${what} i ${address}` });
     if (!ok) return declined(ok);
     const map = { contents: "Contents", formats: "Formats", all: "All" };
     const result = await Excel.run(async (ctx) => {
@@ -287,7 +287,7 @@ const tools = {
       await ctx.sync();
       return { cleared: true, address: range.address, what };
     });
-    toast(`Cleared ${result.address}`, "success");
+    toast(`Rensade ${result.address}`, "success");
     return result;
   },
 
@@ -315,36 +315,36 @@ const tools = {
       await ctx.sync();
       return { formatted: true, address: range.address };
     });
-    toast(`Formatted ${result.address}`, "success");
+    toast(`Formaterade ${result.address}`, "success");
     return result;
   },
 
   async insert_rows({ index, count = 1 }) {
-    const ok = await gateEdit({ kind: "edit", summary: `Insert ${count} row(s) above row ${index}` });
+    const ok = await gateEdit({ kind: "edit", summary: `Infoga ${count} rad(er) ovanför rad ${index}` });
     if (!ok) return declined(ok);
     await Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
       sheet.getRange(`${index}:${index + count - 1}`).insert("Down");
       await ctx.sync();
     });
-    toast(`Inserted ${count} row(s)`, "success");
+    toast(`Infogade ${count} rad(er)`, "success");
     return { inserted: true, rows: count, at: index };
   },
 
   async delete_rows({ index, count = 1 }) {
-    const ok = await gateEdit({ kind: "edit", summary: `Delete ${count} row(s) starting at row ${index}` });
+    const ok = await gateEdit({ kind: "edit", summary: `Ta bort ${count} rad(er) från rad ${index}` });
     if (!ok) return declined(ok);
     await Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
       sheet.getRange(`${index}:${index + count - 1}`).delete("Up");
       await ctx.sync();
     });
-    toast(`Deleted ${count} row(s)`, "success");
+    toast(`Tog bort ${count} rad(er)`, "success");
     return { deleted: true, rows: count, at: index };
   },
 
   async insert_columns({ column, count = 1 }) {
-    const ok = await gateEdit({ kind: "edit", summary: `Insert ${count} column(s) before ${column}` });
+    const ok = await gateEdit({ kind: "edit", summary: `Infoga ${count} kolumn(er) före ${column}` });
     if (!ok) return declined(ok);
     const start = colIndex(column);
     const ref = `${colLetter(start)}:${colLetter(start + count - 1)}`;
@@ -352,12 +352,12 @@ const tools = {
       ctx.workbook.worksheets.getActiveWorksheet().getRange(ref).insert("Right");
       await ctx.sync();
     });
-    toast(`Inserted ${count} column(s)`, "success");
+    toast(`Infogade ${count} kolumn(er)`, "success");
     return { inserted: true, columns: count, before: column };
   },
 
   async delete_columns({ column, count = 1 }) {
-    const ok = await gateEdit({ kind: "edit", summary: `Delete ${count} column(s) starting at ${column}` });
+    const ok = await gateEdit({ kind: "edit", summary: `Ta bort ${count} kolumn(er) från ${column}` });
     if (!ok) return declined(ok);
     const start = colIndex(column);
     const ref = `${colLetter(start)}:${colLetter(start + count - 1)}`;
@@ -365,24 +365,24 @@ const tools = {
       ctx.workbook.worksheets.getActiveWorksheet().getRange(ref).delete("Left");
       await ctx.sync();
     });
-    toast(`Deleted ${count} column(s)`, "success");
+    toast(`Tog bort ${count} kolumn(er)`, "success");
     return { deleted: true, columns: count, at: column };
   },
 
   async sort_range({ address, column_index = 0, ascending = true, has_headers = true }) {
-    const ok = await gateEdit({ kind: "edit", address, summary: `Sort ${address} by column ${column_index + 1} ${ascending ? "A→Z" : "Z→A"}` });
+    const ok = await gateEdit({ kind: "edit", address, summary: `Sortera ${address} efter kolumn ${column_index + 1} ${ascending ? "A→Z" : "Z→A"}` });
     if (!ok) return declined(ok);
     await Excel.run(async (ctx) => {
       const range = parseRange(ctx, address);
       range.sort.apply([{ key: column_index, ascending }], false, has_headers, "Rows");
       await ctx.sync();
     });
-    toast(`Sorted ${address}`, "success");
+    toast(`Sorterade ${address}`, "success");
     return { sorted: true, address };
   },
 
   async autofit({ address }) {
-    const ok = await gateEdit({ kind: "edit", address, summary: `Autofit ${address}` });
+    const ok = await gateEdit({ kind: "edit", address, summary: `Autopassa ${address}` });
     if (!ok) return declined(ok);
     await Excel.run(async (ctx) => {
       const range = parseRange(ctx, address);
@@ -394,7 +394,7 @@ const tools = {
   },
 
   async create_table({ address, has_headers = true, name }) {
-    const ok = await gateEdit({ kind: "edit", address, summary: `Create a table from ${address}` });
+    const ok = await gateEdit({ kind: "edit", address, summary: `Skapa en tabell från ${address}` });
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
@@ -404,12 +404,12 @@ const tools = {
       await ctx.sync();
       return { created: true, table: table.name };
     });
-    toast(`Created table ${result.table}`, "success");
+    toast(`Skapade tabell ${result.table}`, "success");
     return result;
   },
 
   async create_chart({ data_range, chart_type = "ColumnClustered", title }) {
-    const ok = await gateEdit({ kind: "edit", address: data_range, summary: `Create a ${chart_type} chart from ${data_range}` });
+    const ok = await gateEdit({ kind: "edit", address: data_range, summary: `Skapa ett ${chart_type}-diagram från ${data_range}` });
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
@@ -419,12 +419,12 @@ const tools = {
       await ctx.sync();
       return { created: true, chart: chart.name };
     });
-    toast("Created chart", "success");
+    toast("Skapade diagram", "success");
     return result;
   },
 
   async add_sheet({ name }) {
-    const ok = await gateEdit({ kind: "edit", summary: `Add a new sheet${name ? ` named "${name}"` : ""}` });
+    const ok = await gateEdit({ kind: "edit", summary: `Lägg till ett nytt blad${name ? ` med namnet "${name}"` : ""}` });
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
       const ws = ctx.workbook.worksheets.add(name || undefined);
@@ -433,7 +433,7 @@ const tools = {
       await ctx.sync();
       return { created: true, sheet: ws.name };
     });
-    toast(`Added sheet ${result.sheet}`, "success");
+    toast(`La till blad ${result.sheet}`, "success");
     return result;
   },
 
@@ -461,8 +461,8 @@ function capValues(values) {
 }
 function declined(ok) {
   return ok === false
-    ? { skipped: true, reason: "User declined the edit." }
-    : { skipped: true, reason: "Sheet editing is turned off." };
+    ? { skipped: true, reason: "Du avböjde ändringen." }
+    : { skipped: true, reason: "Redigering av arket är avstängd." };
 }
 function grid(rows, cols, val) {
   return Array.from({ length: rows }, () => Array.from({ length: cols }, () => val));
@@ -485,16 +485,16 @@ function cap(s) {
 }
 function describeFormat(o) {
   const bits = [];
-  if (o.bold) bits.push("bold");
-  if (o.italic) bits.push("italic");
-  if (o.underline) bits.push("underline");
-  if (o.font_color) bits.push(`text ${o.font_color}`);
-  if (o.fill_color) bits.push(`fill ${o.fill_color}`);
-  if (o.font_size) bits.push(`size ${o.font_size}`);
-  if (o.align) bits.push(`align ${o.align}`);
-  if (o.wrap) bits.push("wrap text");
-  if (o.number_format) bits.push(`format "${o.number_format}"`);
-  return `Format ${o.address}${bits.length ? ": " + bits.join(", ") : ""}`;
+  if (o.bold) bits.push("fet");
+  if (o.italic) bits.push("kursiv");
+  if (o.underline) bits.push("understruken");
+  if (o.font_color) bits.push(`textfärg ${o.font_color}`);
+  if (o.fill_color) bits.push(`fyllning ${o.fill_color}`);
+  if (o.font_size) bits.push(`storlek ${o.font_size}`);
+  if (o.align) bits.push(`justering ${o.align}`);
+  if (o.wrap) bits.push("radbryt text");
+  if (o.number_format) bits.push(`talformat "${o.number_format}"`);
+  return `Formatera ${o.address}${bits.length ? ": " + bits.join(", ") : ""}`;
 }
 
 /** Returns null (off), false (declined), or true (apply). */
@@ -530,7 +530,7 @@ async function onSend() {
   let selectionNote = "";
   try {
     const sel = await tools.get_selection();
-    selectionNote = `\n\n[Current selection: ${sel.address} (${sel.rowCount}×${sel.columnCount})]`;
+    selectionNote = `\n\n[Aktuell markering: ${sel.address} (${sel.rowCount}×${sel.columnCount})]`;
   } catch { /* no active selection */ }
 
   messages.push({ role: "user", content: text + selectionNote });
@@ -541,7 +541,7 @@ async function onSend() {
   try {
     await runAgentLoop();
   } catch (err) {
-    toast(err.message || "Something went wrong talking to Simba.", "error", 4000);
+    toast(err.message || "Något gick fel i kommunikationen med Simba.", "error", 4000);
   } finally {
     typing.remove();
     setBusy(false);
@@ -551,7 +551,7 @@ async function onSend() {
 async function runAgentLoop() {
   for (let i = 0; i < 12; i++) {
     const reply = await callBackend(messages);
-    if (!reply || !Array.isArray(reply.content)) throw new Error("Simba returned an unexpected response.");
+    if (!reply || !Array.isArray(reply.content)) throw new Error("Simba returnerade ett oväntat svar.");
     messages.push({ role: "assistant", content: reply.content });
 
     for (const b of reply.content) {
@@ -567,7 +567,7 @@ async function runAgentLoop() {
       let result, isError = false;
       try {
         const fn = tools[use.name];
-        result = fn ? await fn(use.input || {}) : { error: `Unknown tool ${use.name}` };
+        result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
       } catch (e) {
         result = { error: e.message || String(e) };
         isError = true;
@@ -583,7 +583,7 @@ async function runAgentLoop() {
     }
     messages.push({ role: "user", content: results });
   }
-  renderMessage("assistant", "_(Stopped after too many steps. Try narrowing the request.)_");
+  renderMessage("assistant", "_(Stoppade efter för många steg. Försök att avgränsa förfrågan.)_");
 }
 
 async function callBackend(history) {
@@ -600,14 +600,14 @@ async function callBackend(history) {
   } catch (e) {
     throw new Error(
       e && e.name === "AbortError"
-        ? "Simba took too long to respond. Please try again."
-        : "Can't reach Simba. Check your connection and that the backend is running."
+        ? "Simba tog för lång tid på sig att svara. Försök igen."
+        : "Kan inte nå Simba. Kontrollera din anslutning och att servern körs."
     );
   } finally {
     clearTimeout(timer);
   }
   if (!res.ok) {
-    let msg = `Simba backend error (${res.status}).`;
+    let msg = `Simba serverfel (${res.status}).`;
     try { const j = await res.json(); if (j && j.error) msg = j.error; } catch { /* non-JSON */ }
     throw new Error(msg);
   }
@@ -647,23 +647,23 @@ function confirmEdit(details) {
 
     let body, sub;
     if (details.kind === "formula") {
-      sub = "Simba wants to set a formula.";
+      sub = "Simba vill ange en formel.";
       body = `${addrPill}<div class="preview-formula">${escapeHtml(details.formula)}</div>`;
     } else if (details.kind === "values") {
-      sub = "Simba wants to write to the sheet.";
+      sub = "Simba vill skriva till arket.";
       body = `${addrPill}${valuesPreviewTable(details.values)}`;
     } else {
-      sub = "Simba wants to edit the sheet.";
-      body = `${addrPill}<p class="confirm-summary">${escapeHtml(details.summary || "Apply this change?")}</p>`;
+      sub = "Simba vill redigera arket.";
+      body = `${addrPill}<p class="confirm-summary">${escapeHtml(details.summary || "Tillämpa ändringen?")}</p>`;
     }
 
     openModal(
-      `<h3>Apply this edit?</h3>
+      `<h3>Tillämpa ändringen?</h3>
        <p class="sub">${sub}</p>
        ${body}
        <div class="modal-actions">
-         <button class="btn" data-act="cancel">Cancel</button>
-         <button class="btn primary" data-act="apply">Apply</button>
+         <button class="btn" data-act="cancel">Avbryt</button>
+         <button class="btn primary" data-act="apply">Tillämpa</button>
        </div>`,
       { onClose: () => finish(false) }
     );
@@ -680,7 +680,7 @@ function closeModalSilently() {
 }
 
 function valuesPreviewTable(values) {
-  if (!Array.isArray(values) || !values.length) return '<p class="sub">(empty)</p>';
+  if (!Array.isArray(values) || !values.length) return '<p class="sub">(tomt)</p>';
   const maxR = 6, maxC = 6;
   const rows = values.slice(0, maxR);
   let html = '<table class="preview-table"><tbody>';
@@ -691,32 +691,32 @@ function valuesPreviewTable(values) {
     html += "</tr>";
   }
   html += "</tbody></table>";
-  if (values.length > maxR) html += `<p class="sub" style="margin-top:8px">+ ${values.length - maxR} more rows</p>`;
+  if (values.length > maxR) html += `<p class="sub" style="margin-top:8px">+ ${values.length - maxR} rader till</p>`;
   return html;
 }
 
 function openSettings() {
   const theme = store.get("simba.theme", "auto");
   openModal(
-    `<h3>Settings</h3>
+    `<h3>Inställningar</h3>
      <div class="setting-row">
-       <div><div class="label">Appearance</div><div class="hint">Match system, or force a theme</div></div>
+       <div><div class="label">Utseende</div><div class="hint">Följ systemet eller välj ett tema</div></div>
        <div class="seg" id="theme-seg">
          <button class="seg-btn ${theme === "auto" ? "active" : ""}" data-theme="auto">Auto</button>
-         <button class="seg-btn ${theme === "light" ? "active" : ""}" data-theme="light">Light</button>
-         <button class="seg-btn ${theme === "dark" ? "active" : ""}" data-theme="dark">Dark</button>
+         <button class="seg-btn ${theme === "light" ? "active" : ""}" data-theme="light">Ljust</button>
+         <button class="seg-btn ${theme === "dark" ? "active" : ""}" data-theme="dark">Mörkt</button>
        </div>
      </div>
      <div class="setting-row">
-       <div><div class="label">Model</div><div class="hint">Powered by Claude</div></div>
+       <div><div class="label">Modell</div><div class="hint">Drivs av Claude</div></div>
        <div class="setting-meta">${escapeHtml(modelName)}</div>
      </div>
      <div class="setting-row">
-       <div><div class="label">Conversation</div><div class="hint">Clear the current chat</div></div>
-       <button class="btn" id="settings-clear" style="flex:none;padding:7px 12px">New chat</button>
+       <div><div class="label">Konversation</div><div class="hint">Rensa den aktuella chatten</div></div>
+       <button class="btn" id="settings-clear" style="flex:none;padding:7px 12px">Ny chatt</button>
      </div>
      <div class="modal-actions">
-       <button class="btn primary" data-act="done">Done</button>
+       <button class="btn primary" data-act="done">Klar</button>
      </div>`
   );
 
@@ -748,26 +748,26 @@ function renderMessage(role, text) {
 
 function renderToolNote(name, input) {
   const labels = {
-    get_selection: "Reading your selection",
-    read_range: `Reading ${input?.address || "a range"}`,
-    get_sheet_info: "Inspecting the sheet",
-    list_sheets: "Looking at the workbook",
-    find: `Searching for "${input?.query || ""}"`,
-    write_range: `Writing to ${input?.address || "a range"}`,
-    set_formula: `Setting a formula in ${input?.address || "a range"}`,
-    set_formulas: `Setting formulas in ${input?.address || "a range"}`,
-    clear_range: `Clearing ${input?.address || "a range"}`,
-    format_range: `Formatting ${input?.address || "a range"}`,
-    insert_rows: "Inserting rows",
-    delete_rows: "Deleting rows",
-    insert_columns: "Inserting columns",
-    delete_columns: "Deleting columns",
-    sort_range: `Sorting ${input?.address || "a range"}`,
-    autofit: "Autofitting cells",
-    create_table: `Creating a table from ${input?.address || "a range"}`,
-    create_chart: "Creating a chart",
-    add_sheet: "Adding a sheet",
-    select_range: `Selecting ${input?.address || "a range"}`,
+    get_selection: "Läser din markering",
+    read_range: `Läser ${input?.address || "ett område"}`,
+    get_sheet_info: "Granskar arket",
+    list_sheets: "Tittar på arbetsboken",
+    find: `Söker efter "${input?.query || ""}"`,
+    write_range: `Skriver till ${input?.address || "ett område"}`,
+    set_formula: `Anger en formel i ${input?.address || "ett område"}`,
+    set_formulas: `Anger formler i ${input?.address || "ett område"}`,
+    clear_range: `Rensar ${input?.address || "ett område"}`,
+    format_range: `Formaterar ${input?.address || "ett område"}`,
+    insert_rows: "Infogar rader",
+    delete_rows: "Tar bort rader",
+    insert_columns: "Infogar kolumner",
+    delete_columns: "Tar bort kolumner",
+    sort_range: `Sorterar ${input?.address || "ett område"}`,
+    autofit: "Autopassar celler",
+    create_table: `Skapar en tabell från ${input?.address || "ett område"}`,
+    create_chart: "Skapar ett diagram",
+    add_sheet: "Lägger till ett blad",
+    select_range: `Markerar ${input?.address || "ett område"}`,
   };
   const note = document.createElement("div");
   note.className = "msg assistant";
@@ -800,7 +800,7 @@ function formatMarkdown(text) {
   const stripped = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, lang, code) => {
     const html =
       `<div class="codeblock"><pre><code>${highlight(code.replace(/\n+$/, ""), lang)}</code></pre>` +
-      `<button class="copy-btn" type="button">Copy</button></div>`;
+      `<button class="copy-btn" type="button">Kopiera</button></div>`;
     blocks.push(html);
     return `\u0000${blocks.length - 1}\u0000`;
   });
@@ -899,9 +899,9 @@ function onbFormulaArt() {
 
 function onbModesArt() {
   return `<div class="onb-art art-modes">
-    <span class="mchip active">Ask</span>
+    <span class="mchip active">Fråga</span>
     <span class="mchip">Auto</span>
-    <span class="mchip">Off</span>
+    <span class="mchip">Av</span>
   </div>`;
 }
 
@@ -915,24 +915,24 @@ function onbHelloArt() {
 const ONB_STEPS = [
   {
     art: onbHelloArt,
-    title: "Meet Simba",
-    body: "Your AI sidekick for Excel — a curious little Pomeranian that lives in your spreadsheet and helps you get real work done, fast.",
+    title: "Möt Simba",
+    body: "Din AI-kompis i Excel — en nyfiken liten pomeranian som bor i ditt kalkylark och hjälper dig få jobbet gjort, snabbt.",
   },
   {
     art: onbGridArt,
-    title: "I understand your data",
-    body: "Select any range and ask in plain English. I'll read your cells, summarize them, spot trends, and answer questions — no formula-wrangling required.",
+    title: "Jag förstår din data",
+    body: "Markera ett område och fråga på vanlig svenska. Jag läser dina celler, sammanfattar dem, hittar trender och svarar på frågor — utan att du behöver brottas med formler.",
   },
   {
     art: onbFormulaArt,
-    title: "And I'll do the work",
-    body: "Ask me to clean a column, build a formula, or fill in values, and I'll write them straight into your sheet — with a preview so you see exactly what changes.",
+    title: "Och jag gör jobbet",
+    body: "Be mig städa en kolumn, bygga en formel eller fylla i värden, så skriver jag dem direkt i arket — med en förhandsvisning så du ser exakt vad som ändras.",
   },
   {
     art: onbModesArt,
-    title: "You're always in control",
-    body: "By default I <strong>ask</strong> before editing. Switch to <strong>Auto</strong> to let me apply changes, or <strong>Off</strong> to stay read-only — anytime, from the bar below.",
-    cta: "Start using Simba",
+    title: "Du har alltid kontrollen",
+    body: "Som standard <strong>frågar</strong> jag innan jag redigerar. Välj <strong>Auto</strong> för att låta mig tillämpa ändringar, eller <strong>Av</strong> för att bara läsa — när som helst, från fältet nedan.",
+    cta: "Börja använda Simba",
   },
 ];
 
@@ -943,14 +943,14 @@ function showOnboarding() {
   const bd = document.createElement("div");
   bd.className = "onb-backdrop";
   bd.innerHTML = `
-    <div class="onb-modal" role="dialog" aria-modal="true" aria-label="Welcome to Simba">
-      <button class="onb-skip" type="button">Skip</button>
+    <div class="onb-modal" role="dialog" aria-modal="true" aria-label="Välkommen till Simba">
+      <button class="onb-skip" type="button">Hoppa över</button>
       <div class="onb-stage"></div>
       <div class="onb-foot">
         <div class="onb-dots" role="tablist"></div>
         <div class="onb-nav">
-          <button class="btn onb-back" type="button">Back</button>
-          <button class="btn primary onb-next" type="button">Next</button>
+          <button class="btn onb-back" type="button">Tillbaka</button>
+          <button class="btn primary onb-next" type="button">Nästa</button>
         </div>
       </div>
     </div>`;
@@ -965,7 +965,7 @@ function showOnboarding() {
     const d = document.createElement("button");
     d.className = "onb-dot";
     d.type = "button";
-    d.setAttribute("aria-label", `Step ${i + 1}`);
+    d.setAttribute("aria-label", `Steg ${i + 1}`);
     d.addEventListener("click", () => go(i));
     dots.appendChild(d);
   });
@@ -989,7 +989,7 @@ function showOnboarding() {
       d.setAttribute("aria-selected", i === step ? "true" : "false");
     });
     back.style.visibility = step === 0 ? "hidden" : "visible";
-    next.textContent = s.cta || "Next";
+    next.textContent = s.cta || "Nästa";
     next.classList.toggle("final", Boolean(s.cta));
   }
 
@@ -1005,7 +1005,7 @@ function showOnboarding() {
     bd.classList.add("closing");
     document.removeEventListener("keydown", onKey);
     setTimeout(() => bd.remove(), 240);
-    toast("Tip: select some cells, then ask Simba about them", "info", 3400);
+    toast("Tips: markera några celler och fråga sedan Simba om dem", "info", 3400);
   }
 
   function onKey(e) {
@@ -1075,10 +1075,10 @@ function clearWelcome() {
 }
 
 function resetChat() {
-  if (busy) { toast("Hold on — Simba is still working.", "info"); return; }
+  if (busy) { toast("Vänta lite — Simba arbetar fortfarande.", "info"); return; }
   messages = [];
   els.messages.innerHTML =
-    '<div class="welcome"><h2>New chat</h2><p>What would you like to do with your spreadsheet?</p></div>';
+    '<div class="welcome"><h2>Ny chatt</h2><p>Vad vill du göra med ditt kalkylark?</p></div>';
 }
 
 function escapeHtml(s) {
@@ -1093,8 +1093,8 @@ async function copyText(text) {
 async function refreshContextPill() {
   try {
     const sel = await tools.get_selection();
-    els.contextPill.textContent = `Selected ${sel.address}`;
+    els.contextPill.textContent = `Markerat ${sel.address}`;
   } catch {
-    els.contextPill.textContent = "No selection";
+    els.contextPill.textContent = "Ingen markering";
   }
 }
