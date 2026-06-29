@@ -47,15 +47,20 @@ Reading & analysis:
 
 Editing:
 - write_range / set_formula / set_formulas — write values or formulas.
-- format_range — number formats, bold/italic/underline, font size, font & fill color, alignment, wrap.
+- format_range — number formats, bold/italic/underline, font size, font & fill color,
+  alignment, wrap, cell borders, and column width.
 - clear_range — clear contents, formats, or both.
 - insert_rows / delete_rows / insert_columns / delete_columns — change structure.
 - sort_range — sort a range by a column.
-- autofit — size columns/rows to content.
-- create_table — turn a range into an Excel table.
-- create_chart — add a chart from a data range.
-- add_sheet — create a new worksheet.
-- select_range — move the user's selection / navigate (use to show the user where you worked).
+- autofit — size columns/rows to content. Call this at the end of anything you build.
+- merge_cells — merge cells into one. Use for a title banner spanning the columns of a table.
+- freeze_panes — freeze top rows and/or leading columns so headers stay visible while scrolling.
+  Call this after building any table taller than a screen.
+- create_table — turn a range into an Excel table (banded rows, filters, auto-expanding totals).
+  Prefer this for any list/dataset the user will keep adding rows to.
+- create_chart — add a chart from a data range. Use when the user asks to visualize or compare.
+- add_sheet — create a new worksheet. Use to keep a generated report/model on its own clean sheet.
+- select_range — move the user's selection / navigate. Always finish by selecting the result so the user sees it.
 
 Guidelines:
 - Range addresses are A1-style ("B2:D10"), optionally sheet-qualified ("Sheet2!A1:C3").
@@ -68,6 +73,26 @@ Guidelines:
 - Before an edit, briefly say what you're about to change. After editing, confirm what changed.
 - If the user has editing set to "off" or declines a confirmation, a tool returns
   {skipped:true}. Explain what you would have done and how to enable editing.
+
+Building well-structured output:
+When you create something (a table, summary, report, schedule, budget, or model),
+make it look deliberate and professional, not a raw dump of values. Follow this recipe:
+1. Plan the layout before writing: a title, a header row, the data, and a totals row.
+   Leave a one-cell margin — start at B2 rather than A1 — and don't crowd sections together.
+2. Write the whole block in as few write_range/set_formulas calls as possible (see batching below).
+3. Header row: bold, a solid fill in the accent color, a contrasting (usually white) font,
+   and centered. Then freeze_panes on the header row so it stays visible.
+4. Number formats by column meaning: money "#,##0" or "#,##0 kr", percentages "0.0%",
+   large counts "#,##0", dates "yyyy-mm-dd". Apply per column, not to the whole block.
+5. Totals/summary row: bold, a top border (format_range border "top"), and SUM/AVERAGE
+   formulas rather than hard-coded numbers.
+6. Use a thin outline or bottom border under the header to separate sections.
+7. Title: a larger, bold cell, optionally merged across the table width with merge_cells.
+8. Finish every build with autofit, then select_range on the result so the user sees it.
+Use a consistent accent color throughout (a calm blue/green works well). Prefer real
+formulas over static values so the sheet stays live. For a list the user will grow, use
+create_table instead of manual formatting.
+
 - Batch your edits: each edit asks the user for confirmation, so minimize the
   number of edit tool calls. Write a whole region in ONE write_range/set_formulas
   call instead of many single-cell calls, and combine formatting where you can.
@@ -119,16 +144,19 @@ const TOOLS = [
       what: { type: "string", enum: ["contents", "formats", "all"], description: "What to clear (default contents)." },
     }, required: ["address"] } },
 
-  { name: "format_range", description: "Apply formatting to a range: number format, bold/italic/underline, font size, font/fill color, alignment, wrap.",
+  { name: "format_range", description: "Apply formatting to a range: number format, bold/italic/underline, font size, font/fill color, alignment, wrap, cell borders, and column width. Use it to style header rows (bold + fill), totals rows (bold + top border), and to set per-column number formats.",
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range." },
-      number_format: { type: "string", description: "Excel number format, e.g. '#,##0.00' or '0.0%' or '$#,##0'." },
+      number_format: { type: "string", description: "Excel number format, e.g. '#,##0.00' or '0.0%' or '#,##0 kr'." },
       bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" },
       font_color: { type: "string", description: "Hex color like '#1F7A4D'." },
       fill_color: { type: "string", description: "Hex background color." },
       font_size: { type: "number" },
       align: { type: "string", enum: ["left", "center", "right"] },
       wrap: { type: "boolean" },
+      border: { type: "string", enum: ["none", "top", "bottom", "outline", "all"], description: "Add borders: 'top' for a totals separator, 'bottom' under a header, 'outline' around the block, 'all' for a full grid." },
+      border_color: { type: "string", description: "Hex border color (default a medium gray)." },
+      column_width: { type: "number", description: "Set the width (in points) of the columns the range covers." },
     }, required: ["address"] } },
 
   { name: "insert_rows", description: "Insert blank rows above a given row index (1-based).",
@@ -163,12 +191,24 @@ const TOOLS = [
       has_headers: { type: "boolean", description: "Treat the first row as headers (default true)." },
     }, required: ["address"] } },
 
-  { name: "autofit", description: "Autofit column widths and row heights for a range.",
+  { name: "autofit", description: "Autofit column widths and row heights for a range. Call this at the end of anything you build so nothing is clipped.",
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range." },
     }, required: ["address"] } },
 
-  { name: "create_table", description: "Convert a range into an Excel table.",
+  { name: "merge_cells", description: "Merge a range into a single cell. Use for a title banner spanning the columns of a table, then center and enlarge it with format_range.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style range to merge, e.g. 'B2:E2'." },
+      across: { type: "boolean", description: "Merge each row separately (true) or the whole range into one cell (default false)." },
+    }, required: ["address"] } },
+
+  { name: "freeze_panes", description: "Freeze the top rows and/or leading columns so headers stay visible while scrolling. Call after building any table taller than a screen. Pass rows 0 and columns 0 to unfreeze.",
+    input_schema: { type: "object", properties: {
+      rows: { type: "integer", description: "Number of top rows to freeze (e.g. 1 for a header row)." },
+      columns: { type: "integer", description: "Number of leading columns to freeze." },
+    } } },
+
+  { name: "create_table", description: "Convert a range into an Excel table (banded rows, filter buttons, auto-expanding). Prefer this for any list or dataset the user will keep adding rows to.",
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range including headers." },
       has_headers: { type: "boolean", description: "First row is headers (default true)." },
@@ -187,7 +227,7 @@ const TOOLS = [
       name: { type: "string", description: "Optional sheet name." },
     } } },
 
-  { name: "select_range", description: "Select/navigate to a range so the user can see it.",
+  { name: "select_range", description: "Select/navigate to a range so the user can see it. Always finish a build by selecting the result.",
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range." },
     }, required: ["address"] } },

@@ -343,6 +343,8 @@ const tools = {
       if (opts.fill_color) f.fill.color = opts.fill_color;
       if (opts.align) f.horizontalAlignment = cap(opts.align);
       if (opts.wrap != null) f.wrapText = !!opts.wrap;
+      if (opts.column_width != null) f.columnWidth = opts.column_width;
+      if (opts.border && opts.border !== "none") applyBorders(f, opts.border, opts.border_color);
       if (opts.number_format) {
         range.load(["rowCount", "columnCount"]);
         await ctx.sync();
@@ -428,6 +430,37 @@ const tools = {
       await ctx.sync();
     });
     return { autofit: true, address };
+  },
+
+  async merge_cells({ address, across = false }) {
+    const ok = await gateEdit({ kind: "edit", address, summary: `Sammanfoga ${address}` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const range = parseRange(ctx, address);
+      range.merge(!!across);
+      range.load("address");
+      await ctx.sync();
+      return { merged: true, address: range.address };
+    });
+    toast(`Sammanfogade ${result.address}`, "success");
+    return result;
+  },
+
+  async freeze_panes({ rows = 0, columns = 0 }) {
+    const ok = await gateEdit({ kind: "edit", summary: rows || columns ? `Lås ${rows} rad(er) och ${columns} kolumn(er)` : "Lås upp rutor" });
+    if (!ok) return declined(ok);
+    await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      if (!rows && !columns) { sheet.freezePanes.unfreeze(); }
+      else {
+        // Freeze everything above and to the left of this top-left cell.
+        const topLeft = `${colLetter(columns || 0)}${(rows || 0) + 1}`;
+        sheet.freezePanes.freezeAt(sheet.getRange(topLeft));
+      }
+      await ctx.sync();
+    });
+    toast(rows || columns ? "Låste rutor" : "Låste upp rutor", "success");
+    return { frozen: true, rows, columns };
   },
 
   async create_table({ address, has_headers = true, name }) {
@@ -530,8 +563,25 @@ function describeFormat(o) {
   if (o.font_size) bits.push(`storlek ${o.font_size}`);
   if (o.align) bits.push(`justering ${o.align}`);
   if (o.wrap) bits.push("radbryt text");
+  if (o.border && o.border !== "none") bits.push(`ram (${o.border})`);
+  if (o.column_width != null) bits.push(`kolumnbredd ${o.column_width}`);
   if (o.number_format) bits.push(`talformat "${o.number_format}"`);
   return `Formatera ${o.address}${bits.length ? ": " + bits.join(", ") : ""}`;
+}
+
+/** Apply borders to a range format. kind: top | bottom | outline | all. */
+function applyBorders(format, kind, color) {
+  const c = color || "#BFBFBF";
+  const set = (edge) => {
+    const b = format.borders.getItem(edge);
+    b.style = "Continuous";
+    b.weight = "Thin";
+    b.color = c;
+  };
+  if (kind === "top") set("EdgeTop");
+  else if (kind === "bottom") set("EdgeBottom");
+  else if (kind === "outline") ["EdgeTop", "EdgeBottom", "EdgeLeft", "EdgeRight"].forEach(set);
+  else if (kind === "all") ["EdgeTop", "EdgeBottom", "EdgeLeft", "EdgeRight", "InsideVertical", "InsideHorizontal"].forEach(set);
 }
 
 /** Returns null (off), false (declined), or true (apply). */
