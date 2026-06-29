@@ -106,6 +106,16 @@ Office.onReady((info) => {
 
   // Copy buttons inside rendered code blocks (event delegation).
   els.messages.addEventListener("click", (e) => {
+    const act = e.target.closest(".msg-act");
+    if (act) {
+      const msg = act.closest(".msg");
+      if (act.dataset.act === "copy") {
+        copyText((msg && msg._raw) || "").then(() => toast("Kopierat", "success", 1400));
+      } else if (act.dataset.act === "regen" && !busy) {
+        regenerate();
+      }
+      return;
+    }
     const btn = e.target.closest(".copy-btn");
     if (!btn) return;
     const cb = btn.closest(".codeblock");
@@ -574,6 +584,32 @@ async function onSend() {
   }
 }
 
+async function regenerate() {
+  if (busy) return;
+  let idx = -1;
+  for (let k = messages.length - 1; k >= 0; k--) {
+    if (messages[k].role === "user" && typeof messages[k].content === "string") { idx = k; break; }
+  }
+  if (idx < 0) return;
+  messages.length = idx + 1;                 // drop the last reply + any tool turns
+  const users = els.messages.querySelectorAll(".msg.user");
+  const lastUser = users[users.length - 1];
+  if (lastUser) {
+    let n = lastUser.nextElementSibling;
+    while (n) { const nx = n.nextElementSibling; n.remove(); n = nx; }
+  }
+  setBusy(true);
+  const typing = renderTyping();
+  try {
+    await runAgentLoop();
+  } catch (err) {
+    toast(err.message || "Något gick fel i kommunikationen med Simba.", "error", 4000);
+  } finally {
+    typing.remove();
+    setBusy(false);
+  }
+}
+
 async function runAgentLoop() {
   for (let i = 0; i < 12; i++) {
     const reply = await callBackend(messages);
@@ -781,9 +817,16 @@ function openSettings() {
 function renderMessage(role, text) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
+  wrap._raw = text;
+  const actions = role === "assistant"
+    ? `<div class="msg-actions">` +
+      `<button class="msg-act" data-act="copy" type="button" title="Kopiera svar" aria-label="Kopiera svar">⧉</button>` +
+      `<button class="msg-act" data-act="regen" type="button" title="Generera om" aria-label="Generera om">↻</button>` +
+      `</div>`
+    : "";
   wrap.innerHTML = `
     <div class="avatar">${role === "user" ? "🙂" : MASCOT_IMG}</div>
-    <div class="body"><div class="bubble">${formatMarkdown(text)}</div></div>`;
+    <div class="body"><div class="bubble">${formatMarkdown(text)}</div>${actions}</div>`;
   els.messages.append(wrap);
   scrollDown();
 }
@@ -863,6 +906,17 @@ function formatMarkdown(text) {
     const line = lines[i];
     if (isPH(line)) { out += line.trim(); i++; continue; }
     if (/^\s*(---|\*\*\*|___)\s*$/.test(line)) { out += "<hr>"; i++; continue; }
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1])) {
+      const splitRow = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const head = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(splitRow(lines[i])); i++; }
+      const th = head.map((c) => `<th>${inline(c)}</th>`).join("");
+      const body = rows.map((r) => `<tr>${head.map((_, k) => `<td>${inline(r[k] || "")}</td>`).join("")}</tr>`).join("");
+      out += `<div class="md-tablewrap"><table class="md-table"><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table></div>`;
+      continue;
+    }
     const h = line.match(/^\s*(#{1,4})\s+(.*)$/);
     if (h) { const lv = Math.min(h[1].length + 2, 6); out += `<h${lv} class="md-h">${inline(h[2])}</h${lv}>`; i++; continue; }
     if (/^\s*&gt;\s?/.test(line)) {
@@ -892,40 +946,85 @@ function formatMarkdown(text) {
 }
 
 /* ------------------------------------------------------------------ *
- * Lightweight syntax highlighting (no dependency).
- * Tuned for Excel formulas, with a generic fallback for other code.
+ * Lightweight syntax highlighting (no dependency), language-aware.
+ * Tuned per language: Excel formulas, JS/TS, Python, SQL, Bash, JSON,
+ * CSS, and HTML/XML — each with the right comments and keyword set.
  * ------------------------------------------------------------------ */
 
-const GENERIC_KW = new Set(
-  ("const let var function return if else for while do switch case break continue class new " +
-   "import from export default async await try catch finally throw typeof instanceof in of " +
-   "def elif lambda pass yield with print true false null none and or not " +
-   "select insert update delete where group order by join on as").split(" ")
-);
+const LANG_KW = {
+  js: "const let var function return if else for while do switch case break continue class new import from export default async await try catch finally throw typeof instanceof in of yield delete void this super extends static get set",
+  ts: "const let var function return if else for while do switch case break continue class new import from export default async await try catch finally throw typeof instanceof in of yield delete void this super extends static get set interface type enum implements namespace declare readonly public private protected abstract as keyof infer",
+  python: "def class return if elif else for while try except finally raise import from as with lambda yield pass break continue global nonlocal assert del in is not and or async await match case print self",
+  sql: "select from where group by order having insert update delete into values set join inner left right outer full cross on as create table view drop alter add column primary key foreign references distinct limit offset union all and or not is like between case when then else end desc asc count sum avg min max",
+  bash: "if then else elif fi for while until do done case esac function in return export local readonly declare unset source echo cd",
+  json: "",
+  css: "",
+};
+const CONST_WORDS = new Set("true false null undefined none None TRUE FALSE NULL nil NaN Infinity".split(" "));
+
+const COMMENTS = {
+  js: /\/\/[^\n]*|\/\*[\s\S]*?\*\//y,
+  ts: /\/\/[^\n]*|\/\*[\s\S]*?\*\//y,
+  css: /\/\*[\s\S]*?\*\//y,
+  python: /#[^\n]*/y,
+  bash: /#[^\n]*/y,
+  sql: /--[^\n]*|\/\*[\s\S]*?\*\//y,
+  json: null,
+};
+
+const STR_RULE = { re: /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/y, cls: "tok-str" };
+const NUM_RULE = { re: /\b\d[\d_]*(?:\.\d+)?\b/y, cls: "tok-num" };
+const FUNC_RULE = { re: /[A-Za-z_$][\w$]*(?=\s*\()/y, cls: "tok-func" };
 
 const FORMULA_RULES = [
   { re: /"(?:[^"]|"")*"/y, cls: "tok-str" },
   { re: /\b[A-Z][A-Z0-9_.]*(?=\s*\()/y, cls: "tok-func" },
-  { re: /\b(?:TRUE|FALSE)\b/y, cls: "tok-kw" },
+  { re: /\b(?:TRUE|FALSE)\b/y, cls: "tok-bool" },
   { re: /\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?\b/y, cls: "tok-ref" },
   { re: /\d+(?:\.\d+)?/y, cls: "tok-num" },
   { re: /[-+*/^&=<>%]/y, cls: "tok-op" },
 ];
 
-const GENERIC_RULES = [
-  { re: /\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\//y, cls: "tok-com" },
-  { re: /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/y, cls: "tok-str" },
-  { re: /\b\d[\d_]*(?:\.\d+)?\b/y, cls: "tok-num" },
-  { re: /[A-Za-z_]\w*(?=\s*\()/y, cls: "tok-func" },
-  { re: /[A-Za-z_]\w*/y, fn: (t) => (GENERIC_KW.has(t.toLowerCase()) ? "tok-kw" : null) },
+const MARKUP_RULES = [
+  { re: /<!--[\s\S]*?-->/y, cls: "tok-com" },
+  { re: /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/y, cls: "tok-str" },
+  { re: /<\/?[A-Za-z][\w:-]*|\/?>/y, cls: "tok-func" },
+  { re: /[A-Za-z_:][\w:-]*(?==)/y, cls: "tok-kw" },
 ];
 
-function highlight(code, lang) {
+function normLang(lang, code) {
   const l = (lang || "").toLowerCase();
-  const isFormula =
-    l === "excel" || l === "formula" || l === "xls" ||
-    (!l && code.trim().startsWith("="));
-  return tokenize(code, isFormula ? FORMULA_RULES : GENERIC_RULES);
+  if (["excel", "formula", "xls", "xlsx"].includes(l)) return "formula";
+  if (["js", "javascript", "jsx", "mjs", "cjs", "node"].includes(l)) return "js";
+  if (["ts", "typescript", "tsx"].includes(l)) return "ts";
+  if (["py", "python"].includes(l)) return "python";
+  if (["sql", "mysql", "postgres", "postgresql", "psql", "sqlite"].includes(l)) return "sql";
+  if (["sh", "bash", "shell", "zsh", "console"].includes(l)) return "bash";
+  if (["json", "jsonc"].includes(l)) return "json";
+  if (["css", "scss", "less"].includes(l)) return "css";
+  if (["html", "xml", "xhtml", "svg", "markup"].includes(l)) return "markup";
+  if (!l && code && code.trim().startsWith("=")) return "formula";
+  return "js"; // sensible default for unlabeled / unknown code
+}
+
+function rulesFor(lang) {
+  const kw = new Set((LANG_KW[lang] || LANG_KW.js).split(/\s+/).filter(Boolean));
+  const rules = [];
+  const com = COMMENTS[lang];
+  if (com) rules.push({ re: com, cls: "tok-com" });
+  rules.push(STR_RULE, NUM_RULE, FUNC_RULE);
+  rules.push({
+    re: /[A-Za-z_$][\w$]*/y,
+    fn: (t) => (CONST_WORDS.has(t) ? "tok-bool" : kw.has(t) || kw.has(t.toLowerCase()) ? "tok-kw" : null),
+  });
+  return rules;
+}
+
+function highlight(code, lang) {
+  const l = normLang(lang, code);
+  if (l === "formula") return tokenize(code, FORMULA_RULES);
+  if (l === "markup") return tokenize(code, MARKUP_RULES);
+  return tokenize(code, rulesFor(l));
 }
 
 function tokenize(code, rules) {
