@@ -17,16 +17,17 @@ export const graphConfigured = Boolean(AAD_CLIENT_ID && AAD_CLIENT_SECRET);
 const TOKEN_URL = `https://login.microsoftonline.com/${AAD_TENANT}/oauth2/v2.0/token`;
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
-/** Exchange the Office bootstrap token for a Microsoft Graph access token. */
-export async function oboGraphToken(bootstrapToken) {
-  if (!graphConfigured) throw Object.assign(new Error("Cloud files are not configured."), { status: 501 });
+/** Exchange the Office bootstrap token for a Microsoft Graph access token.
+ *  `scope` selects which delegated permissions to request (must be consented). */
+export async function oboGraphToken(bootstrapToken, scope = "https://graph.microsoft.com/Files.Read") {
+  if (!graphConfigured) throw Object.assign(new Error("Microsoft Graph is not configured."), { status: 501 });
   if (!bootstrapToken) throw Object.assign(new Error("Missing bearer token."), { status: 401 });
   const body = new URLSearchParams({
     client_id: AAD_CLIENT_ID,
     client_secret: AAD_CLIENT_SECRET,
     grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
     assertion: bootstrapToken,
-    scope: "https://graph.microsoft.com/Files.Read",
+    scope,
     requested_token_use: "on_behalf_of",
   });
   const r = await fetch(TOKEN_URL, {
@@ -45,6 +46,74 @@ export async function oboGraphToken(bootstrapToken) {
 
 async function graphGet(path, token) {
   return fetch(GRAPH + path, { headers: { Authorization: `Bearer ${token}` } });
+}
+
+/* ---- Outlook mail (delegated, on behalf of the signed-in user) ----------
+ * Uses an OBO token with Mail.Read / Mail.Send so Simba acts as the user. The
+ * Azure app needs those delegated Graph permissions (admin consent).
+ */
+export const MAIL_SCOPE = "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send";
+
+/** List or search the user's messages (newest first). */
+export async function listMail(graphToken, { search, folder, top = 15 } = {}) {
+  const sel = "$select=id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,hasAttachments,webLink";
+  const n = `$top=${Math.min(50, Math.max(1, top))}`;
+  let path;
+  const q = String(search || "").trim();
+  if (q) {
+    // $search can't be combined with $orderby; Graph returns by relevance.
+    path = `/me/messages?${sel}&${n}&$search=${encodeURIComponent(`"${q.replace(/"/g, "")}"`)}`;
+  } else {
+    const f = folder ? `/me/mailFolders/${encodeURIComponent(folder)}/messages` : "/me/messages";
+    path = `${f}?${sel}&${n}&$orderby=receivedDateTime desc`;
+  }
+  const r = await fetch(GRAPH + path, { headers: { Authorization: `Bearer ${graphToken}`, ConsistencyLevel: "eventual" } });
+  if (!r.ok) throw Object.assign(new Error("Mail listing failed."), { status: r.status });
+  const j = await r.json();
+  return (j.value || []).map((m) => ({
+    id: m.id, subject: m.subject || "(inget ämne)",
+    from: m.from?.emailAddress?.address || "", fromName: m.from?.emailAddress?.name || "",
+    to: (m.toRecipients || []).map((t) => t.emailAddress?.address).filter(Boolean),
+    received: m.receivedDateTime, preview: m.bodyPreview || "", isRead: !!m.isRead,
+    hasAttachments: !!m.hasAttachments, webLink: m.webLink,
+  }));
+}
+
+/** Read one message in full (plain-text body). */
+export async function getMail(graphToken, id) {
+  const r = await fetch(`${GRAPH}/me/messages/${encodeURIComponent(id)}?$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments,webLink`, {
+    headers: { Authorization: `Bearer ${graphToken}`, Prefer: 'outlook.body-content-type="text"' },
+  });
+  if (!r.ok) throw Object.assign(new Error("Message not found."), { status: r.status });
+  const m = await r.json();
+  return {
+    id: m.id, subject: m.subject || "(inget ämne)",
+    from: m.from?.emailAddress?.address || "", fromName: m.from?.emailAddress?.name || "",
+    to: (m.toRecipients || []).map((t) => t.emailAddress?.address).filter(Boolean),
+    cc: (m.ccRecipients || []).map((t) => t.emailAddress?.address).filter(Boolean),
+    received: m.receivedDateTime, body: (m.body?.content || "").slice(0, 50_000), webLink: m.webLink,
+  };
+}
+
+/** Send a mail as the signed-in user. */
+export async function sendMail(graphToken, { to, cc, subject, body, replyToId }) {
+  const recipients = (arr) => (Array.isArray(arr) ? arr : String(arr || "").split(/[;,]/)).map((a) => String(a).trim()).filter(Boolean).map((a) => ({ emailAddress: { address: a } }));
+  const message = {
+    subject: String(subject || "").slice(0, 255),
+    body: { contentType: "Text", content: String(body || "") },
+    toRecipients: recipients(to),
+    ...(cc ? { ccRecipients: recipients(cc) } : {}),
+  };
+  if (!message.toRecipients.length) throw Object.assign(new Error("Ingen mottagare angiven."), { status: 400 });
+  // Reply in-thread when replyToId is given, else a fresh send.
+  const url = replyToId ? `${GRAPH}/me/messages/${encodeURIComponent(replyToId)}/reply` : `${GRAPH}/me/sendMail`;
+  const payload = replyToId ? { message: { body: message.body } , comment: String(body || "") } : { message, saveToSentItems: true };
+  const r = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${graphToken}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  if (!r.ok) {
+    const detail = (await r.text().catch(() => "")).slice(0, 300);
+    throw Object.assign(new Error(`Mail send failed (${r.status}). ${detail}`), { status: r.status });
+  }
+  return true;
 }
 
 /* ---- App-only (client-credentials) access for unattended scheduled jobs ---

@@ -50,6 +50,7 @@ bc59ab01-8403-45c6-8796-ac3ef710b3e3   Outlook (om relevant)
 ## 5. API-behörigheter (Microsoft Graph, delegated)
 **API permissions → Add a permission → Microsoft Graph → Delegated**, lägg till:
 - `openid`, `profile`, `offline_access`, `User.Read`
+- (för Outlook-mejl: läsa/söka/skicka) **`Mail.Read`** och **`Mail.Send`**
 - (valfritt, för molnfiler) `Files.Read`
 - (valfritt, för schemalagda jobb som redigerar filer) **Application**-behörigheten
   `Files.ReadWrite.All`, och `Mail.Send` om jobben ska maila resultat.

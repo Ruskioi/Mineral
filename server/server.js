@@ -19,7 +19,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
 import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation } from "./store.js";
 import { randomUUID } from "node:crypto";
-import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo } from "./graph.js";
+import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, MAIL_SCOPE } from "./graph.js";
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
 import { startScheduler, schedulerEnabled } from "./scheduler.js";
 import { chooseModel, lastUserText } from "./router.js";
@@ -109,6 +109,13 @@ data the user likely wants it in the sheet — offer to import it with write_ran
 Cloud files: the user's OneDrive/SharePoint files are reachable with list_files
 (search by name) and open_file (read by id). Use them when the user refers to a
 file they have in Microsoft 365 rather than one they attached.
+
+Outlook mail: you can work with the signed-in user's email via list_emails (list or
+search the inbox), read_email (open one in full), and send_email (send or reply on
+their behalf). Use them to triage, summarize and analyze mail, find context, and draft
+replies. ALWAYS draft the message and let the user review it — send_email shows a
+confirmation preview before anything is sent; never invent recipients. Summarize and
+quote accurately; don't fabricate email content you haven't read.
 
 Scheduled jobs: with schedule_task you can set up a RECURRING job that runs on its
 own server-side — even when Excel is closed — against a OneDrive/SharePoint workbook
@@ -297,6 +304,27 @@ const TOOLS = [
       id: { type: "string", description: "The file id from list_files." },
       name: { type: "string", description: "Optional file name, for display." },
     }, required: ["id"] } },
+
+  { name: "list_emails", description: "List or search the signed-in user's Outlook mail (newest first). Use to triage the inbox, find messages, or gather context before replying. Returns id + subject + sender + preview for each; pass an id to read_email.",
+    input_schema: { type: "object", properties: {
+      query: { type: "string", description: "Optional text to search for (sender, subject, body)." },
+      folder: { type: "string", description: "Optional folder, e.g. inbox, sentitems, drafts." },
+      limit: { type: "integer", description: "How many to return (default 15, max 50)." },
+    } } },
+
+  { name: "read_email", description: "Read one Outlook message in full (sender, recipients, date, body) by id from list_emails. Use to analyze, summarize, or draft a reply.",
+    input_schema: { type: "object", properties: {
+      id: { type: "string", description: "The message id from list_emails." },
+    }, required: ["id"] } },
+
+  { name: "send_email", description: "Send an email as the signed-in user (or reply to a message by passing reply_to_id). The user is shown a confirmation with the draft before anything is sent. Use to send or reply on the user's behalf after drafting the content.",
+    input_schema: { type: "object", properties: {
+      to: { type: "string", description: "Recipient address(es), comma-separated. Omit when reply_to_id is set to reply to the sender." },
+      cc: { type: "string", description: "Optional cc address(es), comma-separated." },
+      subject: { type: "string", description: "Subject (ignored for replies)." },
+      body: { type: "string", description: "The message text." },
+      reply_to_id: { type: "string", description: "Optional message id to reply to in-thread." },
+    }, required: ["body"] } },
 
   { name: "schedule_task", description: "Set up a RECURRING job that Simba runs on its own (server-side, even when Excel is closed) against a OneDrive/SharePoint workbook — e.g. 'every Monday 08:00, refresh the dashboard with current FX and add today's totals'. Use list_files first to get the file id. Requires Microsoft sign-in. Confirm the schedule and target with the user before creating it.",
     input_schema: { type: "object", properties: {
@@ -1173,6 +1201,50 @@ app.delete("/api/jobs/:id", async (req, res) => {
   if (!user) return;
   try { await deleteJob(user.key, req.params.id); res.json({ ok: true }); }
   catch (err) { console.error("[Simba] job delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort schemat." }); }
+});
+
+// ---- Outlook mail (delegated, on behalf of the signed-in user) -----------
+app.get("/api/mail", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!graphConfigured) return res.status(501).json({ error: "E-post (Graph) är inte aktiverat på servern." });
+  try {
+    const gt = await oboGraphToken(bearer(req), MAIL_SCOPE);
+    const messages = await listMail(gt, { search: req.query.q, folder: req.query.folder, top: Number(req.query.top) || 15 });
+    res.json({ messages });
+  } catch (err) {
+    console.error("[Simba] /api/mail error:", err?.message || err);
+    res.status(err.status || 502).json({ error: "Kunde inte hämta e-post." });
+  }
+});
+
+app.get("/api/mail/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!graphConfigured) return res.status(501).json({ error: "E-post (Graph) är inte aktiverat." });
+  try {
+    const gt = await oboGraphToken(bearer(req), MAIL_SCOPE);
+    res.json({ message: await getMail(gt, req.params.id) });
+  } catch (err) {
+    console.error("[Simba] /api/mail/:id error:", err?.message || err);
+    res.status(err.status || 502).json({ error: "Kunde inte öppna meddelandet." });
+  }
+});
+
+app.post("/api/mail/send", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!graphConfigured) return res.status(501).json({ error: "E-post (Graph) är inte aktiverat." });
+  const { to, cc, subject, body, replyToId } = req.body || {};
+  if (!replyToId && !to) return res.status(400).json({ error: "Ange minst en mottagare." });
+  try {
+    const gt = await oboGraphToken(bearer(req), MAIL_SCOPE);
+    await sendMail(gt, { to, cc, subject, body, replyToId });
+    res.json({ sent: true });
+  } catch (err) {
+    console.error("[Simba] /api/mail/send error:", err?.message || err);
+    res.status(err.status || 502).json({ error: err.message || "Kunde inte skicka mejlet." });
+  }
 });
 
 // ---- Shared company knowledge vault (Simba's org-wide "mind") -------------

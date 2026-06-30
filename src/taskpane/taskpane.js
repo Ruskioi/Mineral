@@ -53,7 +53,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "web_lookup", "run_code", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "web_lookup", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -720,6 +720,55 @@ const tools = {
       if (j.kind === "pdf") return { name: j.name, document: { media_type: "application/pdf", data: j.data } };
       return { error: "Okänt filinnehåll." };
     } catch { return { error: "Kunde inte nå filtjänsten." }; }
+  },
+
+  /* ---------------- Outlook mail ---------------- */
+
+  async list_emails({ query, folder, limit } = {}) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att nå din e-post (Inställningar → Logga in)." };
+    try {
+      const p = new URLSearchParams();
+      if (query) p.set("q", query);
+      if (folder) p.set("folder", folder);
+      if (limit) p.set("top", String(limit));
+      const r = await fetch(`${API_BASE}/api/mail?${p.toString()}`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte hämta e-post." };
+      return { messages: (j.messages || []).map((m) => ({ id: m.id, subject: m.subject, from: m.from, fromName: m.fromName, received: m.received, preview: m.preview, isRead: m.isRead, hasAttachments: m.hasAttachments })) };
+    } catch { return { error: "Kunde inte nå e-posttjänsten." }; }
+  },
+
+  async read_email({ id }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft först." };
+    if (!id) return { error: "Ange meddelandets id (från list_emails)." };
+    try {
+      const r = await fetch(`${API_BASE}/api/mail/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte öppna meddelandet." };
+      return { message: j.message };
+    } catch { return { error: "Kunde inte nå e-posttjänsten." }; }
+  },
+
+  async send_email({ to, cc, subject, body, reply_to_id }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft först." };
+    if (!String(body || "").trim()) return { error: "Mejlet saknar innehåll." };
+    if (!reply_to_id && !String(to || "").trim()) return { error: "Ange minst en mottagare." };
+    // Sending mail is consequential — always confirm with a preview, regardless of edit mode.
+    const ok = await confirmSend({ to: reply_to_id ? "(svar i tråden)" : to, cc, subject, body });
+    if (!ok) return { skipped: true, reason: "Användaren avbröt utskicket." };
+    try {
+      const r = await fetch(`${API_BASE}/api/mail/send`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ to, cc, subject, body, replyToId: reply_to_id }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte skicka mejlet." };
+      toast("Mejlet skickades", "success");
+      return { sent: true };
+    } catch { return { error: "Kunde inte nå e-posttjänsten." }; }
   },
 
   /* ---------------- scheduled jobs (server-side agent) ---------------- */
@@ -1586,7 +1635,7 @@ const READ_TOOLS = new Set([
   "get_selection", "read_range", "get_sheet_info", "list_sheets", "describe_workbook",
   "find", "capture_view", "analyze_data", "web_lookup", "run_code", "trace_cell",
   "list_charts", "list_files", "open_file", "list_schedules",
-  "search_vault", "analyze_vault", "open_vault_file",
+  "search_vault", "analyze_vault", "open_vault_file", "list_emails", "read_email",
 ]);
 
 // Run a single tool call: render its activity step, execute it (respecting the
@@ -1937,6 +1986,22 @@ function uiConfirm(message, { danger } = {}) {
   });
 }
 
+// Preview-and-confirm before sending an email on the user's behalf.
+function confirmSend({ to, cc, subject, body }) {
+  return new Promise((resolve) => {
+    openModal(
+      `<h3>Skicka mejl?</h3>
+       <div class="hint" style="padding:2px 0"><b>Till:</b> ${escapeHtml(to || "")}${cc ? ` · <b>Kopia:</b> ${escapeHtml(cc)}` : ""}</div>
+       ${subject ? `<div class="hint" style="padding:2px 0"><b>Ämne:</b> ${escapeHtml(subject)}</div>` : ""}
+       <div class="bubble" style="max-height:42vh;overflow:auto;white-space:pre-wrap;margin-top:8px">${escapeHtml(body || "")}</div>
+       <div class="modal-actions"><button class="btn" data-act="no">Avbryt</button><button class="btn primary" data-act="yes">Skicka</button></div>`,
+      { onClose: () => resolve(false) }
+    );
+    els.modalCard.querySelector('[data-act="no"]').onclick = () => { closeModalSilently(); resolve(false); };
+    els.modalCard.querySelector('[data-act="yes"]').onclick = () => { closeModalSilently(); resolve(true); };
+  });
+}
+
 // Close without firing the onClose resolver (used after an explicit choice).
 function closeModalSilently() {
   els.overlay.hidden = true;
@@ -2216,6 +2281,9 @@ function toolResultHint(name, input, result) {
     case "cancel_schedule": return result.cancelled ? "borttaget" : "";
     case "list_files": return Array.isArray(result.files) ? `${result.files.length} filer` : "";
     case "open_file": return result.name || "";
+    case "list_emails": return Array.isArray(result.messages) ? `${result.messages.length} mejl` : "";
+    case "read_email": return result.message?.subject || "";
+    case "send_email": return result.sent ? "skickat" : (result.skipped ? "avbrutet" : "");
     case "create_document": return result.filename || "";
     case "find_errors": return typeof result.count === "number" ? `${result.count} fel` : "";
     case "conditional_formatting": case "data_validation": case "add_comment": return result.address || input?.address || "";
@@ -2249,6 +2317,9 @@ function toolLabel(name, input) {
     create_document: `Skapar ${(input?.kind || "dokument").toUpperCase()}`,
     list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",
     open_file: `Öppnar ${input?.name || "fil"}`,
+    list_emails: input?.query ? `Söker i mejlen: "${input.query}"` : "Läser din inkorg",
+    read_email: "Öppnar ett mejl",
+    send_email: "Skickar ett mejl",
     schedule_task: input?.name ? `Schemalägger: ${input.name}` : "Skapar ett schema",
     list_schedules: "Hämtar dina scheman",
     cancel_schedule: "Tar bort ett schema",

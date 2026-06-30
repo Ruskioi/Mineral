@@ -354,6 +354,16 @@ check("Tier 2 features (export, artifacts, palette, multi-attach, MCP)", () => {
   assert(/SIMBA_MCP_SERVERS/.test(server) && /mcp_servers/.test(server), "MCP connector plumbing missing");
 });
 
+check("Outlook mail (read/send/analyze) is wired", () => {
+  const graph = read("server/graph.js");
+  assert(/export async function listMail/.test(graph) && /export async function sendMail/.test(graph) && /export async function getMail/.test(graph), "graph mail functions missing");
+  assert(/Mail\.Read/.test(graph) && /Mail\.Send/.test(graph), "mail scopes missing");
+  assert(/app\.get\("\/api\/mail"/.test(server) && /app\.get\("\/api\/mail\/:id"/.test(server) && /app\.post\("\/api\/mail\/send"/.test(server), "mail endpoints missing");
+  for (const t of ["list_emails", "read_email", "send_email"]) assert(new RegExp(`name: "${t}"`).test(server), `${t} tool schema missing`);
+  assert(/function confirmSend/.test(taskpane), "send-email confirmation preview missing");
+  assert(/"list_emails", "read_email", "send_email"/.test(taskpane), "mail tools must work in desktop mode");
+});
+
 check("company knowledge vault (Simba's shared mind) is wired", () => {
   // backend: schemas, endpoints, retrieval injection
   assert(/name: "search_vault"/.test(server) && /name: "save_to_vault"/.test(server), "vault tools missing");
