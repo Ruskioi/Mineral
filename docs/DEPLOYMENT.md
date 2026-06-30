@@ -211,6 +211,31 @@ Microsoft 365 files (`list_files` / `open_file`):
 Verify at `https://YOUR_HOST/api/health` → `{"ssoConfigured":true,"memoryStore":"postgres"}`.
 Memory now syncs to each signed-in user and is keyed to their Microsoft identity.
 
+## Scheduled server-side agent (optional)
+
+Lets Simba run **recurring jobs that edit a OneDrive/SharePoint workbook on a
+schedule even when no Excel window is open** — e.g. "every Monday 08:00, refresh
+the dashboard with current FX and append today's totals". Users create jobs from
+chat (`schedule_task`); the server runs them via Microsoft Graph and ExcelJS.
+
+Because a job runs when the user is offline, it can't use their token — the app
+authenticates **as itself**. So this needs extra setup on top of sign-in above:
+
+1. **App-only Graph permission.** In the Azure app, add the **application**
+   permission **`Files.ReadWrite.All`** (Microsoft Graph) and **grant admin
+   consent**. (This is in addition to the delegated `Files.Read`.) The same
+   client id + secret are reused.
+2. **Pin the tenant.** Set `AAD_TENANT=<your-tenant-GUID>` (a concrete GUID, not
+   `common`) — app-only tokens are minted per tenant.
+3. **Durable jobs.** Set `DATABASE_URL` so schedules survive restarts (a
+   `simba_jobs` table is created automatically).
+4. **Turn it on, on ONE instance.** Set `SIMBA_SCHEDULER=1`. Enable it on a
+   single replica only — two schedulers would run each job twice.
+
+Verify in the server logs at boot: `[Simba] scheduled agent: on`. Caveat: ExcelJS
+does not recalc formulas, so jobs should write concrete values for anything they
+need to read back; formulas they write recalc when a person next opens the file.
+
 ## Notes on cost & security
 
 The backend holds your Anthropic key and bills your account for every assigned

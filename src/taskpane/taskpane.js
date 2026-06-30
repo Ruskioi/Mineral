@@ -33,7 +33,7 @@ let pendingAttachment = null; // {name, kind, block} a user-attached file for th
 let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "list_files", "open_file", "create_document", "propose_plan", "delegate_task"]);
+const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -614,6 +614,59 @@ const tools = {
       if (j.kind === "pdf") return { name: j.name, document: { media_type: "application/pdf", data: j.data } };
       return { error: "Okänt filinnehåll." };
     } catch { return { error: "Kunde inte nå filtjänsten." }; }
+  },
+
+  /* ---------------- scheduled jobs (server-side agent) ---------------- */
+
+  async schedule_task({ name, prompt, file_id, freq, time, weekday, monthday, on_date }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att schemalägga (Inställningar → Logga in)." };
+    if (!String(prompt || "").trim()) return { error: "Ange vad schemat ska göra." };
+    if (!file_id) return { error: "Ange vilken molnfil schemat kör mot — använd list_files för att hitta dess id." };
+    const schedule = { freq: freq || "daily", time: time || "09:00", tzOffset: new Date().getTimezoneOffset() };
+    if (weekday != null) schedule.weekday = weekday;
+    if (monthday != null) schedule.monthday = monthday;
+    if (on_date) schedule.onDate = on_date;
+    try {
+      const r = await fetch(`${API_BASE}/api/jobs`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: name || "Schema", prompt, schedule, itemId: file_id }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte skapa schemat." };
+      const job = j.job || {};
+      return { scheduled: true, id: job.id, name: job.name, nextRun: job.nextRun ? new Date(job.nextRun).toISOString() : null };
+    } catch { return { error: "Kunde inte nå schematjänsten." }; }
+  },
+
+  async list_schedules() {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att se scheman." };
+    try {
+      const r = await fetch(`${API_BASE}/api/jobs`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte hämta scheman." };
+      return {
+        schedulerEnabled: !!j.schedulerEnabled,
+        jobs: (j.jobs || []).map((job) => ({
+          id: job.id, name: job.name, prompt: job.prompt, enabled: job.enabled,
+          schedule: job.schedule, file: job.target?.fileName || "",
+          nextRun: job.nextRun ? new Date(job.nextRun).toISOString() : null,
+          lastStatus: job.lastStatus, lastResult: job.lastResult,
+        })),
+      };
+    } catch { return { error: "Kunde inte nå schematjänsten." }; }
+  },
+
+  async cancel_schedule({ id }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft först." };
+    if (!id) return { error: "Ange schemats id (se list_schedules)." };
+    try {
+      const r = await fetch(`${API_BASE}/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Kunde inte ta bort schemat." }; }
+      return { cancelled: true, id };
+    } catch { return { error: "Kunde inte nå schematjänsten." }; }
   },
 
   /* ---------------- write / mutate (gated by edit mode) ---------------- */
@@ -1834,6 +1887,9 @@ function toolResultHint(name, input, result) {
     case "remember": return result.saved ? "sparat" : "";
     case "propose_plan": return result.approved ? "godkänd" : (result.approved === false ? "avböjd" : "");
     case "delegate_task": return typeof result.steps === "number" ? `${result.steps} steg` : "";
+    case "schedule_task": return result.scheduled ? "schemalagt" : "";
+    case "list_schedules": return Array.isArray(result.jobs) ? `${result.jobs.length} scheman` : "";
+    case "cancel_schedule": return result.cancelled ? "borttaget" : "";
     case "list_files": return Array.isArray(result.files) ? `${result.files.length} filer` : "";
     case "open_file": return result.name || "";
     case "create_document": return result.filename || "";
@@ -1868,6 +1924,9 @@ function toolLabel(name, input) {
     create_document: `Skapar ${(input?.kind || "dokument").toUpperCase()}`,
     list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",
     open_file: `Öppnar ${input?.name || "fil"}`,
+    schedule_task: input?.name ? `Schemalägger: ${input.name}` : "Skapar ett schema",
+    list_schedules: "Hämtar dina scheman",
+    cancel_schedule: "Tar bort ett schema",
     write_range: `Skriver till ${input?.address || "ett område"}`,
     set_formula: `Anger en formel i ${input?.address || "ett område"}`,
     set_formulas: `Anger formler i ${input?.address || "ett område"}`,

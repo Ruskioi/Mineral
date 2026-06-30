@@ -198,6 +198,24 @@ check("agent patterns (plan + delegate subagents) are wired", () => {
   assert(/propose_plan", "delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
 });
 
+check("scheduled server-side agent is wired", () => {
+  for (const t of ["schedule_task", "list_schedules", "cancel_schedule"]) assert(new RegExp(`name: "${t}"`).test(server), `${t} tool schema missing`);
+  assert(/app\.get\("\/api\/jobs"/.test(server) && /app\.post\("\/api\/jobs"/.test(server) && /app\.delete\("\/api\/jobs\/:id"/.test(server), "job endpoints missing");
+  const jobs = read("server/jobs.js");
+  assert(/simba_jobs/.test(jobs), "jobs table missing");
+  assert(/export function computeNextRun/.test(jobs), "next-run computation missing");
+  const sched = read("server/scheduler.js");
+  assert(/appOnlyGraphToken/.test(sched), "scheduler must use app-only Graph for unattended runs");
+  assert(/uploadDriveItem/.test(sched), "scheduler must write the workbook back");
+  assert(/SIMBA_SCHEDULER/.test(sched), "scheduler must be opt-in via env");
+  const xlsx = read("server/xlsx-tools.js");
+  assert(/export const XLSX_TOOLS/.test(xlsx) && /export function executeXlsxTool/.test(xlsx), "server-side xlsx toolset missing");
+  const graph = read("server/graph.js");
+  assert(/client_credentials/.test(graph), "graph app-only (client_credentials) flow missing");
+  const pkg = JSON.parse(read("package.json"));
+  assert(pkg.dependencies.exceljs, "missing dependency: exceljs");
+});
+
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {
   assert(/rateLimited/.test(server), "missing rate limiter");
   assert(/validateMessages/.test(server), "missing message validation");

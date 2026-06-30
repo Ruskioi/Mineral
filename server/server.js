@@ -19,7 +19,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
 import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation } from "./store.js";
 import { randomUUID } from "node:crypto";
-import { graphConfigured, oboGraphToken, searchFiles, downloadFile } from "./graph.js";
+import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo } from "./graph.js";
+import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
+import { startScheduler, schedulerEnabled } from "./scheduler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, "../dist");
@@ -70,6 +72,16 @@ data the user likely wants it in the sheet — offer to import it with write_ran
 Cloud files: the user's OneDrive/SharePoint files are reachable with list_files
 (search by name) and open_file (read by id). Use them when the user refers to a
 file they have in Microsoft 365 rather than one they attached.
+
+Scheduled jobs: with schedule_task you can set up a RECURRING job that runs on its
+own server-side — even when Excel is closed — against a OneDrive/SharePoint workbook
+(e.g. "every Monday 08:00, refresh the dashboard and append today's totals"). The job
+re-runs your instruction on a schedule, so write a complete, self-contained prompt
+(it can't see this chat). First find the file with list_files to get its id, then
+confirm the schedule and the target file with the user before calling schedule_task.
+Use list_schedules to show what's set up and how the last run went, and cancel_schedule
+to remove one. Note: a scheduled run edits the file directly and cannot recalc formulas
+until a person opens it, so have the job write concrete values where it needs them.
 
 Editing:
 - write_range / set_formula / set_formulas — write values or formulas.
@@ -221,6 +233,24 @@ const TOOLS = [
       id: { type: "string", description: "The file id from list_files." },
       name: { type: "string", description: "Optional file name, for display." },
     }, required: ["id"] } },
+
+  { name: "schedule_task", description: "Set up a RECURRING job that Simba runs on its own (server-side, even when Excel is closed) against a OneDrive/SharePoint workbook — e.g. 'every Monday 08:00, refresh the dashboard with current FX and add today's totals'. Use list_files first to get the file id. Requires Microsoft sign-in. Confirm the schedule and target with the user before creating it.",
+    input_schema: { type: "object", properties: {
+      name: { type: "string", description: "A short label for the schedule." },
+      prompt: { type: "string", description: "The full, self-contained instruction the job runs each time (it does not see this chat)." },
+      file_id: { type: "string", description: "The target workbook's id from list_files." },
+      freq: { type: "string", description: "daily | weekdays | weekly | monthly | once." },
+      time: { type: "string", description: "Local time HH:MM (default 09:00)." },
+      weekday: { type: "integer", description: "For weekly: 0=Sunday … 6=Saturday." },
+      monthday: { type: "integer", description: "For monthly: day of month 1-31." },
+      on_date: { type: "string", description: "For once: YYYY-MM-DD." },
+    }, required: ["prompt", "file_id"] } },
+
+  { name: "list_schedules", description: "List the user's scheduled jobs (name, schedule, target file, next run, last result). Use when they ask what's scheduled or how a job went.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
+  { name: "cancel_schedule", description: "Delete a scheduled job by id (from list_schedules).",
+    input_schema: { type: "object", properties: { id: { type: "string", description: "The schedule id." } }, required: ["id"] } },
 
   { name: "write_range", description: "Write a 2D array of values into a range. The array shape must match the range.",
     input_schema: { type: "object", properties: {
@@ -470,6 +500,7 @@ app.get("/api/health", (_req, res) => {
     keyConfigured: Boolean(apiKey),
     ssoConfigured,
     graphConfigured,
+    schedulerEnabled,
     memoryStore: usingPostgres ? "postgres" : "ephemeral",
   });
 });
@@ -910,6 +941,53 @@ app.post("/api/files/open", async (req, res) => {
   }
 });
 
+// ---- Scheduled jobs (server-side agent that edits OneDrive files via Graph) --
+// A job runs unattended on a schedule; see scheduler.js. Creating one needs SSO
+// (to key it to the user) and captures the file's driveId via OBO so an
+// app-only run can address it later.
+app.get("/api/jobs", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ jobs: await listJobs(user.key), schedulerEnabled }); }
+  catch (err) { console.error("[Simba] jobs list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta scheman." }); }
+});
+
+app.post("/api/jobs", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const { name, prompt, schedule, itemId } = req.body || {};
+  if (!itemId) return res.status(400).json({ error: "Välj en målfil för schemat." });
+  if (!graphConfigured) return res.status(501).json({ error: "Molnfiler (Graph) krävs för scheman." });
+  try {
+    // Resolve the file's drive so an unattended (app-only) run can find it later.
+    const gt = await oboGraphToken(bearer(req));
+    const info = await itemDriveInfo(gt, String(itemId));
+    if (!info.driveId) return res.status(400).json({ error: "Kunde inte fastställa filens enhet (driveId)." });
+    const job = await createJob(user.key, { name, prompt, schedule, target: { itemId: info.id, driveId: info.driveId, fileName: info.name } });
+    res.json({ job });
+  } catch (err) {
+    console.error("[Simba] job create failed:", err?.message || err);
+    res.status(err.status || 502).json({ error: err.message || "Kunde inte skapa schemat." });
+  }
+});
+
+app.put("/api/jobs/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const job = await updateJob(user.key, req.params.id, req.body || {});
+    if (!job) return res.status(404).json({ error: "Hittades inte." });
+    res.json({ job });
+  } catch (err) { console.error("[Simba] job update failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte uppdatera schemat." }); }
+});
+
+app.delete("/api/jobs/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await deleteJob(user.key, req.params.id); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] job delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort schemat." }); }
+});
+
 // Unknown API routes return JSON, not the SPA/HTML.
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found." }));
 
@@ -932,6 +1010,8 @@ const server = app.listen(PORT, () => {
   console.log(
     `[Simba] SSO: ${ssoConfigured ? "on" : "off (device-local memory)"} · memory store: ${usingPostgres ? "postgres" : "ephemeral"}`
   );
+  startScheduler(client, MODEL);
+  console.log(`[Simba] scheduled agent: ${schedulerEnabled ? "on" : "off (set SIMBA_SCHEDULER=1 + app-only Graph)"}`);
 });
 
 // Keep the process alive on unexpected errors; shut down cleanly on SIGTERM.
