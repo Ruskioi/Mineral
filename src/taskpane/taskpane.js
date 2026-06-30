@@ -479,6 +479,52 @@ const tools = {
     });
   },
 
+  async trace_cell({ address }) {
+    const base = await Excel.run(async (ctx) => {
+      const cell = parseRange(ctx, address).getCell(0, 0);
+      cell.load(["address", "formulas", "values"]);
+      await ctx.sync();
+      return { address: cell.address, formula: cell.formulas?.[0]?.[0] ?? "", value: cell.values?.[0]?.[0] ?? "" };
+    });
+    // Precedents/dependents throw when there are none, so isolate each in its own run.
+    const grab = async (which) => {
+      try {
+        return await Excel.run(async (ctx) => {
+          const cell = parseRange(ctx, base.address).getCell(0, 0);
+          const areas = which === "precedents" ? cell.getDirectPrecedents() : cell.getDirectDependents();
+          areas.load("areas/address");
+          await ctx.sync();
+          return areas.areas.items.map((a) => a.address);
+        });
+      } catch { return null; }
+    };
+    const precedents = await grab("precedents");
+    const dependents = await grab("dependents");
+    return {
+      address: base.address,
+      formula: base.formula,
+      value: base.value,
+      precedents: precedents || [],
+      dependents: dependents || [],
+      ...(precedents === null ? { precedentsNote: "Inga direkta föregångare (eller stöds ej i din Excel-version)." } : {}),
+      ...(dependents === null ? { dependentsNote: "Inga direkta beroenden (eller stöds ej i din Excel-version)." } : {}),
+    };
+  },
+
+  async list_charts() {
+    return Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      const charts = sheet.charts;
+      sheet.load("name");
+      charts.load("items/name,items/chartType");
+      await ctx.sync();
+      return {
+        sheet: sheet.name,
+        charts: charts.items.map((c) => ({ name: c.name, type: c.chartType })),
+      };
+    });
+  },
+
   async capture_view({ address } = {}) {
     try {
       const result = await Excel.run(async (ctx) => {
@@ -995,6 +1041,33 @@ const tools = {
       return { created: true, chart: chart.name };
     });
     toast("Skapade diagram", "success");
+    return result;
+  },
+
+  async update_chart({ name, chart_type, title, show_legend, legend_position, show_data_labels, x_axis_title, y_axis_title, series_colors }) {
+    const ok = await gateEdit({ kind: "edit", summary: `Uppdatera diagrammet "${name}"` });
+    if (!ok) return declined(ok);
+    const result = await Excel.run(async (ctx) => {
+      const chart = ctx.workbook.worksheets.getActiveWorksheet().charts.getItem(name);
+      if (chart_type) chart.chartType = chart_type;
+      if (title != null) { chart.title.text = String(title); chart.title.visible = true; }
+      if (typeof show_legend === "boolean") chart.legend.visible = show_legend;
+      if (legend_position) chart.legend.position = legend_position;
+      if (typeof show_data_labels === "boolean") chart.dataLabels.visible = show_data_labels;
+      if (x_axis_title != null) { chart.axes.categoryAxis.title.text = String(x_axis_title); chart.axes.categoryAxis.title.visible = true; }
+      if (y_axis_title != null) { chart.axes.valueAxis.title.text = String(y_axis_title); chart.axes.valueAxis.title.visible = true; }
+      if (Array.isArray(series_colors) && series_colors.length) {
+        chart.series.load("items");
+        await ctx.sync();
+        series_colors.forEach((col, i) => {
+          if (col && chart.series.items[i]) chart.series.items[i].format.fill.setSolidColor(String(col));
+        });
+      }
+      chart.load("name,chartType");
+      await ctx.sync();
+      return { updated: true, name: chart.name, type: chart.chartType };
+    });
+    toast(`Uppdaterade diagrammet ${result.name}`, "success");
     return result;
   },
 
@@ -1659,6 +1732,10 @@ function toolResultHint(name, input, result) {
     case "remove_duplicates": return typeof result.removed === "number" ? `${result.removed} borttagna` : "";
     case "create_named_range": return result.name || input?.name || "";
     case "describe_workbook": return typeof result.sheetCount === "number" ? `${result.sheetCount} blad` : "";
+    case "trace_cell": return Array.isArray(result.precedents) || Array.isArray(result.dependents)
+      ? `${(result.precedents || []).length} in, ${(result.dependents || []).length} ut` : "";
+    case "list_charts": return Array.isArray(result.charts) ? `${result.charts.length} diagram` : "";
+    case "update_chart": return result.name || input?.name || "";
     default: return result.address || "";
   }
 }
@@ -1670,6 +1747,8 @@ function toolLabel(name, input) {
     get_sheet_info: "Granskar arket",
     list_sheets: "Tittar på arbetsboken",
     describe_workbook: "Kartlägger hela arbetsboken",
+    trace_cell: `Spårar beroenden för ${input?.address || "en cell"}`,
+    list_charts: "Letar efter diagram",
     find: `Söker efter "${input?.query || ""}"`,
     capture_view: `Tittar på ${input?.address || "arket"}`,
     analyze_data: `Analyserar ${input?.address || "data"}`,
@@ -1703,6 +1782,7 @@ function toolLabel(name, input) {
     create_named_range: `Namnger ${input?.address || "ett område"}${input?.name ? ` som "${input.name}"` : ""}`,
     create_table: `Skapar en tabell från ${input?.address || "ett område"}`,
     create_chart: "Skapar ett diagram",
+    update_chart: `Förbättrar diagrammet${input?.name ? ` "${input.name}"` : ""}`,
     add_sheet: "Lägger till ett blad",
     select_range: `Markerar ${input?.address || "ett område"}`,
     revert_last_change: "Ångrar senaste ändringen",

@@ -89,6 +89,11 @@ Editing:
 - create_table — turn a range into an Excel table (banded rows, filters, auto-expanding totals).
   Prefer this for any list/dataset the user will keep adding rows to.
 - create_chart — add a chart from a data range. Use when the user asks to visualize or compare.
+- list_charts / update_chart — list existing charts, then improve one (type, title, legend,
+  data labels, axis titles, series colours). To improve a chart: list_charts for its name,
+  capture_view to SEE it, then update_chart — and capture_view again to confirm it looks right.
+- trace_cell — show a cell's direct precedents and dependents. Use to debug formulas:
+  when a number looks wrong or the user asks what affects/depends on a cell, trace it.
 - add_sheet — create a new worksheet. Use to keep a generated report/model on its own clean sheet.
 - select_range — move the user's selection / navigate. Always finish by selecting the result so the user sees it.
 
@@ -168,6 +173,14 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range to capture; omit to capture the current selection." },
     } } },
+
+  { name: "trace_cell", description: "Trace a formula cell's relationships: its direct precedents (cells it reads from) and direct dependents (cells that read from it), plus its own formula and value. Use to debug formulas — to answer 'which cells affect this?' or 'what depends on this?' and to find where a wrong number comes from.",
+    input_schema: { type: "object", properties: {
+      address: { type: "string", description: "A1-style cell to trace (the top-left cell is used if a range is given)." },
+    }, required: ["address"] } },
+
+  { name: "list_charts", description: "List the charts on the active sheet (name and chart type). Use to find a chart's name before updating it with update_chart.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
 
   { name: "analyze_data", description: "Run a deeper statistical analysis on a range using Python (pandas/numpy) on the server — for things plain formulas can't easily do: forecasting, trend/seasonality, correlation, outlier/anomaly detection, distributions. Returns a written analysis in Swedish; it does NOT modify the sheet, so write any results back yourself if asked.",
     input_schema: { type: "object", properties: {
@@ -317,6 +330,19 @@ const TOOLS = [
       chart_type: { type: "string", description: "e.g. ColumnClustered, BarClustered, Line, Pie, XYScatter, Area." },
       title: { type: "string", description: "Optional chart title." },
     }, required: ["data_range"] } },
+
+  { name: "update_chart", description: "Improve an EXISTING chart: change its type, title, legend, data labels, axis titles, or series colours. Use after list_charts (for the name) and capture_view (to see it) when the user asks to fix or improve a chart's look.",
+    input_schema: { type: "object", properties: {
+      name: { type: "string", description: "The chart's name (from list_charts)." },
+      chart_type: { type: "string", description: "New type, e.g. ColumnClustered, BarClustered, Line, Pie, XYScatter, Area." },
+      title: { type: "string", description: "Chart title text." },
+      show_legend: { type: "boolean", description: "Show or hide the legend." },
+      legend_position: { type: "string", description: "Legend position: Top, Bottom, Left, Right." },
+      show_data_labels: { type: "boolean", description: "Show or hide data labels on the series." },
+      x_axis_title: { type: "string", description: "Category (X) axis title." },
+      y_axis_title: { type: "string", description: "Value (Y) axis title." },
+      series_colors: { type: "array", description: "Hex colours (e.g. #2E7D32) applied to each series in order.", items: { type: "string" } },
+    }, required: ["name"] } },
 
   { name: "find_errors", description: "Scan the active sheet for formula errors (#REF!, #DIV/0!, #VALUE!, #NAME?, #N/A, #NULL!, #NUM!) and return the cells that contain them. Use when the user asks what's broken or to fix errors.",
     input_schema: { type: "object", properties: {}, additionalProperties: false } },
