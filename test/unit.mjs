@@ -198,6 +198,15 @@ check("agent patterns (plan + delegate subagents) are wired", () => {
   assert(/propose_plan", "delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
 });
 
+check("Simba is a general standalone assistant (not Excel-only)", () => {
+  assert(/general-purpose AI assistant/i.test(server), "system prompt should frame Simba as a general assistant");
+  assert(/STANDALONE app/i.test(server) || /fristående AI-app/i.test(server), "system prompt should describe the standalone surface");
+  assert(/name: "run_code"/.test(server), "general code-execution tool missing");
+  assert(/app\.post\("\/api\/code"/.test(server), "/api/code endpoint missing");
+  assert(/"run_code"/.test(taskpane), "run_code must be available in desktop mode (DESKTOP_TOOLS)");
+  assert(/function desktopWelcomeHTML/.test(taskpane), "standalone welcome missing");
+});
+
 check("scheduled server-side agent is wired", () => {
   for (const t of ["schedule_task", "list_schedules", "cancel_schedule"]) assert(new RegExp(`name: "${t}"`).test(server), `${t} tool schema missing`);
   assert(/app\.get\("\/api\/jobs"/.test(server) && /app\.post\("\/api\/jobs"/.test(server) && /app\.delete\("\/api\/jobs\/:id"/.test(server), "job endpoints missing");

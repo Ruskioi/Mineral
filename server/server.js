@@ -38,13 +38,24 @@ if (!apiKey) {
 
 const client = new Anthropic({ apiKey });
 
-const SYSTEM_PROMPT = `You are Simba, an AI assistant embedded in a sidebar inside Microsoft Excel.
-Your mascot is a friendly Pomeranian. You help the user understand and edit their spreadsheet.
+const SYSTEM_PROMPT = `You are Simba — a capable, friendly general-purpose AI assistant in the spirit of Claude.
+Your mascot is a friendly Pomeranian. You help the user with ANYTHING: answering questions,
+explaining things, thinking through problems, writing and editing text and code, researching
+the web, analyzing data and running code, generating documents, and working with their files.
+Be genuinely helpful, clear, and warm; give complete, well-structured answers; and reason
+carefully before you act.
 
-ALWAYS respond in Swedish (svenska). Every message you write to the user must be in Swedish, no matter what language they use. Keep Excel formula syntax and cell references unchanged.
+You run on two surfaces that share the same brain, memory, and conversation history:
+- As a STANDALONE app (desktop/web) — a full general assistant for any task.
+- Inside MICROSOFT EXCEL — where you additionally get deep, direct access to read and edit
+  the user's live workbook (the spreadsheet tools below).
+The current surface is given to you in a [Läge] note; use the tools available there. Don't tell
+the user to switch surfaces unless they specifically need live spreadsheet editing.
 
-You have a full set of tools to read, analyze, and edit the workbook. Use them rather
-than guessing about the user's data — read first, then act.
+ALWAYS respond in Swedish (svenska). Every message you write to the user must be in Swedish, no matter what language they use. Keep code, formula syntax, and cell references unchanged.
+
+Use your tools rather than guessing — research, read, or run code first, then answer. When the
+user's request is about a spreadsheet, read it before acting.
 
 Reading & analysis:
 - get_selection / read_range — read values (and optionally formulas) of the selection or any range.
@@ -211,6 +222,12 @@ const TOOLS = [
       address: { type: "string", description: "A1-style range of the data to analyze (include headers)." },
       question: { type: "string", description: "What to find out, e.g. forecast next quarter, or flag outliers in column C." },
     }, required: ["address"] } },
+
+  { name: "run_code", description: "Run Python on the server (a real sandbox with pandas/numpy and more) to compute, transform, or reason precisely about anything — math, data wrangling, parsing, simulations, generating or checking results. Use whenever exact computation beats estimating in your head, or to process data the user gives you. Returns the textual result/answer in Swedish; it does not write to the sheet.",
+    input_schema: { type: "object", properties: {
+      task: { type: "string", description: "What to compute or do, described clearly." },
+      data: { type: "string", description: "Optional input data (CSV, JSON, text) the code should work on." },
+    }, required: ["task"] } },
 
   { name: "web_lookup", description: "Look up current real-world information on the web (prices, FX rates, company facts, definitions, recent events) and get a concise answer with sources. Use when the answer depends on up-to-date data not in the sheet. Returns text; write it into cells yourself if the user wants it in the sheet.",
     input_schema: { type: "object", properties: {
@@ -617,10 +634,16 @@ function buildSystem(memory, surface) {
   const mem = sanitizeMemory(memory);
   if (mem) blocks.push({ type: "text", text: `[Vad du minns om användaren]\n${mem}` });
   if (surface === "desktop") blocks.push({ type: "text", text:
-    "[Läge] Du körs som fristående skrivbordsapp utan Excel. Verktyg som läser eller " +
-    "redigerar kalkylarket är inte tillgängliga nu — använd chatt, web_lookup, minne " +
-    "(remember) och molnfiler (list_files/open_file). Om användaren vill redigera ett " +
-    "ark, be dem öppna Simba inuti Excel." });
+    "[Läge] Du körs som en fristående AI-app (skrivbord/webb) — en fullständig allmän " +
+    "assistent. Hjälp till med vad som helst: svara på frågor, skriva och resonera, söka " +
+    "på webben (web_lookup), köra kod och analysera data (run_code/analyze_data), skapa " +
+    "dokument (create_document: Word/PowerPoint/Excel/PDF), läsa bifogade filer och " +
+    "OneDrive/SharePoint-filer (list_files/open_file), schemalägga återkommande jobb " +
+    "(schedule_task) och minnas det viktiga (remember). Live-redigering av ett kalkylark " +
+    "sker i Excel-tillägget; nämn det bara om användaren uttryckligen vill ändra ett öppet ark." });
+  else blocks.push({ type: "text", text:
+    "[Läge] Du körs inuti Microsoft Excel. Du har full tillgång till kalkylarksverktygen — " +
+    "läs och redigera arket direkt — utöver dina allmänna förmågor (webb, kod, dokument, minne)." });
   return blocks;
 }
 function sanitizeMemory(memory) {
@@ -874,6 +897,25 @@ app.post("/api/analyze", async (req, res) => {
   } catch (err) {
     console.error("[Simba] /api/analyze error:", err?.message || err);
     res.status(502).json({ error: "Kunde inte analysera data." });
+  }
+});
+
+// General-purpose code execution: run Python for any task (not just spreadsheets).
+app.post("/api/code", async (req, res) => {
+  if (!preflight(req, res)) return;
+  const task = String(req.body?.task || "").slice(0, 8000);
+  const data = String(req.body?.data || "").slice(0, 200_000);
+  if (!task) return res.status(400).json({ error: "Missing 'task'." });
+  try {
+    const text = await runWithServerTools({
+      system: "You are Simba, a precise problem-solver. Use Python to compute the answer accurately. ALWAYS reply in Swedish (svenska). Give the result and a short, plain-language explanation; do not paste raw code unless the user asked to see it.",
+      content: data ? `Uppgift: ${task}\n\nIndata:\n${data}` : `Uppgift: ${task}`,
+      tools: [{ type: "code_execution_20260521", name: "code_execution" }],
+    });
+    res.json({ text });
+  } catch (err) {
+    console.error("[Simba] /api/code error:", err?.message || err);
+    res.status(502).json({ error: "Kunde inte köra koden." });
   }
 });
 

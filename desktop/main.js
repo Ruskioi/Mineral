@@ -32,10 +32,10 @@ function initAutoUpdate() {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 460,
-    height: 780,
-    minWidth: 360,
-    minHeight: 520,
+    width: 1180,
+    height: 820,
+    minWidth: 720,
+    minHeight: 560,
     title: "Simba AI",
     backgroundColor: "#faf9f5",
     autoHideMenuBar: true,

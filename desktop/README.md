@@ -1,13 +1,16 @@
 # Simba AI — Desktop app
 
-A standalone desktop window for Simba, **linked to the Excel add-in** by sharing
-the same backend: same account, same memory (when SSO is on), same Claude model.
+Simba as a **full standalone AI assistant** (in the spirit of Claude) in its own
+desktop window — chat about anything, research the web, run code and analyze data,
+generate documents (Word/PowerPoint/Excel/PDF), read your attached and
+OneDrive/SharePoint files, schedule recurring jobs, and remember what matters.
 
-It loads the hosted Simba UI, which detects there's no Excel host and runs in
-**desktop mode** — chat, web search, memory, OneDrive/SharePoint files, and
-file attachments all work. **Live worksheet editing happens in the Excel add-in**
-(Office.js only runs inside Excel), so the two surfaces complement each other:
-think/research/read on the desktop, edit the grid in Excel.
+It's the same Simba as the Excel add-in and shares one backend: **same account,
+same memory, same conversation history** (when SSO is on). The hosted UI detects
+there's no Excel host and runs in **desktop mode** (a roomy, centered chat app).
+The one thing that's Excel-only is **live worksheet editing** (Office.js runs only
+inside Excel), so the two surfaces complement each other: do general work on the
+desktop, edit the grid in Excel — with everything else shared between them.
 
 ## Run it
 ```bash

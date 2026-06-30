@@ -33,7 +33,7 @@ let pendingAttachment = null; // {name, kind, block} a user-attached file for th
 let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "run_code", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -266,9 +266,7 @@ function boot(isExcel) {
     if (e.key === "Escape" && !els.overlay.hidden) closeModal();
   });
 
-  document.querySelectorAll(".suggestion").forEach((b) =>
-    b.addEventListener("click", () => { els.prompt.value = b.textContent; onSend(); })
-  );
+  bindSuggestions();
 
   window.addEventListener("unhandledrejection", (e) => console.error("[Simba] unhandled rejection:", e.reason));
   window.addEventListener("error", (e) => console.error("[Simba] error:", e.message));
@@ -308,17 +306,42 @@ setTimeout(() => boot(false), 4000);
 
 function applyDesktopMode() {
   document.body.classList.add("desktop");          // CSS hides Excel-only chrome
-  if (els.contextPill) els.contextPill.textContent = "Skrivbordsläge";
-  if (els.prompt) els.prompt.placeholder = "Fråga Simba…";
+  if (els.contextPill) els.contextPill.textContent = "Simba AI";
+  if (els.prompt) els.prompt.placeholder = "Fråga Simba vad som helst…";
   const w = document.querySelector(".welcome");
-  if (w) w.innerHTML =
-    `<h2>Hej 👋</h2>` +
-    `<p>Jag är Simba. Här på skrivbordet kan jag svara på frågor, söka på webben, läsa dina bifogade filer och dina OneDrive-filer, och minnas det viktiga. För att läsa och redigera ett kalkylark – öppna Simba inuti Excel.</p>` +
+  if (w) w.innerHTML = desktopWelcomeHTML();
+  bindSuggestions();
+}
+
+// Suggestion chips differ by surface: general assistant on desktop/web, Excel
+// tasks inside the workbook.
+function desktopWelcomeHTML() {
+  return (
+    `<h2>Hej, jag är Simba 👋</h2>` +
+    `<p>Din AI-assistent för precis allt — fråga, research, analys, kod, dokument och dina filer.</p>` +
     `<div class="suggestions">` +
-    `<button class="suggestion">Sök upp dagens USD/SEK-kurs</button>` +
-    `<button class="suggestion">Sammanfatta en bifogad fil</button>` +
-    `<button class="suggestion">Vad kan du hjälpa mig med?</button>` +
-    `</div>`;
+    `<button class="suggestion">Förklara ett krångligt ämne enkelt</button>` +
+    `<button class="suggestion">Sök upp och sammanfatta senaste nyheterna om ett ämne</button>` +
+    `<button class="suggestion">Analysera en fil jag bifogar</button>` +
+    `<button class="suggestion">Skapa en PowerPoint från mina anteckningar</button>` +
+    `</div>`
+  );
+}
+
+function welcomeHTML() {
+  if (!IS_EXCEL) return `<div class="welcome">${desktopWelcomeHTML()}</div>`;
+  return (
+    `<div class="welcome"><h2>Ny chatt</h2>` +
+    `<p>Vad vill du göra med ditt kalkylark?</p>` +
+    `<div class="suggestions">` +
+    `<button class="suggestion">Sammanfatta arbetsboken</button>` +
+    `<button class="suggestion">Bygg en budget med summor och diagram</button>` +
+    `<button class="suggestion">Hitta och förklara formelfel</button>` +
+    `</div></div>`
+  );
+}
+
+function bindSuggestions() {
   document.querySelectorAll(".suggestion").forEach((b) =>
     b.addEventListener("click", () => { els.prompt.value = b.textContent; onSend(); }));
 }
@@ -561,6 +584,18 @@ const tools = {
       const j = await r.json();
       return { analysis: j.text, address };
     } catch { return { error: "Kunde inte nå analystjänsten." }; }
+  },
+
+  async run_code({ task, data }) {
+    try {
+      const r = await fetch(`${API_BASE}/api/code`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task, data }),
+      });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Körningen misslyckades." }; }
+      const j = await r.json();
+      return { result: j.text };
+    } catch { return { error: "Kunde inte nå kodtjänsten." }; }
   },
 
   async web_lookup({ query }) {
@@ -1885,6 +1920,7 @@ function toolResultHint(name, input, result) {
     case "set_column_width": return result.width === "auto" ? "auto" : (result.width != null ? `${result.width} pt` : "");
     case "set_row_height": return result.height === "auto" ? "auto" : (result.height != null ? `${result.height} pt` : "");
     case "remember": return result.saved ? "sparat" : "";
+    case "run_code": return result.result ? "klart" : "";
     case "propose_plan": return result.approved ? "godkänd" : (result.approved === false ? "avböjd" : "");
     case "delegate_task": return typeof result.steps === "number" ? `${result.steps} steg` : "";
     case "schedule_task": return result.scheduled ? "schemalagt" : "";
@@ -1921,6 +1957,7 @@ function toolLabel(name, input) {
     capture_view: `Tittar på ${input?.address || "arket"}`,
     analyze_data: `Analyserar ${input?.address || "data"}`,
     web_lookup: `Söker på webben: "${input?.query || ""}"`,
+    run_code: "Kör kod",
     create_document: `Skapar ${(input?.kind || "dokument").toUpperCase()}`,
     list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",
     open_file: `Öppnar ${input?.name || "fil"}`,
@@ -2500,8 +2537,8 @@ function clearWelcome() {
 function resetChat() {
   if (busy) { toast("Vänta lite — Simba arbetar fortfarande.", "info"); return; }
   messages = [];
-  els.messages.innerHTML =
-    '<div class="welcome"><h2>Ny chatt</h2><p>Vad vill du göra med ditt kalkylark?</p></div>';
+  els.messages.innerHTML = welcomeHTML();
+  bindSuggestions();
   if (signedIn) {
     conversationId = null; // a fresh server conversation is created on first save
   }
