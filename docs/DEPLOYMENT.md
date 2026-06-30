@@ -30,6 +30,15 @@ sidebar *and* the `/api` backend. That means one thing to host, no CORS, and the
 Anthropic API key never leaves the server. End users only ever load a manifest
 that points at this host.
 
+**Three surfaces, one backend.** The same build serves Simba three ways:
+- **Web app** — visit `https://YOUR_HOST/` in any browser; it serves `index.html`,
+  a standalone build with no Office.js that boots straight into the full assistant.
+- **Desktop app** — the Electron app in `desktop/` loads the same UI (see
+  `desktop/README.md`); package + distribute via Intune.
+- **Excel add-in** — `/taskpane.html` (loads Office.js) deployed via the manifest
+  (Part 2 below); this is the only surface with live worksheet editing.
+All three share account, memory, and conversation history when SSO is on.
+
 ---
 
 ## Part 1 — Host the service (developer, once)

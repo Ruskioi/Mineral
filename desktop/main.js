@@ -13,7 +13,9 @@
  */
 const { app, BrowserWindow, shell } = require("electron");
 
-const SIMBA_URL = process.env.SIMBA_URL || "https://mineral-qd8c.onrender.com/taskpane.html";
+// Load the standalone web entry ("/") — no Office.js, boots straight into the
+// full assistant. Override with SIMBA_URL to point at your own host.
+const SIMBA_URL = process.env.SIMBA_URL || "https://mineral-qd8c.onrender.com/";
 
 // Auto-update (only in a packaged build). Reads the publish feed configured in
 // package.json (build.publish). Optional — wrapped so a missing module/feed

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <script src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script>
+  <% if (htmlWebpackPlugin.options.office) { %><script src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script><% } %>
   <!-- Self-contained splash styles: must work before the JS bundle injects the main CSS. -->
   <style id="splash-style">
     #splash {
@@ -79,6 +79,20 @@
     </div>
     <div class="splash-word">Simba</div>
   </div>
+  <aside id="sidebar" class="sidebar" hidden aria-label="Chattar">
+    <div class="sb-top">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <h1 class="sb-title">Simba AI</h1>
+      </div>
+      <button id="sb-new" class="sb-new" type="button">＋ Ny chatt</button>
+    </div>
+    <div id="sb-list" class="sb-list" aria-label="Sparade chattar"></div>
+    <div class="sb-foot">
+      <button id="sb-settings" class="sb-foot-btn" type="button">⚙ Inställningar</button>
+    </div>
+  </aside>
+
   <div id="app">
     <header class="app-header">
       <div class="brand">

@@ -21,7 +21,7 @@ npm start
 
 Point it at a different backend (e.g. your own host):
 ```bash
-SIMBA_URL=https://your-host/taskpane.html npm start
+SIMBA_URL=https://your-host/ npm start
 ```
 
 ## Package an installer

@@ -198,6 +198,16 @@ check("agent patterns (plan + delegate subagents) are wired", () => {
   assert(/propose_plan", "delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
 });
 
+check("web entry + conversation sidebar are wired", () => {
+  const wp = read("webpack.config.js");
+  assert(/filename:\s*"index\.html"/.test(wp), "webpack must emit index.html (the web entry)");
+  assert(/office:\s*false/.test(wp) && /office:\s*true/.test(wp), "Office.js must be conditional per entry");
+  const tp = read("src/taskpane/taskpane.html");
+  assert(/htmlWebpackPlugin\.options\.office/.test(tp), "template must gate Office.js on the office flag");
+  assert(/id="sidebar"/.test(tp) && /id="sb-list"/.test(tp), "conversation sidebar markup missing");
+  assert(/function refreshSidebar/.test(taskpane), "sidebar refresh logic missing");
+});
+
 check("Simba is a general standalone assistant (not Excel-only)", () => {
   assert(/general-purpose AI assistant/i.test(server), "system prompt should frame Simba as a general assistant");
   assert(/STANDALONE app/i.test(server) || /fristående AI-app/i.test(server), "system prompt should describe the standalone surface");

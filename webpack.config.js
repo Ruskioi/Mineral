@@ -49,10 +49,21 @@ export default async (env, argv) => {
       new webpack.DefinePlugin({
         __SIMBA_API_BASE__: JSON.stringify(process.env.SIMBA_API_BASE || ""),
       }),
+      // Excel add-in entry: loads Office.js (served at /taskpane.html).
       new HtmlWebpackPlugin({
         filename: "taskpane.html",
         template: "./src/taskpane/taskpane.html",
         chunks: ["taskpane"],
+        office: true,
+      }),
+      // Standalone web app entry: SAME UI/bundle, NO Office.js, served at "/"
+      // (express.static serves index.html for the root). Boots straight into
+      // desktop mode in any browser.
+      new HtmlWebpackPlugin({
+        filename: "index.html",
+        template: "./src/taskpane/taskpane.html",
+        chunks: ["taskpane"],
+        office: false,
       }),
       new HtmlWebpackPlugin({
         filename: "commands.html",

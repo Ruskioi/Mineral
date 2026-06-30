@@ -306,11 +306,18 @@ setTimeout(() => boot(false), 4000);
 
 function applyDesktopMode() {
   document.body.classList.add("desktop");          // CSS hides Excel-only chrome
-  if (els.contextPill) els.contextPill.textContent = "Simba AI";
   if (els.prompt) els.prompt.placeholder = "Fråga Simba vad som helst…";
   const w = document.querySelector(".welcome");
   if (w) w.innerHTML = desktopWelcomeHTML();
   bindSuggestions();
+  // Reveal and wire the persistent conversation sidebar (the Claude-app layout).
+  const sb = document.getElementById("sidebar");
+  if (sb) {
+    sb.hidden = false;
+    document.getElementById("sb-new")?.addEventListener("click", () => { resetChat(); refreshSidebar(); });
+    document.getElementById("sb-settings")?.addEventListener("click", openSettings);
+    refreshSidebar();
+  }
 }
 
 // Suggestion chips differ by surface: general assistant on desktop/web, Excel
@@ -2570,6 +2577,7 @@ async function loadConversations() {
     if (Array.isArray(conversations) && conversations.length && !messages.length) {
       await openConversation(conversations[0].id); // resume the most recent
     }
+    refreshSidebar(); // populate the standalone sidebar once signed in
   } catch { /* stay local */ }
 }
 
@@ -2583,6 +2591,7 @@ async function openConversation(id) {
     conversationId = c.id;
     messages = Array.isArray(c.messages) ? c.messages : [];
     renderHistory(messages);
+    refreshSidebar();
   } catch { /* ignore */ }
 }
 
@@ -2598,30 +2607,49 @@ function saveConversation() {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ title: convTitle(), messages }),
         });
-        if (r.ok) conversationId = (await r.json()).id;
+        if (r.ok) { conversationId = (await r.json()).id; refreshSidebar(); }
         return;
       }
       await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}`, {
         method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ title: convTitle(), messages }),
       });
+      refreshSidebar();
     } catch { /* best effort */ }
   }, 800);
+}
+
+async function fetchConvList() {
+  try {
+    const token = await getSsoToken(false);
+    if (!token) return null;
+    const r = await fetch(`${API_BASE}/api/conversations`, { headers: { Authorization: `Bearer ${token}` } });
+    return r.ok ? ((await r.json()).conversations || []) : null;
+  } catch { return null; }
+}
+
+function renderConvInto(el, list, limit, afterPick) {
+  if (!el) return;
+  if (list === null) { el.innerHTML = '<div class="hint" style="padding:6px 4px">Kunde inte hämta chattar.</div>'; return; }
+  if (!list.length) { el.innerHTML = '<div class="hint" style="padding:6px 4px">Inga sparade chattar än.</div>'; return; }
+  el.innerHTML = list.slice(0, limit).map((c) =>
+    `<button class="conv-item${c.id === conversationId ? " active" : ""}" data-id="${escapeHtml(c.id)}">${escapeHtml(c.title || "Namnlös chatt")}</button>`).join("");
+  el.querySelectorAll(".conv-item").forEach((b) =>
+    b.addEventListener("click", async () => { await openConversation(b.dataset.id); afterPick?.(); }));
 }
 
 async function populateConvList() {
   const el = els.modalCard.querySelector("#conv-list");
   if (!el) return;
-  try {
-    const token = await getSsoToken(false);
-    const r = token && await fetch(`${API_BASE}/api/conversations`, { headers: { Authorization: `Bearer ${token}` } });
-    const list = r && r.ok ? (await r.json()).conversations : [];
-    if (!list.length) { el.innerHTML = '<div class="hint" style="padding:4px 2px">Inga sparade chattar än.</div>'; return; }
-    el.innerHTML = list.slice(0, 12).map((c) =>
-      `<button class="conv-item${c.id === conversationId ? " active" : ""}" data-id="${escapeHtml(c.id)}">${escapeHtml(c.title || "Namnlös chatt")}</button>`).join("");
-    el.querySelectorAll(".conv-item").forEach((b) =>
-      b.addEventListener("click", async () => { await openConversation(b.dataset.id); closeModalSilently(); }));
-  } catch { el.innerHTML = '<div class="hint" style="padding:4px 2px">Kunde inte hämta chattar.</div>'; }
+  renderConvInto(el, await fetchConvList(), 12, closeModalSilently);
+}
+
+// The standalone app's persistent sidebar list.
+async function refreshSidebar() {
+  const el = document.getElementById("sb-list");
+  if (!el) return;
+  if (!signedIn) { el.innerHTML = '<div class="hint" style="padding:6px 4px">Logga in för att spara och synka chattar.</div>'; return; }
+  renderConvInto(el, await fetchConvList(), 40, null);
 }
 
 // Rebuild the visible chat from a stored message list (skips tool plumbing).
