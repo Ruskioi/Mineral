@@ -1154,6 +1154,90 @@ body.desktop .welcome p { font-size: 15px; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(12px) scale(0.96); } to { opacity: 1; transform: none; } }
 @keyframes toastOut { to { opacity: 0; transform: translateY(8px) scale(0.97); } }
 
+/* ============================================================
+   Polish & micro-interactions — small, tasteful flourishes.
+   ============================================================ */
+
+/* Header brand: a soft tinted plate, gentle idle float, playful hover wiggle. */
+.brand-mark {
+  background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--accent) 16%, var(--surface)) 0%, var(--accent-tint) 100%);
+  transition: transform 0.3s var(--ease-back), box-shadow var(--speed);
+}
+.brand-mark svg { animation: floaty 5.5s ease-in-out infinite; transform-origin: 50% 70%; }
+.brand:hover .brand-mark { transform: rotate(-3deg) scale(1.05); box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 24%, transparent); }
+.brand:hover .brand-mark svg { animation: wag 0.6s ease; }
+.brand-mark.cheer svg { animation: cheer 0.7s var(--ease-back); }
+@keyframes floaty { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.5px); } }
+@keyframes cheer { 0% { transform: rotate(0) scale(1); } 30% { transform: rotate(-8deg) scale(1.12); } 60% { transform: rotate(7deg) scale(1.08); } 100% { transform: rotate(0) scale(1); } }
+
+/* Icon buttons: lift + a little personality (gear turns, plus spins). */
+.icon-btn { transition: background var(--speed), border-color var(--speed), transform 0.25s var(--ease-back), color var(--speed), box-shadow var(--speed); }
+.icon-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+#settings:hover { transform: translateY(-1px) rotate(38deg); }
+#new-chat:hover { transform: translateY(-1px) rotate(90deg); }
+#agents:hover { transform: translateY(-1px) scale(1.08); }
+
+/* Send button: a soft accent glow on hover, springy press. */
+.send-btn { transition: background var(--speed), transform 0.2s var(--ease-back), box-shadow var(--speed); }
+.send-btn:hover { box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 38%, transparent); transform: translateY(-1px); }
+.send-btn:not(.stop):hover { transform: translateY(-1px) scale(1.04); }
+
+/* Composer: a gentler, layered focus ring. */
+.composer-row { transition: border-color var(--speed), box-shadow 0.25s var(--ease); }
+.composer-row:focus-within { box-shadow: 0 0 0 3px var(--accent-tint), 0 6px 20px color-mix(in srgb, var(--accent) 12%, transparent); }
+.attach-btn:hover { transform: translateY(-1px) scale(1.05); }
+
+/* Suggestion chips: a growing accent edge + an arrow that slides in. */
+.suggestion { position: relative; overflow: hidden; }
+.suggestion::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--accent); transform: scaleY(0); transform-origin: bottom; transition: transform 0.25s var(--ease);
+}
+.suggestion:hover::before { transform: scaleY(1); }
+.suggestion::after {
+  content: "→"; position: absolute; right: 12px; top: 50%; color: var(--accent);
+  opacity: 0; transform: translate(-4px, -50%); transition: opacity var(--speed), transform 0.25s var(--ease);
+}
+.suggestion:hover { padding-right: 30px; }
+.suggestion:hover::after { opacity: 1; transform: translate(0, -50%); }
+
+/* Message bubbles: a faint top sheen on Simba's replies + a smoother lift. */
+.msg.assistant .bubble { position: relative; transition: box-shadow 0.25s var(--ease), transform 0.25s var(--ease); }
+.msg.assistant .bubble::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 4%, transparent), transparent 42%);
+}
+.msg.assistant:hover .bubble { transform: translateY(-1px); }
+.msg .avatar { transition: transform 0.25s var(--ease-back), box-shadow var(--speed); }
+.msg.assistant:hover .avatar { transform: scale(1.08) rotate(-4deg); }
+
+/* Links: an underline that grows from the left. */
+.bubble a { background-image: linear-gradient(var(--accent), var(--accent)); background-size: 0% 1.5px; background-position: 0 100%; background-repeat: no-repeat; text-decoration: none; transition: background-size 0.25s var(--ease); }
+.bubble a:hover { background-size: 100% 1.5px; }
+
+/* Code block header: subtle gradient + crisper actions. */
+.cb-head { background: linear-gradient(180deg, #2a2723, #211f1a); }
+
+/* Activity card: gentle hover, smoother chevron. */
+.tg-card { transition: border-color var(--speed), box-shadow 0.25s var(--ease); }
+.tg-card:hover { box-shadow: var(--shadow-sm); }
+.tg-chev { transition: transform 0.3s var(--ease-back); }
+
+/* Modal: a touch more spring on entry. */
+.modal-card { animation: modalPop 0.28s var(--ease-back) both; }
+@keyframes modalPop { from { opacity: 0; transform: translateY(8px) scale(0.97); } to { opacity: 1; transform: none; } }
+
+/* Thinner, softer scrollbar. */
+.messages::-webkit-scrollbar { width: 8px; }
+.sb-list::-webkit-scrollbar, .files-list::-webkit-scrollbar, .sched-list::-webkit-scrollbar, .conv-list::-webkit-scrollbar { width: 7px; }
+.sb-list::-webkit-scrollbar-thumb, .files-list::-webkit-scrollbar-thumb, .sched-list::-webkit-scrollbar-thumb, .conv-list::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; }
+
+/* Sidebar items: a hair of slide on hover. */
+.sb-list .conv-row { transition: transform var(--speed); }
+.sb-list .conv-row:hover { transform: translateX(2px); }
+.sb-new { transition: background var(--speed), border-color var(--speed), transform 0.2s var(--ease-back), box-shadow var(--speed); }
+.sb-new:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
 }

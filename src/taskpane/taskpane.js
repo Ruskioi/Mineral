@@ -1460,6 +1460,7 @@ async function onSend() {
   renderTyping();
   try {
     await runAgentLoop();
+    if (!stopRequested) cheerMascot(); // a little happy wag when Simba finishes
   } catch (err) {
     if (!stopRequested) toast(err.message || "Något gick fel i kommunikationen med Simba.", "error", 4000);
   } finally {
@@ -2741,6 +2742,16 @@ function setBusy(state) {
   els.send.setAttribute("aria-label", state ? "Stoppa" : "Skicka");
   els.send.innerHTML = state ? "◼" : "➤";
   els.prompt.disabled = state;
+}
+
+// A brief happy wag of the header mascot when Simba finishes a reply.
+function cheerMascot() {
+  const el = document.querySelector(".brand-mark");
+  if (!el) return;
+  el.classList.remove("cheer");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("cheer");
+  setTimeout(() => el.classList.remove("cheer"), 800);
 }
 
 // User-initiated stop: abort the in-flight request and let the loop bail cleanly.

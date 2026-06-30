@@ -270,6 +270,13 @@ check("settings panel exposes all features (incl. schedule management)", () => {
   }
 });
 
+check("UI polish (micro-interactions) is present", () => {
+  const css = read("src/taskpane/taskpane.css");
+  assert(/Polish & micro-interactions/.test(css), "polish CSS block missing");
+  assert(/@keyframes cheer/.test(css) && /function cheerMascot/.test(taskpane), "mascot cheer quirk missing");
+  assert(/\.suggestion:hover::after/.test(css), "suggestion hover affordance missing");
+});
+
 check("chat mascot watermark + scroll fix are wired", () => {
   const tp = read("src/taskpane/taskpane.html");
   const css = read("src/taskpane/taskpane.css");
