@@ -37,7 +37,11 @@ const taskpane = read("src/taskpane/taskpane.js");
 await createEntry("t-test", { topic: "X", title: "Pris", content: "Produkten kostar 990 kr.", tags: ["pris"] });
 const _vaultHits = await searchVault("t-test", "vad kostar produkten");
 const _vaultOtherOrgCount = (await listVault("t-other")).length;
-void retrieveForContext;
+// Passage-grounded context: the matched snippet should reach the model.
+const _vaultCtx = await retrieveForContext("t-test", "vad kostar produkten");
+// Chunking splits long docs into overlapping passages for fine-grained retrieval.
+const { chunkText: _chunkText } = await import("../server/embeddings.js");
+const _chunks = _chunkText("Mening ett. ".repeat(400));
 // File attachment round-trip (extracted text searchable; bytes retrievable).
 const _vaultMod = await import("../server/vault.js");
 const _fEntry = await _vaultMod.createEntry("t-file", { topic: "Y", title: "Prislista", content: "x", file: { name: "p.csv", type: "text/csv", data: Buffer.from("Plan,Pris").toString("base64"), text: "Plan,Pris" } });
@@ -272,9 +276,10 @@ check("PWA (installable web app) is wired", () => {
 
 check("specialist agents + tabbed settings are wired", () => {
   const tp = read("src/taskpane/taskpane.html");
-  // Decluttered UI: features live in the sidebar nav + the ⋯ menu, not in the header.
-  assert(/id="menu"/.test(tp) && /id="sb-nav"/.test(tp), "menu button / sidebar nav missing");
-  assert(/function openMenu/.test(taskpane) && /function buildSidebarNav/.test(taskpane), "menu / sidebar nav builder missing");
+  // Decluttered UI: features live in a nav drawer/rail (☰), reachable on every surface.
+  assert(/id="menu"/.test(tp) && /id="sb-nav"/.test(tp) && /id="nav-backdrop"/.test(tp), "menu button / sidebar nav / backdrop missing");
+  assert(/function wireSidebar/.test(taskpane) && /function buildSidebarNav/.test(taskpane) && /function toggleNav/.test(taskpane), "sidebar drawer wiring missing");
+  assert(/wireSidebar\(\)/.test(taskpane), "sidebar must be wired on boot for every surface (not desktop-only)");
   assert(/label: "Agenter", run: openAgents/.test(taskpane), "Agenter must be reachable from the sidebar nav");
   assert(/id="agent-chip"/.test(tp), "active-agent chip missing");
   assert(/const AGENTS = \[/.test(taskpane), "agent definitions missing");
@@ -474,6 +479,12 @@ check("vault is a rich knowledge base (vectors, files, analyze, map)", () => {
   const emb = read("server/embeddings.js");
   assert(/api\.voyageai\.com/.test(emb) && /export function cosine/.test(emb), "embeddings/vector search missing");
   assert(/vectorEnabled/.test(server) && /sim \* 8 \+ kw/.test(read("server/vault.js")), "hybrid (vector+keyword) search missing");
+  // Stronger RAG: passage-level chunking + cross-encoder reranking, grounded context.
+  assert(/export function chunkText/.test(emb) && /export async function rerank/.test(emb) && /api\.voyageai\.com\/v1\/rerank/.test(emb), "chunking / rerank helpers missing");
+  assert(/chunks JSONB/.test(read("server/vault.js")) && /function computeVectors/.test(read("server/vault.js")), "vault must store passage chunks");
+  assert(/rerankEnabled/.test(read("server/vault.js")) && /function searchRanked/.test(read("server/vault.js")), "rerank pipeline not wired into retrieval");
+  assert(_chunks.length > 1, "chunkText should split a long document into multiple passages");
+  assert(_vaultCtx.includes("990 kr"), "retrieveForContext must ground on the matched passage");
   // file attachments + retrieval
   assert(/file_data/.test(read("server/vault.js")), "vault attachment storage missing");
   assert(/app\.get\("\/api\/vault\/:id\/file"/.test(server), "vault file endpoint missing");

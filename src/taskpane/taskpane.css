@@ -662,15 +662,37 @@ body.desktop .composer-foot,
 body.desktop #undo,
 body.desktop #context-pill { display: none; }
 
-/* Persistent conversation sidebar (desktop/web app, Claude-style). Hidden in the
- * narrow Excel pane; shown when running standalone on a wide enough window. */
-.sidebar { display: none; }
-body.desktop { display: flex; }
-body.desktop #app { flex: 1; min-width: 0; }
-body.desktop .sidebar {
+/* Navigation sidebar (Claude-style). Two modes:
+ *  - Narrow panes (Excel/Outlook add-in, small windows): a slide-out drawer
+ *    opened by the ⋯ menu button, with a dimmed backdrop.
+ *  - Wide desktop/web: a permanent in-flow rail.
+ * This keeps every feature (Agenter, Kunskapsbank, E-post, …) visible on every
+ * surface instead of being buried. */
+.sidebar {
   display: flex; flex-direction: column;
-  width: 264px; flex: 0 0 264px; height: 100vh;
+  position: fixed; left: 0; top: 0; height: 100vh; z-index: 60;
+  width: 284px; max-width: 86vw;
   background: var(--bg-soft); border-right: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-100%);
+  transition: transform 0.28s var(--ease-back, ease);
+}
+.sidebar.open { transform: none; }
+.sidebar[hidden] { display: none; }
+.nav-backdrop {
+  position: fixed; inset: 0; z-index: 55; background: rgba(20, 18, 14, 0.34);
+  opacity: 0; pointer-events: none; transition: opacity 0.28s ease;
+}
+.nav-backdrop.open { opacity: 1; pointer-events: auto; }
+/* Wide desktop: the sidebar becomes a permanent rail, no drawer / backdrop. */
+@media (min-width: 701px) {
+  body.desktop { display: flex; }
+  body.desktop #app { flex: 1; min-width: 0; }
+  body.desktop .sidebar {
+    position: static; transform: none; box-shadow: none;
+    width: 264px; flex: 0 0 264px; max-width: none;
+  }
+  body.desktop .nav-backdrop { display: none; }
 }
 .sb-top { padding: 14px 14px 8px; display: flex; flex-direction: column; gap: 12px; }
 .sb-top .brand { display: flex; align-items: center; gap: 9px; }
@@ -712,16 +734,13 @@ body.desktop .sidebar {
   padding: 9px 10px; border-radius: 9px; font-size: 13px; color: var(--ink-soft); cursor: pointer;
 }
 .sb-foot-btn:hover { background: var(--surface); color: var(--ink); }
-/* On a narrow standalone window, collapse the sidebar so the chat keeps room. */
-@media (max-width: 700px) { body.desktop .sidebar { display: none; } }
-/* On a wide desktop window the sidebar owns navigation, so the in-chat header
- * collapses to just the chat title — the ⋯ menu lives in the sidebar instead. */
-body.desktop .app-header { padding: 14px 22px; }
-body.desktop .app-header #new-chat,
-body.desktop .app-header #menu { display: none; }
-@media (max-width: 700px) {
+/* Wide desktop: the permanent rail owns navigation, so the in-chat header drops
+ * its menu/new-chat buttons (they live in the rail). They stay in the header on
+ * every drawer-mode surface (Excel/Outlook/narrow) where the rail is hidden. */
+@media (min-width: 701px) {
+  body.desktop .app-header { padding: 14px 22px; }
   body.desktop .app-header #new-chat,
-  body.desktop .app-header #menu { display: inline-flex; }
+  body.desktop .app-header #menu { display: none; }
 }
 
 /* Standalone app layout: a roomy, centered column like a real chat app, so the

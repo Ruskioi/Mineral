@@ -259,7 +259,10 @@ function boot(isExcel) {
   els.undo.addEventListener("click", () => { if (!busy) tools.revert_last_change(); });
   els.attach.addEventListener("click", () => els.fileInput.click());
   els.agentChip = document.getElementById("agent-chip");
-  document.getElementById("menu")?.addEventListener("click", openMenu);
+  els.menuBtn = document.getElementById("menu");
+  els.navBackdrop = document.getElementById("nav-backdrop");
+  els.menuBtn?.addEventListener("click", () => toggleNav());
+  els.navBackdrop?.addEventListener("click", () => toggleNav(false));
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
 
   els.editMode.addEventListener("click", (e) => {
@@ -319,6 +322,7 @@ function boot(isExcel) {
   window.addEventListener("unhandledrejection", (e) => console.error("[Simba] unhandled rejection:", e.reason));
   window.addEventListener("error", (e) => console.error("[Simba] error:", e.message));
 
+  wireSidebar();   // the nav drawer/rail exists on every surface
   if (IS_EXCEL) {
     if (els.messages.querySelector(".welcome")) { els.messages.innerHTML = welcomeHTML(); bindSuggestions(); }
     refreshContextPill();
@@ -364,20 +368,34 @@ function applyDesktopMode() {
   const w = document.querySelector(".welcome");
   if (w) w.innerHTML = desktopWelcomeHTML();
   bindSuggestions();
-  // Reveal and wire the persistent conversation sidebar (the Claude-app layout).
-  const sb = document.getElementById("sidebar");
-  if (sb) {
-    sb.hidden = false;
-    document.getElementById("sb-new")?.addEventListener("click", () => { resetChat(); refreshSidebar(); });
-    document.getElementById("sb-settings")?.addEventListener("click", openSettings);
-    buildSidebarNav();
-    refreshSidebar();
-  }
   // PWA: register the service worker so the web app is installable + offline-resilient.
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
     navigator.serviceWorker.register("/sw.js").catch(() => { /* non-fatal */ });
   }
 }
+
+// Reveal and wire the navigation sidebar. It exists on every surface: a permanent
+// rail on wide desktop, a slide-out drawer (toggled by ☰) on Excel/Outlook/narrow.
+function wireSidebar() {
+  const sb = document.getElementById("sidebar");
+  if (!sb) return;
+  sb.hidden = false;
+  document.getElementById("sb-new")?.addEventListener("click", () => { resetChat(); refreshSidebar(); closeNav(); });
+  document.getElementById("sb-settings")?.addEventListener("click", () => { closeNav(); openSettings(); });
+  buildSidebarNav();
+  refreshSidebar();
+}
+
+// Toggle the nav drawer (no-op visually on wide desktop where the rail is fixed).
+function toggleNav(force) {
+  const sb = document.getElementById("sidebar");
+  if (!sb) return;
+  const open = force == null ? !sb.classList.contains("open") : !!force;
+  sb.classList.toggle("open", open);
+  els.navBackdrop?.classList.toggle("open", open);
+  els.menuBtn?.setAttribute("aria-expanded", String(open));
+}
+function closeNav() { toggleNav(false); }
 
 // A polished empty state: a mascot badge in a soft halo, a warm greeting, and
 // suggestion chips with leading icons. Surface-aware copy/suggestions.
@@ -3266,16 +3284,7 @@ async function populateWorkspace() {
 }
 
 // A clean tap-friendly menu (the ⋯ button) — same actions as the ⌘K palette.
-function openMenu() {
-  const cmds = commandList();
-  openModal(`<h3>Meny</h3><div class="files-list" id="menu-list" style="max-height:60vh"></div><div class="modal-actions"><button class="btn primary" data-act="cancel">Stäng</button></div>`);
-  const list = els.modalCard.querySelector("#menu-list");
-  list.innerHTML = cmds.map((c, i) => `<button class="file-item" data-i="${i}"><span class="file-ic">${c.icon}</span><span class="file-main"><span class="file-name">${escapeHtml(c.label)}</span></span></button>`).join("");
-  list.querySelectorAll(".file-item").forEach((b) => b.addEventListener("click", () => { const c = cmds[+b.dataset.i]; closeModalSilently(); c?.run(); }));
-  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
-}
-
-// The persistent feature nav in the desktop/web sidebar (Claude-style rail).
+// The feature nav shown in the sidebar (Claude-style rail / drawer).
 function buildSidebarNav() {
   const nav = document.getElementById("sb-nav");
   if (!nav) return;
@@ -3287,7 +3296,7 @@ function buildSidebarNav() {
     { icon: "🔌", label: "Datakällor", run: openConnectors },
   );
   nav.innerHTML = items.map((it, i) => `<button class="sb-nav-item" data-i="${i}"><span class="sb-nav-ic">${it.icon}</span>${escapeHtml(it.label)}</button>`).join("");
-  nav.querySelectorAll(".sb-nav-item").forEach((b) => b.addEventListener("click", () => items[+b.dataset.i].run()));
+  nav.querySelectorAll(".sb-nav-item").forEach((b) => b.addEventListener("click", () => { closeNav(); items[+b.dataset.i].run(); }));
 }
 
 /* ---- Command palette (⌘K) ---------------------------------------------- */
@@ -4261,7 +4270,7 @@ function renderSidebarList() {
   if (!el) return;
   const q = (document.getElementById("sb-search")?.value || "").trim().toLowerCase();
   const list = q ? sidebarConvs.filter((c) => (c.title || "").toLowerCase().includes(q)) : sidebarConvs;
-  renderConvInto(el, list, 40, null);
+  renderConvInto(el, list, 40, closeNav);
 }
 
 // Rebuild the visible chat from a stored message list (skips tool plumbing).

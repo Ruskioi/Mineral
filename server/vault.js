@@ -12,7 +12,7 @@
  */
 import pg from "pg";
 import { randomUUID } from "node:crypto";
-import { embed, embedOne, cosine, vectorEnabled } from "./embeddings.js";
+import { embed, embedOne, cosine, vectorEnabled, chunkText, rerank, rerankEnabled } from "./embeddings.js";
 
 export const usingPostgres = Boolean(process.env.DATABASE_URL);
 export { vectorEnabled };
@@ -52,6 +52,7 @@ async function init() {
   // Additive columns (safe on existing installs): attachments + embeddings.
   for (const col of [
     "file_name TEXT", "file_type TEXT", "file_data TEXT", "embedding JSONB",
+    "chunks JSONB", // [{text, embedding}] — passage-level vectors for fine-grained retrieval
   ]) await pool.query(`ALTER TABLE simba_vault ADD COLUMN IF NOT EXISTS ${col}`);
 }
 
@@ -80,7 +81,7 @@ async function listRaw(orgKey) {
   await ensureReady();
   if (pool) {
     const r = await pool.query(
-      "SELECT id, org_key, topic, title, content, tags, author, updated_at, file_name, file_type, embedding FROM simba_vault WHERE org_key = $1 ORDER BY topic, title LIMIT $2",
+      "SELECT id, org_key, topic, title, content, tags, author, updated_at, file_name, file_type, embedding, chunks FROM simba_vault WHERE org_key = $1 ORDER BY topic, title LIMIT $2",
       [orgKey, MAX_ENTRIES]
     );
     return r.rows;
@@ -123,10 +124,28 @@ function applyFile(target, file) {
   return file.text ? `\n\n[Ur filen ${target.file_name}]\n${String(file.text)}` : "";
 }
 
-async function computeEmbedding(entry) {
-  if (!vectorEnabled) return null;
-  try { return await embedOne(searchableText(entry), "document"); }
-  catch (e) { console.error("[Simba] vault embed failed:", e?.message || e); return null; }
+// Compute both a coarse entry-level vector (kept for back-compat / topic match)
+// and fine-grained passage vectors so retrieval can hit the exact relevant part
+// of a long document. One batched embed call covers the whole entry.
+async function computeVectors(entry) {
+  if (!vectorEnabled) return { embedding: null, chunks: null };
+  try {
+    const titleCtx = [entry.topic, entry.title].filter(Boolean).join(" — ");
+    const passages = chunkText(entry.content || "");
+    // Prefix each passage with the title/topic so an out-of-context chunk still
+    // embeds against the right subject.
+    const texts = passages.map((p) => (titleCtx ? `${titleCtx}\n${p}` : p));
+    const all = await embed([searchableText(entry), ...texts], "document");
+    if (!all || !all.length) return { embedding: null, chunks: null };
+    const embedding = all[0] || null;
+    const chunks = passages
+      .map((text, i) => ({ text, embedding: all[i + 1] || null }))
+      .filter((c) => Array.isArray(c.embedding));
+    return { embedding, chunks: chunks.length ? chunks : null };
+  } catch (e) {
+    console.error("[Simba] vault embed failed:", e?.message || e);
+    return { embedding: null, chunks: null };
+  }
 }
 
 export async function createEntry(orgKey, { topic, title, content, tags, author, file }) {
@@ -137,18 +156,19 @@ export async function createEntry(orgKey, { topic, title, content, tags, author,
     title: clean(title, MAX_TITLE),
     content: clean(content, MAX_CONTENT),
     tags: cleanTags(tags), author: clean(author, 200),
-    file_name: null, file_type: null, file_data: null, embedding: null,
+    file_name: null, file_type: null, file_data: null, embedding: null, chunks: null,
     updated_at: new Date().toISOString(),
   };
   if (!entry.title) throw Object.assign(new Error("Posten saknar titel."), { status: 400 });
   const extracted = applyFile(entry, file);
   if (extracted) entry.content = (entry.content + extracted).slice(0, MAX_CONTENT);
-  entry.embedding = await computeEmbedding(entry);
+  const vec = await computeVectors(entry);
+  entry.embedding = vec.embedding; entry.chunks = vec.chunks;
   if (pool) {
     await pool.query(
-      `INSERT INTO simba_vault (id, org_key, topic, title, content, tags, author, file_name, file_type, file_data, embedding)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11::jsonb)`,
-      [entry.id, orgKey, entry.topic, entry.title, entry.content, JSON.stringify(entry.tags), entry.author, entry.file_name, entry.file_type, entry.file_data, entry.embedding ? JSON.stringify(entry.embedding) : null]
+      `INSERT INTO simba_vault (id, org_key, topic, title, content, tags, author, file_name, file_type, file_data, embedding, chunks)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11::jsonb,$12::jsonb)`,
+      [entry.id, orgKey, entry.topic, entry.title, entry.content, JSON.stringify(entry.tags), entry.author, entry.file_name, entry.file_type, entry.file_data, entry.embedding ? JSON.stringify(entry.embedding) : null, entry.chunks ? JSON.stringify(entry.chunks) : null]
     );
   } else {
     if (!mem.has(orgKey)) mem.set(orgKey, new Map());
@@ -176,11 +196,12 @@ export async function updateEntry(orgKey, id, patch) {
     const f = await getFile(orgKey, id);
     if (f) { next.file_name = f.name; next.file_type = f.type; next.file_data = f.data; }
   }
-  next.embedding = await computeEmbedding(next);
+  const vec = await computeVectors(next);
+  next.embedding = vec.embedding; next.chunks = vec.chunks;
   if (pool) {
     await pool.query(
-      "UPDATE simba_vault SET topic=$3, title=$4, content=$5, tags=$6::jsonb, file_name=$7, file_type=$8, file_data=$9, embedding=$10::jsonb, updated_at=now() WHERE org_key=$1 AND id=$2",
-      [orgKey, id, next.topic, next.title, next.content, JSON.stringify(next.tags), next.file_name, next.file_type, next.file_data, next.embedding ? JSON.stringify(next.embedding) : null]
+      "UPDATE simba_vault SET topic=$3, title=$4, content=$5, tags=$6::jsonb, file_name=$7, file_type=$8, file_data=$9, embedding=$10::jsonb, chunks=$11::jsonb, updated_at=now() WHERE org_key=$1 AND id=$2",
+      [orgKey, id, next.topic, next.title, next.content, JSON.stringify(next.tags), next.file_name, next.file_type, next.file_data, next.embedding ? JSON.stringify(next.embedding) : null, next.chunks ? JSON.stringify(next.chunks) : null]
     );
   } else {
     const e = mem.get(orgKey)?.get(id);
@@ -232,36 +253,68 @@ function terms(query) {
   return [...new Set(String(query || "").toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || [])];
 }
 
-export async function searchVault(orgKey, query, limit = 8) {
+// Core ranked retrieval. Returns scored candidates with the best-matching passage
+// for each entry, so callers can both list results and ground answers in the exact
+// relevant snippet. Pipeline: keyword + passage-level cosine (hybrid) → optional
+// cross-encoder rerank for precise final ordering.
+async function searchRanked(orgKey, query, limit = 8) {
   const raw = await listRaw(orgKey);
   const ts = terms(query);
-  if (!query || !query.trim()) return raw.slice(0, limit).map(publicEntry);
+  if (!query || !query.trim()) {
+    return raw.slice(0, limit).map((e) => ({ e, snippet: String(e.content || "").slice(0, 1200), sim: 0, kw: 0 }));
+  }
 
-  // Semantic component (Voyage) when available, blended with keyword score so
+  // Semantic query vector (Voyage) when available; blended with keyword score so
   // exact term matches still rank well — a hybrid retriever.
   let qvec = null;
   if (vectorEnabled) { try { qvec = await embedOne(query, "query"); } catch { /* fall back to keyword */ } }
 
   const ranked = raw.map((e) => {
     const kw = score(e, ts);
-    const sim = (qvec && Array.isArray(e.embedding)) ? cosine(qvec, e.embedding) : 0;
-    return { e, total: sim * 8 + kw, sim, kw };
+    // Best passage: prefer the strongest chunk; fall back to the entry vector.
+    let sim = 0, bestChunk = null;
+    if (qvec) {
+      if (Array.isArray(e.chunks)) {
+        for (const c of e.chunks) {
+          if (!Array.isArray(c.embedding)) continue;
+          const cs = cosine(qvec, c.embedding);
+          if (cs > sim) { sim = cs; bestChunk = c.text; }
+        }
+      }
+      if (Array.isArray(e.embedding)) sim = Math.max(sim, cosine(qvec, e.embedding));
+    }
+    const snippet = bestChunk || String(e.content || "").slice(0, 1200);
+    return { e, total: sim * 8 + kw, sim, kw, snippet };
   })
     .filter((x) => x.total > 0 || x.sim > 0.18)
-    .sort((a, b) => b.total - a.total)
-    .slice(0, limit);
-  return ranked.map((x) => publicEntry(x.e));
+    .sort((a, b) => b.total - a.total);
+
+  // Take a generous candidate set, then let a cross-encoder rerank the actual
+  // passages for the final, more precise ordering.
+  let cands = ranked.slice(0, Math.max(limit * 3, 18));
+  if (rerankEnabled && cands.length > 1) {
+    const docs = cands.map((x) => `${x.e.title}\n${x.snippet}`.slice(0, 4000));
+    const order = await rerank(query, docs, limit);
+    if (order && order.length) cands = order.map((o) => cands[o.index]).filter(Boolean);
+  }
+  return cands.slice(0, limit);
 }
 
-// Build a compact context block of the most relevant entries for a turn.
+export async function searchVault(orgKey, query, limit = 8) {
+  return (await searchRanked(orgKey, query, limit)).map((x) => publicEntry(x.e));
+}
+
+// Build a compact context block of the most relevant entries for a turn — grounded
+// on the matched passage (not just the head of the document) so the model sees the
+// part that actually answers the question.
 export async function retrieveForContext(orgKey, text, maxChars = 4000) {
   if (!orgKey) return "";
-  const hits = await searchVault(orgKey, text, 10);
+  const hits = await searchRanked(orgKey, text, 10);
   if (!hits.length) return "";
   const parts = [];
   let used = 0;
-  for (const e of hits) {
-    const block = `• [${e.topic}] ${e.title}: ${e.content}`.slice(0, 1200);
+  for (const { e, snippet } of hits) {
+    const block = `• [${e.topic}] ${e.title}: ${snippet}`.slice(0, 1400);
     if (used + block.length > maxChars) break;
     parts.push(block);
     used += block.length;
