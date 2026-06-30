@@ -318,6 +318,10 @@ function applyDesktopMode() {
     document.getElementById("sb-settings")?.addEventListener("click", openSettings);
     refreshSidebar();
   }
+  // PWA: register the service worker so the web app is installable + offline-resilient.
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    navigator.serviceWorker.register("/sw.js").catch(() => { /* non-fatal */ });
+  }
 }
 
 // Suggestion chips differ by surface: general assistant on desktop/web, Excel

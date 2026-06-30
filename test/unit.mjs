@@ -198,6 +198,21 @@ check("agent patterns (plan + delegate subagents) are wired", () => {
   assert(/propose_plan", "delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
 });
 
+check("PWA (installable web app) is wired", () => {
+  const mani = JSON.parse(read("web/site.webmanifest"));
+  assert(mani.name && mani.start_url === "/" && mani.display === "standalone", "webmanifest missing name/start_url/standalone");
+  assert(Array.isArray(mani.icons) && mani.icons.some((i) => i.sizes === "512x512"), "webmanifest needs a 512 icon");
+  assert(mani.icons.some((i) => i.purpose === "maskable"), "webmanifest needs a maskable icon");
+  for (const f of ["assets/icon-192.png", "assets/icon-512.png", "assets/icon-maskable-512.png"]) {
+    assert(readFileSync(resolve(root, f)).length > 1000, `${f} missing or empty`);
+  }
+  const sw = read("web/sw.js");
+  assert(/\/api\//.test(sw) && /startsWith\("\/api\/"\)/.test(sw), "service worker must explicitly bypass /api");
+  assert(/registration|register\("\/sw\.js"\)/.test(taskpane), "client must register the service worker");
+  const wp = read("webpack.config.js");
+  assert(/site\.webmanifest/.test(wp) && /sw\.js/.test(wp), "webpack must copy the PWA files to the root");
+});
+
 check("web entry + conversation sidebar are wired", () => {
   const wp = read("webpack.config.js");
   assert(/filename:\s*"index\.html"/.test(wp), "webpack must emit index.html (the web entry)");

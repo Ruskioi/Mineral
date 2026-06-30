@@ -74,6 +74,9 @@ export default async (env, argv) => {
         patterns: [
           { from: "assets", to: "assets" },
           { from: "manifest.xml", to: "manifest.xml" },
+          // PWA: served from the origin root so scope "/" works.
+          { from: "web/site.webmanifest", to: "site.webmanifest" },
+          { from: "web/sw.js", to: "sw.js" },
         ],
       }),
     ],
