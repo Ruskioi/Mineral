@@ -237,6 +237,18 @@ check("PWA (installable web app) is wired", () => {
   assert(/site\.webmanifest/.test(wp) && /sw\.js/.test(wp), "webpack must copy the PWA files to the root");
 });
 
+check("specialist agents + tabbed settings are wired", () => {
+  const tp = read("src/taskpane/taskpane.html");
+  assert(/id="agents"/.test(tp), "agents button missing from the chat header");
+  assert(/id="agent-chip"/.test(tp), "active-agent chip missing");
+  assert(/const AGENTS = \[/.test(taskpane), "agent definitions missing");
+  assert(/function openAgents/.test(taskpane) && /function setActiveAgent/.test(taskpane), "agents panel logic missing");
+  assert(/activeAgent\.directive/.test(taskpane), "agent directive must be injected into the turn");
+  // Settings is now tabbed, not one long list.
+  assert(/class="tabs"/.test(taskpane) && /data-tab="schedules"/.test(taskpane), "settings tabs missing");
+  assert(/data-panel="memory"/.test(taskpane) && /data-panel="general"/.test(taskpane), "settings tab panels missing");
+});
+
 check("cloud file browser is wired", () => {
   const tp = read("src/taskpane/taskpane.html");
   assert(/id="cloud"/.test(tp), "cloud-files button missing from the composer");

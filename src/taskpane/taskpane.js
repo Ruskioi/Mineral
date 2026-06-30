@@ -30,7 +30,26 @@ let messages = [];
 let busy = false;
 let activeTyping = null; // the "thinking" dots; cleared once real content appears
 let pendingAttachment = null; // {name, kind, block} a user-attached file for the next message
+let activeAgent = null; // a selected specialist agent persona for the next message(s)
 let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
+
+// Specialist agents (à la Claude Code / Cowork / Design): each is a focused
+// persona that steers Simba's tools toward one kind of work. Selecting one runs
+// the conversation with its directive until you switch it off.
+const AGENTS = [
+  { id: "analyst", icon: "📊", name: "Analytiker", blurb: "Djup dataanalys, kör kod, hittar insikter.",
+    directive: "[Agent: Analytiker] Du är en noggrann dataanalytiker. Använd run_code och analyze_data för EXAKTA beräkningar i stället för att uppskatta. Hitta trender, avvikelser och samband, och presentera tydliga slutsatser med konkreta siffror. Läs relevant data först." },
+  { id: "builder", icon: "🧱", name: "Modellbyggare", blurb: "Bygger ark, modeller och dashboards.",
+    directive: "[Agent: Modellbyggare] Du bygger välstrukturerade kalkylark, modeller och dashboards. Planera layouten, använd riktiga formler, snygg formatering och diagram. Föreslå en kort plan (propose_plan) för stora byggen innan du kör, och dela vid behov upp jobbet med delegate_task." },
+  { id: "researcher", icon: "🔎", name: "Researcher", blurb: "Webbresearch med källor.",
+    directive: "[Agent: Researcher] Du gör webbresearch. Använd web_lookup för aktuella fakta, sammanfatta kortfattat, och ange alltid källor. Ge konkreta svar användaren kan agera på." },
+  { id: "designer", icon: "📝", name: "Dokument", blurb: "Skapar polerade dokument & presentationer.",
+    directive: "[Agent: Dokument] Du skapar polerade dokument och presentationer med create_document (Word/PowerPoint/Excel/PDF). Strukturera innehållet professionellt; gör rimliga antaganden om syfte och målgrupp om de inte angetts." },
+  { id: "reviewer", icon: "✅", name: "Granskare", blurb: "Granskar arket för fel & kvalitet.",
+    directive: "[Agent: Granskare] Du granskar arbetsboken kritiskt. Hitta formelfel (find_errors), inkonsekvenser och kvalitetsbrister, spåra beroenden (trace_cell) vid behov, och rapportera fynden med konkreta förslag på åtgärder." },
+  { id: "automator", icon: "⏰", name: "Automatiserare", blurb: "Sätter upp återkommande jobb.",
+    directive: "[Agent: Automatiserare] Du hjälper användaren automatisera arbete: sätt upp återkommande jobb med schedule_task (bekräfta schema och målfil först) eller orkestrera deluppgifter med delegate_task." },
+];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
 const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "run_code", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
@@ -222,6 +241,9 @@ function boot(isExcel) {
   els.attach.addEventListener("click", () => els.fileInput.click());
   els.cloud = document.getElementById("cloud");
   els.cloud?.addEventListener("click", openFilesBrowser);
+  els.agents = document.getElementById("agents");
+  els.agentChip = document.getElementById("agent-chip");
+  els.agents?.addEventListener("click", openAgents);
   els.fileInput.addEventListener("change", (e) => { const f = e.target.files?.[0]; if (f) handleAttach(f); e.target.value = ""; });
 
   els.editMode.addEventListener("click", (e) => {
@@ -1406,7 +1428,8 @@ async function onSend() {
   } catch { /* no active selection */ }
 
   const attach = pendingAttachment;
-  const promptText = (text || (attach ? `Titta på den bifogade filen "${attach.name}".` : "")) + selectionNote;
+  const agentNote = activeAgent ? `${activeAgent.directive}\n\n` : "";
+  const promptText = agentNote + (text || (attach ? `Titta på den bifogade filen "${attach.name}".` : "")) + selectionNote;
   // With an attachment, content is a block array (file first, then the question).
   const content = attach ? [attach.block, { type: "text", text: promptText }] : promptText;
   messages.push({ role: "user", content });
@@ -1793,50 +1816,80 @@ function openSettings() {
   const theme = store.get("simba.theme", "auto");
   openModal(
     `<h3>Inställningar</h3>
-     <div class="setting-row">
-       <div><div class="label">Utseende</div><div class="hint">Följ systemet eller välj ett tema</div></div>
-       <div class="seg" id="theme-seg">
-         <button class="seg-btn ${theme === "auto" ? "active" : ""}" data-theme="auto">Auto</button>
-         <button class="seg-btn ${theme === "light" ? "active" : ""}" data-theme="light">Ljust</button>
-         <button class="seg-btn ${theme === "dark" ? "active" : ""}" data-theme="dark">Mörkt</button>
+     <div class="tabs" id="settings-tabs" role="tablist">
+       <button class="tab active" data-tab="general">Allmänt</button>
+       <button class="tab" data-tab="memory">Minne</button>
+       <button class="tab" data-tab="chats">Chattar</button>
+       <button class="tab" data-tab="schedules">Scheman</button>
+     </div>
+
+     <div class="tab-panel" data-panel="general">
+       <div class="setting-row">
+         <div><div class="label">Utseende</div><div class="hint">Följ systemet eller välj ett tema</div></div>
+         <div class="seg" id="theme-seg">
+           <button class="seg-btn ${theme === "auto" ? "active" : ""}" data-theme="auto">Auto</button>
+           <button class="seg-btn ${theme === "light" ? "active" : ""}" data-theme="light">Ljust</button>
+           <button class="seg-btn ${theme === "dark" ? "active" : ""}" data-theme="dark">Mörkt</button>
+         </div>
+       </div>
+       <div class="setting-row">
+         <div><div class="label">Svarshastighet</div><div class="hint">Snabbare svar eller mer noggrann analys</div></div>
+         <div class="seg" id="speed-seg">
+           <button class="seg-btn ${speed === "fast" ? "active" : ""}" data-speed="fast" title="Snabbast – använder snabbläge">Snabb</button>
+           <button class="seg-btn ${speed === "balanced" ? "active" : ""}" data-speed="balanced" title="Bra balans mellan fart och kvalitet">Balanserad</button>
+           <button class="seg-btn ${speed === "thorough" ? "active" : ""}" data-speed="thorough" title="Mest noggrann – tar längre tid">Noggrann</button>
+         </div>
+       </div>
+       <div class="setting-row">
+         <div><div class="label">Modell</div><div class="hint">Drivs av Claude · enkla frågor körs snabbare automatiskt</div></div>
+         <div class="setting-meta">${escapeHtml(modelName)}</div>
        </div>
      </div>
-     <div class="setting-row">
-       <div><div class="label">Svarshastighet</div><div class="hint">Snabbare svar eller mer noggrann analys</div></div>
-       <div class="seg" id="speed-seg">
-         <button class="seg-btn ${speed === "fast" ? "active" : ""}" data-speed="fast" title="Snabbast – använder snabbläge">Snabb</button>
-         <button class="seg-btn ${speed === "balanced" ? "active" : ""}" data-speed="balanced" title="Bra balans mellan fart och kvalitet">Balanserad</button>
-         <button class="seg-btn ${speed === "thorough" ? "active" : ""}" data-speed="thorough" title="Mest noggrann – tar längre tid">Noggrann</button>
+
+     <div class="tab-panel" data-panel="memory" hidden>
+       <div class="setting-row" style="align-items:flex-start;border-top:none">
+         <div><div class="label">Minne</div><div class="hint" id="memory-status">Vad Simba minns om dig – en rad per sak. ${escapeHtml(memoryStatusText())}</div></div>
+         <div style="display:flex;gap:6px;flex:none">
+           ${ssoServerConfigured && !signedIn ? `<button class="btn" id="memory-signin" style="padding:7px 12px">Logga in</button>` : ""}
+           <button class="btn" id="memory-clear" style="padding:7px 12px">Rensa</button>
+         </div>
        </div>
+       <textarea id="memory-text" class="memory-text" rows="6" placeholder="Inget sparat än. Be Simba att minnas något, eller skriv här – en rad per sak.">${escapeHtml(memoryList().join("\n"))}</textarea>
      </div>
-     <div class="setting-row">
-       <div><div class="label">Modell</div><div class="hint">Drivs av Claude</div></div>
-       <div class="setting-meta">${escapeHtml(modelName)}</div>
-     </div>
-     <div class="setting-row" style="align-items:flex-start">
-       <div><div class="label">Minne</div><div class="hint" id="memory-status">Vad Simba minns om dig – en rad per sak. ${escapeHtml(memoryStatusText())}</div></div>
-       <div style="display:flex;gap:6px;flex:none">
-         ${ssoServerConfigured && !signedIn ? `<button class="btn" id="memory-signin" style="padding:7px 12px">Logga in</button>` : ""}
-         <button class="btn" id="memory-clear" style="padding:7px 12px">Rensa</button>
+
+     <div class="tab-panel" data-panel="chats" hidden>
+       <div class="setting-row" style="border-top:none">
+         <div><div class="label">Konversationer</div><div class="hint">${signedIn ? "Dina chattar synkas mellan Excel, webb och dator" : "Logga in för att synka chattar mellan enheter"}</div></div>
+         <button class="btn" id="settings-clear" style="flex:none;padding:7px 12px">Ny chatt</button>
        </div>
+       ${signedIn ? '<div id="conv-list" class="conv-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>' : '<div class="hint" style="padding:2px">Logga in (fliken Minne) för att se sparade chattar.</div>'}
      </div>
-     <textarea id="memory-text" class="memory-text" rows="4" placeholder="Inget sparat än. Be Simba att minnas något, eller skriv här – en rad per sak.">${escapeHtml(memoryList().join("\n"))}</textarea>
-     <div class="setting-row">
-       <div><div class="label">Konversation</div><div class="hint">${signedIn ? "Dina chattar synkas mellan Excel och datorn" : "Logga in för att synka chattar mellan enheter"}</div></div>
-       <button class="btn" id="settings-clear" style="flex:none;padding:7px 12px">Ny chatt</button>
+
+     <div class="tab-panel" data-panel="schedules" hidden>
+       <div class="setting-row" style="border-top:none">
+         <div><div class="label">Scheman</div><div class="hint">Automatiska jobb som körs åt dig${signedIn ? " – pausa eller ta bort här" : ""}</div></div>
+       </div>
+       ${signedIn
+          ? '<div id="sched-list" class="sched-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>'
+          : '<div class="hint" style="padding:2px 2px 4px">Logga in med Microsoft för att skapa och hantera scheman. Be sedan Simba, t.ex. "varje måndag 08:00, uppdatera rapporten".</div>'}
      </div>
-     ${signedIn ? '<div id="conv-list" class="conv-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>' : ""}
-     <div class="setting-row" style="margin-top:4px">
-       <div><div class="label">Scheman</div><div class="hint">Automatiska jobb som körs åt dig${signedIn ? " – pausa eller ta bort här" : ""}</div></div>
-     </div>
-     ${signedIn
-        ? '<div id="sched-list" class="sched-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>'
-        : '<div class="hint" style="padding:2px 2px 4px">Logga in med Microsoft för att skapa och hantera scheman. Be sedan Simba, t.ex. "varje måndag 08:00, uppdatera rapporten".</div>'}
+
      <div class="modal-actions">
        <button class="btn primary" data-act="done">Klar</button>
      </div>`
   );
-  if (signedIn) { populateConvList(); populateSchedules(); }
+  // Lazy-load each tab's data the first time it's shown.
+  const loaded = { chats: false, schedules: false };
+  const showTab = (name) => {
+    els.modalCard.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+    els.modalCard.querySelectorAll(".tab-panel").forEach((p) => { p.hidden = p.dataset.panel !== name; });
+    if (name === "chats" && signedIn && !loaded.chats) { loaded.chats = true; populateConvList(); }
+    if (name === "schedules" && signedIn && !loaded.schedules) { loaded.schedules = true; populateSchedules(); }
+  };
+  els.modalCard.querySelector("#settings-tabs").addEventListener("click", (e) => {
+    const t = e.target.closest(".tab");
+    if (t) showTab(t.dataset.tab);
+  });
 
   els.modalCard.querySelector("#theme-seg").addEventListener("click", (e) => {
     const b = e.target.closest(".seg-btn");
@@ -2759,6 +2812,57 @@ async function populateSchedules() {
       item.querySelector('[data-act="del"]').onclick = async () => { await jobDelete(id); populateSchedules(); };
     });
   } catch { el.innerHTML = hint("Kunde inte hämta scheman."); }
+}
+
+/* ---- Specialist agents (side panel) ------------------------------------ */
+function openAgents() {
+  const cards = AGENTS.map((a) => `
+    <button class="agent-card${activeAgent?.id === a.id ? " active" : ""}" data-id="${a.id}">
+      <span class="agent-ic">${a.icon}</span>
+      <span class="agent-meta"><span class="agent-name">${escapeHtml(a.name)}</span>
+      <span class="agent-blurb">${escapeHtml(a.blurb)}</span></span>
+    </button>`).join("");
+  openModal(
+    `<h3>Agenter</h3>
+     <p class="sub">Specialiserade hjälpare som styr Simba mot en sorts arbete. Välj en — den gäller tills du stänger av den.</p>
+     <div class="agent-grid">${cards}</div>
+     <div class="modal-actions">
+       ${activeAgent ? '<button class="btn" id="agent-off">Stäng av agent</button>' : ""}
+       <button class="btn primary" data-act="cancel">Klar</button>
+     </div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  const off = els.modalCard.querySelector("#agent-off");
+  if (off) off.onclick = () => { setActiveAgent(null); closeModalSilently(); };
+  els.modalCard.querySelectorAll(".agent-card").forEach((b) =>
+    b.addEventListener("click", () => {
+      const a = AGENTS.find((x) => x.id === b.dataset.id);
+      setActiveAgent(activeAgent?.id === a.id ? null : a); // tap again to toggle off
+      closeModalSilently();
+    }));
+}
+
+function setActiveAgent(agent) {
+  activeAgent = agent;
+  renderAgentChip();
+  if (agent) {
+    if (els.prompt) els.prompt.placeholder = `${agent.icon} ${agent.name}: vad vill du göra?`;
+    els.prompt?.focus();
+    toast(`${agent.icon} ${agent.name}-agenten är aktiv`, "info", 1800);
+  } else if (els.prompt) {
+    els.prompt.placeholder = IS_EXCEL ? "Fråga Simba om ditt kalkylark…" : "Fråga Simba vad som helst…";
+  }
+  els.agents?.classList.toggle("on", !!agent);
+}
+
+function renderAgentChip() {
+  if (!els.agentChip) return;
+  if (!activeAgent) { els.agentChip.hidden = true; els.agentChip.innerHTML = ""; return; }
+  els.agentChip.hidden = false;
+  els.agentChip.innerHTML =
+    `<span class="ac-ic">${activeAgent.icon}</span><span class="ac-name">${escapeHtml(activeAgent.name)}-agent</span>` +
+    `<button class="ac-x" type="button" title="Stäng av agent" aria-label="Stäng av agent">×</button>`;
+  els.agentChip.querySelector(".ac-x").onclick = () => setActiveAgent(null);
 }
 
 /* ---- Cloud file browser (OneDrive/SharePoint) -------------------------- */
