@@ -53,7 +53,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "web_lookup", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "web_lookup", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -1066,6 +1066,33 @@ const tools = {
     } catch { return { error: "Kunde inte nå kunskapsbanken." }; }
   },
 
+  async save_to_workspace({ label, content, source }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att synka arbetsutrymmet mellan appar." };
+    if (!String(content || "").trim()) return { error: "Inget innehåll att spara." };
+    try {
+      const r = await fetch(`${API_BASE}/api/workspace`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ label: label || "Notis", content, source: source || (IS_EXCEL ? "Excel" : "Simba") }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte spara." };
+      toast("Sparat i arbetsutrymmet", "success", 1500);
+      return { saved: true, id: j.item?.id, label: j.item?.label };
+    } catch { return { error: "Kunde inte nå arbetsutrymmet." }; }
+  },
+
+  async get_workspace() {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att nå arbetsutrymmet." };
+    try {
+      const r = await fetch(`${API_BASE}/api/workspace`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte hämta arbetsutrymmet." };
+      return { items: (j.items || []).map((i) => ({ id: i.id, label: i.label, content: i.content, source: i.source })) };
+    } catch { return { error: "Kunde inte nå arbetsutrymmet." }; }
+  },
+
   async analyze_vault({ focus }) {
     const token = await getSsoToken(false);
     if (!token) return { error: "Logga in med Microsoft för att analysera kunskapsbanken." };
@@ -1638,7 +1665,7 @@ const READ_TOOLS = new Set([
   "get_selection", "read_range", "get_sheet_info", "list_sheets", "describe_workbook",
   "find", "capture_view", "analyze_data", "web_lookup", "run_code", "trace_cell",
   "list_charts", "list_files", "open_file", "list_schedules",
-  "search_vault", "analyze_vault", "open_vault_file", "list_emails", "read_email",
+  "search_vault", "analyze_vault", "open_vault_file", "get_workspace", "list_emails", "read_email",
 ]);
 
 // Run a single tool call: render its activity step, execute it (respecting the
@@ -2276,6 +2303,8 @@ function toolResultHint(name, input, result) {
     case "save_to_vault": return result.saved ? "sparat" : "";
     case "analyze_vault": return typeof result.count === "number" ? `${result.count} poster` : "";
     case "open_vault_file": return result.name || "";
+    case "save_to_workspace": return result.saved ? "sparat" : "";
+    case "get_workspace": return Array.isArray(result.items) ? `${result.items.length} objekt` : "";
     case "run_code": return result.result ? "klart" : "";
     case "propose_plan": return result.approved ? "godkänd" : (result.approved === false ? "avböjd" : "");
     case "delegate_task": return typeof result.steps === "number" ? `${result.steps} steg` : "";
@@ -2346,6 +2375,8 @@ function toolLabel(name, input) {
     save_to_vault: "Sparar i kunskapsbanken",
     analyze_vault: "Analyserar kunskapsbanken",
     open_vault_file: "Öppnar en bilaga ur kunskapsbanken",
+    save_to_workspace: "Sparar i arbetsutrymmet",
+    get_workspace: "Hämtar arbetsutrymmet",
     propose_plan: "Gör upp en plan",
     delegate_task: input?.task ? `Delegerar: ${String(input.task).slice(0, 40)}` : "Delegerar en deluppgift",
     find_errors: "Söker efter formelfel",

@@ -17,7 +17,7 @@ import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
-import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation } from "./store.js";
+import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation, listWorkspace, saveWorkspace, deleteWorkspace, workspaceContext } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, listAttachments, getAttachment, MAIL_SCOPE } from "./graph.js";
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
@@ -199,6 +199,16 @@ Company knowledge vault (your shared, long-term mind):
   durable, company-wide fact worth keeping for everyone, offer to save it with
   save_to_vault (confirm first; choose a clear topic/branch). Use the per-user remember
   tool for personal preferences, and the vault for shared company knowledge. Never store secrets.
+
+Working across surfaces (Excel ↔ Outlook ↔ web/desktop):
+- You are the SAME Simba on every surface for a signed-in user. Conversations, memory and
+  the company vault already follow them everywhere.
+- There is also a per-user SHARED WORKSPACE that syncs working context across surfaces.
+  Use save_to_workspace to carry something between apps — e.g. in Excel capture a table or
+  key figures, then in Outlook draft a mail using them. Use get_workspace to fetch what was
+  saved elsewhere (the items are also auto-provided each turn). Live spreadsheet cells are
+  only readable inside Excel, so to use sheet data in Outlook, save it to the workspace from
+  Excel first (or open the workbook from OneDrive with list_files/open_file).
 
 Building well-structured output:
 When you create something (a table, summary, report, schedule, budget, or model),
@@ -464,6 +474,16 @@ const TOOLS = [
       content: { type: "string", description: "The fact(s), written so they're useful later." },
       tags: { type: "array", description: "Optional keywords.", items: { type: "string" } },
     }, required: ["title", "content"] } },
+
+  { name: "save_to_workspace", description: "Save a piece of working context to the user's SHARED workspace, which syncs across their surfaces (Excel, Outlook, web, desktop). Use to carry information between apps — e.g. capture a table or figures in Excel so you can use them when drafting a mail in Outlook. Personal to the user (not the whole org).",
+    input_schema: { type: "object", properties: {
+      label: { type: "string", description: "A short name for this context item." },
+      content: { type: "string", description: "The information to carry over (text, a small table as CSV, key figures)." },
+      source: { type: "string", description: "Optional origin, e.g. 'Excel: Q3-budget'." },
+    }, required: ["content"] } },
+
+  { name: "get_workspace", description: "List the user's shared workspace items (working context synced across Excel/Outlook/web). Use to fetch something they saved on another surface — e.g. read in Outlook a table they captured in Excel. The items are also auto-provided each turn, but call this to see them all.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
 
   { name: "analyze_vault", description: "Analyze the whole company knowledge vault: coverage gaps, contradictions/duplicates/outdated entries, structure quality, why it looks the way it does, and concrete improvements. Use when the user asks to review/audit/improve the company knowledge base.",
     input_schema: { type: "object", properties: {
@@ -734,13 +754,16 @@ const SPEED_MAP = {
 // Per-user memory is appended as a second block AFTER the cache breakpoint, so it
 // can vary per user without invalidating the shared, cached prefix.
 const MAX_MEMORY_CHARS = 4000;
-function buildSystem(memory, surface, vault) {
+function buildSystem(memory, surface, vault, workspace) {
   const blocks = [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
   const mem = sanitizeMemory(memory);
   if (mem) blocks.push({ type: "text", text: `[Vad du minns om användaren]\n${mem}` });
   const v = String(vault || "").slice(0, 6000);
   if (v) blocks.push({ type: "text", text:
     `[Företagets kunskapsbank — delad mellan alla i organisationen. Behandla som auktoritativa fakta om företaget; grunda dina svar i detta och säg till om något saknas.]\n${v}` });
+  const ws = String(workspace || "").slice(0, 3500);
+  if (ws) blocks.push({ type: "text", text:
+    `[Ditt delade arbetsutrymme — synkat mellan Excel, Outlook, webb och dator. Sådant användaren sparat (t.ex. en tabell fångad i Excel) och kan vilja använda här.]\n${ws}` });
   if (surface === "desktop") blocks.push({ type: "text", text:
     "[Läge] Du körs som en fristående AI-app (skrivbord/webb) — en fullständig allmän " +
     "assistent. Hjälp till med vad som helst: svara på frågor, skriva och resonera, söka " +
@@ -807,7 +830,7 @@ async function withRetry(fn, label = "") {
   }
 }
 
-async function runModel(messages, speed, memory, surface, onText, vault) {
+async function runModel(messages, speed, memory, surface, onText, vault, workspace) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
   const model = chooseModel(messages, speed, { strong: MODEL, simple: MODEL_SIMPLE, on: ROUTER_ON });
   const base = {
@@ -815,7 +838,7 @@ async function runModel(messages, speed, memory, surface, onText, vault) {
     max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: { effort: cfg.effort },
-    system: buildSystem(memory, surface, vault),
+    system: buildSystem(memory, surface, vault, workspace),
     tools: TOOLS,
     messages: withConversationCache(messages),
   };
@@ -935,10 +958,12 @@ app.post("/api/chat", async (req, res) => {
     res.set("Retry-After", "3600");
     return res.status(429).json({ error: "Du har nått din dagliga gräns för Simba. Försök igen imorgon." });
   }
-  let vaultText = "";
+  let vaultText = "", workspaceText = "";
   if (user) {
     try { vaultText = await retrieveForContext(orgOf(user), lastUserText(req.body.messages)); }
     catch (e) { console.error("[Simba] vault retrieve failed:", e?.message || e); }
+    try { workspaceText = await workspaceContext(user.key); }
+    catch (e) { console.error("[Simba] workspace retrieve failed:", e?.message || e); }
   }
 
   inflight++;
@@ -954,7 +979,7 @@ app.post("/api/chat", async (req, res) => {
   res.flushHeaders?.();
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
-    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText);
+    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText, workspaceText);
     send("final", {
       content: final.content,
       stop_reason: final.stop_reason,
@@ -1201,6 +1226,30 @@ app.delete("/api/jobs/:id", async (req, res) => {
   if (!user) return;
   try { await deleteJob(user.key, req.params.id); res.json({ ok: true }); }
   catch (err) { console.error("[Simba] job delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort schemat." }); }
+});
+
+// ---- Shared workspace (syncs the user's working context across surfaces) ---
+app.get("/api/workspace", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ items: await listWorkspace(user.key) }); }
+  catch (err) { console.error("[Simba] workspace list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta arbetsutrymmet." }); }
+});
+
+app.post("/api/workspace", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const { id, label, content, source } = req.body || {};
+  if (!String(content || "").trim()) return res.status(400).json({ error: "Innehåll saknas." });
+  try { res.json({ item: await saveWorkspace(user.key, { id, label, content, source }) }); }
+  catch (err) { console.error("[Simba] workspace save failed:", err?.message || err); res.status(502).json({ error: "Kunde inte spara." }); }
+});
+
+app.delete("/api/workspace/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await deleteWorkspace(user.key, req.params.id); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] workspace delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort." }); }
 });
 
 // ---- Outlook mail (delegated, on behalf of the signed-in user) -----------

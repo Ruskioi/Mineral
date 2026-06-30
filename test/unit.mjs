@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { chooseModel } from "../server/router.js";
 import { createEntry, searchVault, retrieveForContext, listVault } from "../server/vault.js";
+import { saveWorkspace, workspaceContext } from "../server/store.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(resolve(root, p), "utf8");
@@ -42,6 +43,9 @@ const _vaultMod = await import("../server/vault.js");
 const _fEntry = await _vaultMod.createEntry("t-file", { topic: "Y", title: "Prislista", content: "x", file: { name: "p.csv", type: "text/csv", data: Buffer.from("Plan,Pris").toString("base64"), text: "Plan,Pris" } });
 const _vf = await _vaultMod.getFile("t-file", _fEntry.id);
 const _vaultFileBytes = _vf ? Buffer.from(_vf.data, "base64").toString() : "";
+// Shared workspace round-trip (cross-surface context).
+await saveWorkspace("t-ws", { label: "T", content: "Q3-synctest data", source: "Excel" });
+const _wsCtx = await workspaceContext("t-ws");
 
 console.log("\nSimba ship-safety checks\n");
 
@@ -352,6 +356,16 @@ check("Tier 2 features (export, artifacts, palette, multi-attach, MCP)", () => {
   assert(/function openCommandPalette/.test(taskpane) && /e\.key === "k"/.test(taskpane), "command palette (⌘K) missing");
   assert(/let pendingAttachments = \[\]/.test(taskpane) && /MAX_ATTACH/.test(taskpane), "multi-file attach missing");
   assert(/SIMBA_MCP_SERVERS/.test(server) && /mcp_servers/.test(server), "MCP connector plumbing missing");
+});
+
+check("shared workspace syncs context across surfaces", () => {
+  const store = read("server/store.js");
+  assert(/simba_workspace/.test(store) && /export async function saveWorkspace/.test(store) && /export async function workspaceContext/.test(store), "workspace store missing");
+  assert(/app\.get\("\/api\/workspace"/.test(server) && /app\.post\("\/api\/workspace"/.test(server), "workspace endpoints missing");
+  assert(/workspaceContext\(user\.key\)/.test(server), "chat must inject the shared workspace");
+  assert(/name: "save_to_workspace"/.test(server) && /name: "get_workspace"/.test(server), "workspace tools missing");
+  assert(/"save_to_workspace", "get_workspace"/.test(taskpane), "workspace tools must work cross-surface (desktop)");
+  assert(_wsCtx.includes("Q3-synctest"), "workspace context should round-trip");
 });
 
 check("Outlook mail (read/send/analyze) is wired", () => {

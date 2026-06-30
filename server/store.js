@@ -16,10 +16,14 @@ const MAX_CONV_BYTES = 600_000;   // cap a stored conversation
 const MAX_CONV_MESSAGES = 200;    // keep the most recent N messages
 const MAX_CONV_LIST = 40;         // recent conversations returned
 
+const MAX_WS_ITEMS = 40;          // shared workspace items per user
+const MAX_WS_CONTENT = 6000;      // per item
+
 let pool = null;
 let ready = null;
 const mem = new Map(); // fallback: userKey -> string[]
 const convMem = new Map(); // fallback: userKey -> Map(id -> {id,title,messages,updated_at})
+const wsMem = new Map();   // fallback: userKey -> Map(id -> {id,label,content,source,updated_at})
 
 function sanitize(notes) {
   if (!Array.isArray(notes)) return [];
@@ -61,6 +65,20 @@ async function init() {
        id         TEXT NOT NULL,
        title      TEXT,
        messages   JSONB NOT NULL DEFAULT '[]'::jsonb,
+       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+       PRIMARY KEY (user_key, id)
+     )`
+  );
+  // Per-user shared workspace: working context that syncs across the user's
+  // surfaces (Excel, Outlook, web, desktop) — e.g. a table captured in Excel
+  // that Simba can then use while drafting a mail in Outlook.
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS simba_workspace (
+       user_key   TEXT NOT NULL,
+       id         TEXT NOT NULL,
+       label      TEXT NOT NULL,
+       content    TEXT NOT NULL DEFAULT '',
+       source     TEXT,
        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
        PRIMARY KEY (user_key, id)
      )`
@@ -157,6 +175,69 @@ export async function deleteConversation(userKey, id) {
   await ensureReady();
   if (pool) await pool.query("DELETE FROM simba_conversations WHERE user_key = $1 AND id = $2", [userKey, id]);
   else convMem.get(userKey)?.delete(id);
+}
+
+/* ---- Shared workspace (per user, synced across surfaces) ---------------- */
+import { randomUUID as _uuid } from "node:crypto";
+
+export async function listWorkspace(userKey) {
+  await ensureReady();
+  if (pool) {
+    const r = await pool.query("SELECT id, label, content, source, updated_at FROM simba_workspace WHERE user_key = $1 ORDER BY updated_at DESC LIMIT $2", [userKey, MAX_WS_ITEMS]);
+    return r.rows.map((x) => ({ id: x.id, label: x.label, content: x.content, source: x.source || "", updated_at: x.updated_at }));
+  }
+  const m = wsMem.get(userKey);
+  if (!m) return [];
+  return [...m.values()].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, MAX_WS_ITEMS);
+}
+
+export async function saveWorkspace(userKey, { id, label, content, source }) {
+  await ensureReady();
+  const item = {
+    id: id || _uuid(),
+    label: String(label || "Notis").slice(0, 200),
+    content: String(content || "").slice(0, MAX_WS_CONTENT),
+    source: String(source || "").slice(0, 40),
+    updated_at: new Date().toISOString(),
+  };
+  if (pool) {
+    await pool.query(
+      `INSERT INTO simba_workspace (user_key, id, label, content, source, updated_at)
+       VALUES ($1,$2,$3,$4,$5, now())
+       ON CONFLICT (user_key, id) DO UPDATE SET label = EXCLUDED.label, content = EXCLUDED.content, source = EXCLUDED.source, updated_at = now()`,
+      [userKey, item.id, item.label, item.content, item.source]
+    );
+    // Trim to the cap (keep newest).
+    await pool.query(
+      `DELETE FROM simba_workspace WHERE user_key = $1 AND id NOT IN (
+         SELECT id FROM simba_workspace WHERE user_key = $1 ORDER BY updated_at DESC LIMIT $2)`,
+      [userKey, MAX_WS_ITEMS]
+    );
+  } else {
+    if (!wsMem.has(userKey)) wsMem.set(userKey, new Map());
+    wsMem.get(userKey).set(item.id, item);
+  }
+  return item;
+}
+
+export async function deleteWorkspace(userKey, id) {
+  await ensureReady();
+  if (pool) await pool.query("DELETE FROM simba_workspace WHERE user_key = $1 AND id = $2", [userKey, id]);
+  else wsMem.get(userKey)?.delete(id);
+}
+
+// Compact recent workspace items for the system prompt.
+export async function workspaceContext(userKey, maxChars = 3500) {
+  const items = await listWorkspace(userKey);
+  const parts = [];
+  let used = 0;
+  for (const it of items) {
+    const block = `• ${it.label}${it.source ? ` (${it.source})` : ""}: ${String(it.content).replace(/\s+/g, " ").slice(0, 900)}`;
+    if (used + block.length > maxChars) break;
+    parts.push(block);
+    used += block.length;
+  }
+  return parts.join("\n");
 }
 
 // Rename without touching the stored messages.
