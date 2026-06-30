@@ -147,6 +147,28 @@ export async function deleteConnector(orgKey, id) {
   else mem.get(orgKey)?.delete(id);
 }
 
+// Shared, hardened GET: HTTPS-only, fixed host (no SSRF), size-capped, timed out.
+async function rawGet(baseUrl, path, headers, params, { previewBytes } = {}) {
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  if (!/^https:\/\//i.test(base)) throw Object.assign(new Error("Endast HTTPS tillåts."), { status: 400 });
+  const url = new URL(base + "/" + String(path || "").replace(/^\/+/, ""));
+  if (url.protocol !== "https:") throw Object.assign(new Error("Endast HTTPS tillåts."), { status: 400 });
+  if (params && typeof params === "object") for (const [k, v] of Object.entries(params)) {
+    if (v != null) url.searchParams.set(String(k).slice(0, 60), String(v).slice(0, 400));
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch(url, { headers: { Accept: "application/json", ...(headers || {}) }, signal: ctrl.signal });
+    const text = (await r.text()).slice(0, previewBytes || MAX_RESP_BYTES);
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    return { ok: r.ok, status: r.status, data };
+  } catch (e) {
+    if (e.name === "AbortError") throw Object.assign(new Error("Datakällan svarade för långsamt."), { status: 504 });
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+
 // Execute a whitelisted endpoint (GET) and return its data. Secrets stay here.
 export async function queryConnector(orgKey, source, endpointKey, params) {
   const all = await listRaw(orgKey);
@@ -154,23 +176,20 @@ export async function queryConnector(orgKey, source, endpointKey, params) {
   if (!c) throw Object.assign(new Error("Okänd datakälla."), { status: 404 });
   const ep = (c.endpoints || []).find((e) => e.key === endpointKey) || (c.endpoints || []).find((e) => (e.label || "").toLowerCase() === String(endpointKey || "").toLowerCase());
   if (!ep) throw Object.assign(new Error("Okänd endpoint för den datakällan."), { status: 404 });
+  const r = await rawGet(c.base_url, ep.path, c.headers, params);
+  if (!r.ok) throw Object.assign(new Error(`Datakällan svarade ${r.status}.`), { status: 502 });
+  return { source: c.name, endpoint: ep.label || ep.key, data: r.data };
+}
 
-  const url = new URL(c.base_url.replace(/\/+$/, "") + "/" + String(ep.path).replace(/^\/+/, ""));
-  if (params && typeof params === "object") for (const [k, v] of Object.entries(params)) {
-    if (v != null) url.searchParams.set(String(k).slice(0, 60), String(v).slice(0, 400));
+// Live test while building a connector. If an existing connector id is given,
+// its STORED secret headers are merged (so you can test without re-typing them).
+export async function testConnector(orgKey, { id, base_url, headers, path, params }) {
+  let mergedHeaders = sanitizeHeaders(headers);
+  let base = base_url;
+  if (id) {
+    const cur = (await listRaw(orgKey)).find((c) => c.id === id);
+    if (cur) { base = base || cur.base_url; mergedHeaders = { ...(cur.headers || {}), ...mergedHeaders }; }
   }
-  if (url.protocol !== "https:") throw Object.assign(new Error("Endast HTTPS tillåts."), { status: 400 });
-
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  try {
-    const r = await fetch(url, { headers: { Accept: "application/json", ...(c.headers || {}) }, signal: ctrl.signal });
-    const text = (await r.text()).slice(0, MAX_RESP_BYTES);
-    if (!r.ok) throw Object.assign(new Error(`Datakällan svarade ${r.status}.`), { status: 502 });
-    let data; try { data = JSON.parse(text); } catch { data = text; }
-    return { source: c.name, endpoint: ep.label || ep.key, data };
-  } catch (e) {
-    if (e.name === "AbortError") throw Object.assign(new Error("Datakällan svarade för långsamt."), { status: 504 });
-    throw e;
-  } finally { clearTimeout(timer); }
+  const r = await rawGet(base, path, mergedHeaders, params, { previewBytes: 4000 });
+  return { ok: r.ok, status: r.status, preview: typeof r.data === "string" ? r.data.slice(0, 4000) : r.data };
 }

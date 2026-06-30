@@ -373,6 +373,10 @@ check("finance/business connectors bridge is wired & safe", () => {
   assert(/canWriteVault\(user\)/.test(server.slice(server.indexOf('app.post("/api/connectors"'), server.indexOf('app.post("/api/connectors/query"'))), "connector config must be admin-gated");
   assert(/name: "list_data_sources"/.test(server) && /name: "query_data_source"/.test(server), "connector tools missing");
   assert(/function openConnectors/.test(taskpane) && /function connectorEdit/.test(taskpane), "connector admin UI missing");
+  // Builder: dynamic rows + live test
+  assert(/app\.post\("\/api\/connectors\/test"/.test(server) && /export async function testConnector/.test(conn), "connector live-test endpoint missing");
+  assert(/dc-add-header/.test(taskpane) && /dc-add-ep/.test(taskpane) && /addEndpoint/.test(taskpane), "connector builder dynamic rows missing");
+  assert(/\.dc-test-out/.test(read("src/taskpane/taskpane.css")), "connector builder styling missing");
   // store behavior prepared below
   assert(_connHeaderNames.includes("Access-Token") && !_connListJson.includes("topsecret"), "connector list must expose header names but never secret values");
   assert(_connHttpsRejected === true, "non-HTTPS base URL must be rejected");

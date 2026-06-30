@@ -3673,39 +3673,109 @@ async function loadConnectors() {
   } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå datakälletjänsten.</div>'; }
 }
 
+// A structured connector builder: dynamic auth-header rows + endpoint cards,
+// each with a live "Testa"-button that calls the real API while you build it.
 function connectorEdit(c) {
   const e = c || { name: "", base_url: "https://", endpoints: [], headerNames: [] };
-  const endpointLines = (e.endpoints || []).map((x) => `${x.label || x.key} | ${x.path}${x.description ? ` | ${x.description}` : ""}`).join("\n");
   openModal(
-    `<h3>${c ? "Redigera datakälla" : "Ny datakälla"}</h3>
-     <label class="vault-l">Namn</label>
-     <input id="dc-name" class="files-q" type="text" value="${escapeHtml(e.name || "")}" placeholder="t.ex. Fortnox" />
-     <label class="vault-l">Bas-URL (HTTPS)</label>
-     <input id="dc-base" class="files-q" type="text" value="${escapeHtml(e.base_url || "https://")}" placeholder="https://api.fortnox.se/3" />
-     <label class="vault-l">Autentiseringsheaders ${c ? "(lämna tomt för att behålla)" : ""}</label>
-     <textarea id="dc-headers" class="memory-text" rows="3" placeholder="En per rad, Header: värde&#10;Access-Token: ...&#10;Client-Secret: ...">${c && e.headerNames?.length ? `# befintliga: ${e.headerNames.join(", ")}` : ""}</textarea>
-     <label class="vault-l">Endpoints (en per rad: etikett | sökväg | beskrivning)</label>
-     <textarea id="dc-endpoints" class="memory-text" rows="5" placeholder="Obetalda fakturor | invoices?filter=unpaid | Fakturor som inte betalats&#10;Projekt | projects | Pågående projekt">${escapeHtml(endpointLines)}</textarea>
-     <div class="modal-actions"><button class="btn" data-act="cancel">Avbryt</button><button class="btn primary" data-act="save">Spara</button></div>`
+    `<div class="artifact-head"><h3 style="margin:0">${c ? "Redigera datakälla" : "Bygg en datakälla"}</h3><button class="btn" data-act="cancel">Tillbaka</button></div>
+     <div class="dc-build">
+       <div class="dc-grid">
+         <div><label class="vault-l">Namn</label><input id="dc-name" class="files-q" type="text" value="${escapeHtml(e.name || "")}" placeholder="t.ex. Fortnox" /></div>
+         <div><label class="vault-l">Bas-URL (HTTPS)</label><input id="dc-base" class="files-q" type="text" value="${escapeHtml(e.base_url || "https://")}" placeholder="https://api.fortnox.se/3" /></div>
+       </div>
+
+       <div class="dc-section">
+         <div class="dc-section-h"><span>🔑 Autentisering</span><button class="btn dc-add" id="dc-add-header" type="button">＋ Header</button></div>
+         ${c && e.headerNames?.length ? `<div class="hint" style="margin:0 0 6px">Befintliga: ${escapeHtml(e.headerNames.join(", "))}. Lämna tomt för att behålla; fyll i för att ersätta alla.</div>` : '<div class="hint" style="margin:0 0 6px">API-nyckeln lagras säkert på servern och visas aldrig igen.</div>'}
+         <div id="dc-headers"></div>
+       </div>
+
+       <div class="dc-section">
+         <div class="dc-section-h"><span>🔗 Endpoints (det Simba får hämta)</span><button class="btn dc-add" id="dc-add-ep" type="button">＋ Endpoint</button></div>
+         <div id="dc-endpoints"></div>
+       </div>
+     </div>
+     <div class="modal-actions"><button class="btn" data-act="cancel2">Avbryt</button><button class="btn primary" data-act="save">Spara datakälla</button></div>`
   );
+  els.modalCard.classList.add("wide");
+
+  const headersWrap = els.modalCard.querySelector("#dc-headers");
+  const epsWrap = els.modalCard.querySelector("#dc-endpoints");
+
+  const addHeaderRow = (key = "", val = "") => {
+    const row = document.createElement("div");
+    row.className = "dc-row";
+    row.innerHTML = `<input class="files-q dc-h-key" type="text" placeholder="Header (t.ex. Access-Token)" value="${escapeHtml(key)}" />
+      <input class="files-q dc-h-val" type="password" placeholder="värde / API-nyckel" value="${escapeHtml(val)}" />
+      <button class="conv-act dc-del" type="button" title="Ta bort">🗑</button>`;
+    row.querySelector(".dc-del").onclick = () => row.remove();
+    headersWrap.appendChild(row);
+  };
+  const collectHeaders = () => {
+    const out = {};
+    headersWrap.querySelectorAll(".dc-row").forEach((r) => {
+      const k = r.querySelector(".dc-h-key").value.trim(), v = r.querySelector(".dc-h-val").value.trim();
+      if (k && v) out[k] = v;
+    });
+    return out;
+  };
+
+  const addEndpoint = (ep = {}) => {
+    const card = document.createElement("div");
+    card.className = "dc-ep";
+    card.innerHTML = `
+      <div class="dc-grid">
+        <div><label class="vault-l">Etikett</label><input class="files-q dc-ep-label" type="text" value="${escapeHtml(ep.label || ep.key || "")}" placeholder="Obetalda fakturor" /></div>
+        <div><label class="vault-l">Sökväg</label><input class="files-q dc-ep-path" type="text" value="${escapeHtml(ep.path || "")}" placeholder="invoices?filter=unpaid" /></div>
+      </div>
+      <label class="vault-l">Beskrivning</label><input class="files-q dc-ep-desc" type="text" value="${escapeHtml(ep.description || "")}" placeholder="Vad endpointen returnerar (hjälper Simba välja rätt)" />
+      <div class="dc-ep-foot"><button class="btn dc-test" type="button">Testa ▸</button><button class="conv-act dc-del" type="button" title="Ta bort endpoint">🗑</button></div>
+      <pre class="dc-test-out" hidden></pre>`;
+    card.querySelector(".dc-del").onclick = () => card.remove();
+    card.querySelector(".dc-test").onclick = async () => {
+      const out = card.querySelector(".dc-test-out");
+      const path = card.querySelector(".dc-ep-path").value.trim();
+      const base_url = els.modalCard.querySelector("#dc-base").value.trim();
+      if (!path) { toast("Ange en sökväg att testa.", "error", 2000); return; }
+      out.hidden = false; out.textContent = "Testar…";
+      try {
+        const token = await getSsoToken(false);
+        const r = await fetch(`${API_BASE}/api/connectors/test`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ id: c?.id, base_url, headers: collectHeaders(), path }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { out.className = "dc-test-out err"; out.textContent = `✗ ${j.error || "Misslyckades"}`; return; }
+        out.className = "dc-test-out ok";
+        const body = typeof j.preview === "string" ? j.preview : JSON.stringify(j.preview, null, 2);
+        out.textContent = `✓ ${j.status} OK\n` + String(body).slice(0, 2000);
+      } catch { out.className = "dc-test-out err"; out.textContent = "✗ Kunde inte nå tjänsten."; }
+    };
+    epsWrap.appendChild(card);
+  };
+
+  // Prefill
+  (e.headerNames || []).forEach((n) => addHeaderRow(n, ""));
+  if (!(e.headerNames || []).length) addHeaderRow();
+  if ((e.endpoints || []).length) e.endpoints.forEach(addEndpoint); else addEndpoint();
+
+  els.modalCard.querySelector("#dc-add-header").onclick = () => addHeaderRow();
+  els.modalCard.querySelector("#dc-add-ep").onclick = () => addEndpoint();
   els.modalCard.querySelector('[data-act="cancel"]').onclick = () => openConnectors();
+  els.modalCard.querySelector('[data-act="cancel2"]').onclick = () => openConnectors();
   els.modalCard.querySelector('[data-act="save"]').onclick = async () => {
     const name = els.modalCard.querySelector("#dc-name").value.trim();
     const base_url = els.modalCard.querySelector("#dc-base").value.trim();
-    const headersRaw = els.modalCard.querySelector("#dc-headers").value;
-    const endpointsRaw = els.modalCard.querySelector("#dc-endpoints").value;
     if (!name || !/^https:\/\//i.test(base_url)) { toast("Ange namn och en HTTPS bas-URL.", "error", 2800); return; }
-    const endpoints = endpointsRaw.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
-      const [label, path, description] = l.split("|").map((s) => s.trim());
-      return { label, path, description: description || "" };
-    }).filter((x) => x.path);
+    const endpoints = [...epsWrap.querySelectorAll(".dc-ep")].map((card) => ({
+      label: card.querySelector(".dc-ep-label").value.trim(),
+      path: card.querySelector(".dc-ep-path").value.trim(),
+      description: card.querySelector(".dc-ep-desc").value.trim(),
+    })).filter((x) => x.path);
     const body = { name, base_url, endpoints };
-    // Only send headers if the admin typed real ones (not the "# befintliga" hint).
-    const headerLines = headersRaw.split("\n").map((s) => s.trim()).filter((s) => s && !s.startsWith("#"));
-    if (headerLines.length) {
-      body.headers = {};
-      for (const line of headerLines) { const i = line.indexOf(":"); if (i > 0) body.headers[line.slice(0, i).trim()] = line.slice(i + 1).trim(); }
-    }
+    const headers = collectHeaders();
+    if (Object.keys(headers).length) body.headers = headers; // omit to keep existing
     const token = await getSsoToken(false);
     const url = c ? `${API_BASE}/api/connectors/${encodeURIComponent(c.id)}` : `${API_BASE}/api/connectors`;
     const r = await fetch(url, { method: c ? "PUT" : "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }).catch(() => null);

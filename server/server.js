@@ -24,7 +24,7 @@ import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.j
 import { startScheduler, schedulerEnabled } from "./scheduler.js";
 import { chooseModel, lastUserText } from "./router.js";
 import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
-import { listConnectors, createConnector, updateConnector, deleteConnector, queryConnector } from "./connectors.js";
+import { listConnectors, createConnector, updateConnector, deleteConnector, queryConnector, testConnector } from "./connectors.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -1292,6 +1292,17 @@ app.delete("/api/connectors/:id", async (req, res) => {
   if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan ta bort datakällor." });
   try { await deleteConnector(orgOf(user), req.params.id); res.json({ ok: true }); }
   catch (err) { console.error("[Simba] connector delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort." }); }
+});
+
+app.post("/api/connectors/test", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan testa datakällor." });
+  const { id, base_url, headers, path, params } = req.body || {};
+  if (!base_url && !id) return res.status(400).json({ error: "Ange bas-URL." });
+  if (!path) return res.status(400).json({ error: "Ange en sökväg att testa." });
+  try { res.json(await testConnector(orgOf(user), { id, base_url, headers, path, params })); }
+  catch (err) { console.error("[Simba] connector test failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Testet misslyckades." }); }
 });
 
 app.post("/api/connectors/query", async (req, res) => {
