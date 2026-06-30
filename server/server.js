@@ -22,7 +22,14 @@ import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo } from "./graph.js";
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
 import { startScheduler, schedulerEnabled } from "./scheduler.js";
-import { chooseModel } from "./router.js";
+import { chooseModel, lastUserText } from "./router.js";
+import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext } from "./vault.js";
+
+// Optional: restrict who can WRITE the shared company vault (comma-separated
+// Microsoft object-ids). Empty = any signed-in org member can contribute.
+const VAULT_ADMINS = (process.env.SIMBA_VAULT_ADMINS || "").split(",").map((s) => s.trim()).filter(Boolean);
+const canWriteVault = (user) => !VAULT_ADMINS.length || VAULT_ADMINS.includes(String(user.key).split(":")[1]);
+const orgOf = (user) => String(user.key).split(":")[0]; // tenant id = org scope
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, "../dist");
@@ -174,6 +181,17 @@ Memory:
   Never store passwords, API keys, or other secrets.
 - Keep notes short and specific (one fact each). If something you remember is now wrong,
   save the corrected version.
+
+Company knowledge vault (your shared, long-term mind):
+- Besides per-user memory, there is a SHARED organization-wide knowledge vault — the
+  company's structured facts (policies, products, customers, definitions, conventions),
+  the same for every user and every session. The most relevant entries are injected each
+  turn under "[Företagets kunskapsbank …]" — treat those as authoritative company facts
+  and ground your answers in them.
+- Use search_vault to look something company-specific up in depth. When the user shares a
+  durable, company-wide fact worth keeping for everyone, offer to save it with
+  save_to_vault (confirm first; choose a clear topic/branch). Use the per-user remember
+  tool for personal preferences, and the vault for shared company knowledge. Never store secrets.
 
 Building well-structured output:
 When you create something (a table, summary, report, schedule, budget, or model),
@@ -405,6 +423,19 @@ const TOOLS = [
       task: { type: "string", description: "The complete, self-contained instruction for the subagent." },
       context: { type: "string", description: "Optional facts the subagent needs (addresses, names, conventions) since it does not see this conversation." },
     }, required: ["task"] } },
+
+  { name: "search_vault", description: "Search the company knowledge vault — the shared, organization-wide knowledge base (Simba's long-term 'mind'). Use to look up authoritative company facts, policies, definitions, people, products, conventions. The most relevant entries are also auto-injected each turn, but call this to dig deeper on a specific topic.",
+    input_schema: { type: "object", properties: {
+      query: { type: "string", description: "What to look up in the company knowledge base." },
+    }, required: ["query"] } },
+
+  { name: "save_to_vault", description: "Add a durable fact to the SHARED company knowledge vault so every user and future session knows it. Use for stable, company-wide knowledge (policies, definitions, product facts, conventions) — confirm with the user first. Not for personal preferences (use remember) or secrets.",
+    input_schema: { type: "object", properties: {
+      topic: { type: "string", description: "A short category/branch, e.g. 'Produkter', 'Policys', 'Kunder'." },
+      title: { type: "string", description: "A short, specific title for the entry." },
+      content: { type: "string", description: "The fact(s), written so they're useful later." },
+      tags: { type: "array", description: "Optional keywords.", items: { type: "string" } },
+    }, required: ["title", "content"] } },
 
   { name: "merge_cells", description: "Merge a range into a single cell. Use for a title banner spanning the columns of a table, then center and enlarge it with format_range.",
     input_schema: { type: "object", properties: {
@@ -664,10 +695,13 @@ const SPEED_MAP = {
 // Per-user memory is appended as a second block AFTER the cache breakpoint, so it
 // can vary per user without invalidating the shared, cached prefix.
 const MAX_MEMORY_CHARS = 4000;
-function buildSystem(memory, surface) {
+function buildSystem(memory, surface, vault) {
   const blocks = [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
   const mem = sanitizeMemory(memory);
   if (mem) blocks.push({ type: "text", text: `[Vad du minns om användaren]\n${mem}` });
+  const v = String(vault || "").slice(0, 6000);
+  if (v) blocks.push({ type: "text", text:
+    `[Företagets kunskapsbank — delad mellan alla i organisationen. Behandla som auktoritativa fakta om företaget; grunda dina svar i detta och säg till om något saknas.]\n${v}` });
   if (surface === "desktop") blocks.push({ type: "text", text:
     "[Läge] Du körs som en fristående AI-app (skrivbord/webb) — en fullständig allmän " +
     "assistent. Hjälp till med vad som helst: svara på frågor, skriva och resonera, söka " +
@@ -734,7 +768,7 @@ async function withRetry(fn, label = "") {
   }
 }
 
-async function runModel(messages, speed, memory, surface, onText) {
+async function runModel(messages, speed, memory, surface, onText, vault) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
   const model = chooseModel(messages, speed, { strong: MODEL, simple: MODEL_SIMPLE, on: ROUTER_ON });
   const base = {
@@ -742,7 +776,7 @@ async function runModel(messages, speed, memory, surface, onText) {
     max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: { effort: cfg.effort },
-    system: buildSystem(memory, surface),
+    system: buildSystem(memory, surface, vault),
     tools: TOOLS,
     messages: withConversationCache(messages),
   };
@@ -852,15 +886,20 @@ app.post("/api/chat", async (req, res) => {
     return res.status(429).json({ error: "Too many requests in flight. Please retry shortly." });
   }
 
-  // Optional per-user daily cap (only when configured + a valid token is sent).
-  if (USER_DAILY && ssoConfigured && bearer(req)) {
-    try {
-      const u = await verifyToken(bearer(req));
-      if (quotaExceeded(u.key)) {
-        res.set("Retry-After", "3600");
-        return res.status(429).json({ error: "Du har nått din dagliga gräns för Simba. Försök igen imorgon." });
-      }
-    } catch { /* invalid token → fall back to IP limits */ }
+  // Identify the user (when SSO is on + a token is sent) for the daily cap and to
+  // pull the org's shared knowledge vault into context.
+  let user = null;
+  if (ssoConfigured && bearer(req)) {
+    try { user = await verifyToken(bearer(req)); } catch { /* fall back to IP limits, no vault */ }
+  }
+  if (user && USER_DAILY && quotaExceeded(user.key)) {
+    res.set("Retry-After", "3600");
+    return res.status(429).json({ error: "Du har nått din dagliga gräns för Simba. Försök igen imorgon." });
+  }
+  let vaultText = "";
+  if (user) {
+    try { vaultText = await retrieveForContext(orgOf(user), lastUserText(req.body.messages)); }
+    catch (e) { console.error("[Simba] vault retrieve failed:", e?.message || e); }
   }
 
   inflight++;
@@ -876,7 +915,7 @@ app.post("/api/chat", async (req, res) => {
   res.flushHeaders?.();
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
-    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }));
+    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText);
     send("final", {
       content: final.content,
       stop_reason: final.stop_reason,
@@ -1123,6 +1162,47 @@ app.delete("/api/jobs/:id", async (req, res) => {
   if (!user) return;
   try { await deleteJob(user.key, req.params.id); res.json({ ok: true }); }
   catch (err) { console.error("[Simba] job delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort schemat." }); }
+});
+
+// ---- Shared company knowledge vault (Simba's org-wide "mind") -------------
+app.get("/api/vault", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const q = req.query.q;
+    const entries = q ? await searchVault(orgOf(user), String(q), 50) : await listVault(orgOf(user));
+    res.json({ entries, canWrite: canWriteVault(user) });
+  } catch (err) { console.error("[Simba] vault list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta kunskapsbanken." }); }
+});
+
+app.post("/api/vault", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Du har inte behörighet att ändra kunskapsbanken." });
+  try {
+    const { topic, title, content, tags } = req.body || {};
+    const entry = await createEntry(orgOf(user), { topic, title, content, tags, author: user.email || user.name || "" });
+    res.json({ entry });
+  } catch (err) { console.error("[Simba] vault create failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte spara posten." }); }
+});
+
+app.put("/api/vault/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Du har inte behörighet att ändra kunskapsbanken." });
+  try {
+    const entry = await updateEntry(orgOf(user), req.params.id, req.body || {});
+    if (!entry) return res.status(404).json({ error: "Hittades inte." });
+    res.json({ entry });
+  } catch (err) { console.error("[Simba] vault update failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte uppdatera posten." }); }
+});
+
+app.delete("/api/vault/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Du har inte behörighet att ändra kunskapsbanken." });
+  try { await deleteEntry(orgOf(user), req.params.id); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] vault delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort posten." }); }
 });
 
 // Unknown API routes return JSON, not the SPA/HTML.

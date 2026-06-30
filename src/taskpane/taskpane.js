@@ -53,7 +53,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "run_code", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "web_lookup", "run_code", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -253,6 +253,8 @@ function boot(isExcel) {
   els.agents = document.getElementById("agents");
   els.agentChip = document.getElementById("agent-chip");
   els.agents?.addEventListener("click", openAgents);
+  els.vault = document.getElementById("vault");
+  els.vault?.addEventListener("click", openVault);
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
 
   els.editMode.addEventListener("click", (e) => {
@@ -329,6 +331,7 @@ function boot(isExcel) {
     if (h?.model) modelName = h.model;
     ssoServerConfigured = !!h?.ssoConfigured;
     if (ssoServerConfigured && els.cloud) els.cloud.hidden = false; // cloud files need SSO
+    if (ssoServerConfigured && els.vault) els.vault.hidden = false; // vault is org-scoped (SSO)
     initIdentity();
   }).catch(() => {});
 
@@ -982,6 +985,33 @@ const tools = {
     if (!added) return { saved: false, reason: "Detta minns jag redan." };
     toast("Sparade i minnet", "success");
     return { saved: true, note: text };
+  },
+
+  async search_vault({ query }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att nå företagets kunskapsbank." };
+    try {
+      const r = await fetch(`${API_BASE}/api/vault?q=${encodeURIComponent(query || "")}`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte söka i kunskapsbanken." };
+      return { entries: (j.entries || []).map((e) => ({ topic: e.topic, title: e.title, content: e.content, tags: e.tags })) };
+    } catch { return { error: "Kunde inte nå kunskapsbanken." }; }
+  },
+
+  async save_to_vault({ topic, title, content, tags }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att spara i företagets kunskapsbank." };
+    if (!String(title || "").trim() || !String(content || "").trim()) return { error: "Ange titel och innehåll." };
+    try {
+      const r = await fetch(`${API_BASE}/api/vault`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ topic, title, content, tags }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte spara i kunskapsbanken." };
+      toast("Sparade i kunskapsbanken", "success");
+      return { saved: true, id: j.entry?.id, topic: j.entry?.topic, title: j.entry?.title };
+    } catch { return { error: "Kunde inte nå kunskapsbanken." }; }
   },
 
   /* ---------------- agent control: plan + delegate ---------------- */
@@ -2144,6 +2174,8 @@ function toolResultHint(name, input, result) {
     case "set_column_width": return result.width === "auto" ? "auto" : (result.width != null ? `${result.width} pt` : "");
     case "set_row_height": return result.height === "auto" ? "auto" : (result.height != null ? `${result.height} pt` : "");
     case "remember": return result.saved ? "sparat" : "";
+    case "search_vault": return Array.isArray(result.entries) ? `${result.entries.length} träffar` : "";
+    case "save_to_vault": return result.saved ? "sparat" : "";
     case "run_code": return result.result ? "klart" : "";
     case "propose_plan": return result.approved ? "godkänd" : (result.approved === false ? "avböjd" : "");
     case "delegate_task": return typeof result.steps === "number" ? `${result.steps} steg` : "";
@@ -2204,6 +2236,8 @@ function toolLabel(name, input) {
     merge_cells: `Sammanfogar ${input?.address || "celler"}`,
     freeze_panes: "Låser rutor",
     remember: "Sparar i minnet",
+    search_vault: input?.query ? `Söker i kunskapsbanken: "${input.query}"` : "Söker i kunskapsbanken",
+    save_to_vault: "Sparar i kunskapsbanken",
     propose_plan: "Gör upp en plan",
     delegate_task: input?.task ? `Delegerar: ${String(input.task).slice(0, 40)}` : "Delegerar en deluppgift",
     find_errors: "Söker efter formelfel",
@@ -3005,7 +3039,8 @@ function commandList() {
       applyTheme(next); store.set("simba.theme", next);
     } },
   ];
-  if (ssoServerConfigured) cmds.splice(3, 0, { icon: "☁", label: "Molnfiler", run: () => openFilesBrowser() });
+  if (ssoServerConfigured) cmds.splice(3, 0, { icon: "📚", label: "Kunskapsbank", run: () => openVault() });
+  if (ssoServerConfigured) cmds.splice(4, 0, { icon: "☁", label: "Molnfiler", run: () => openFilesBrowser() });
   if (busy) cmds.unshift({ icon: "◼", label: "Stoppa Simba", run: () => stopGeneration() });
   return cmds;
 }
@@ -3098,6 +3133,110 @@ function renderAgentRun(agent) {
     `<span class="agent-run-txt"><b>${escapeHtml(agent.name)}-agenten</b> tar över och arbetar…</span>`;
   els.messages.append(el);
   scrollDown();
+}
+
+/* ---- Company knowledge vault (Simba's shared mind) --------------------- */
+let vaultCanWrite = false;
+async function openVault() {
+  const token = await getSsoToken(false);
+  if (!token) {
+    openModal(
+      `<h3>Kunskapsbank</h3><p class="sub">Logga in med Microsoft för att se företagets delade kunskapsbank.</p>
+       <div class="modal-actions"><button class="btn" data-act="cancel">Avbryt</button><button class="btn primary" id="vault-signin">Logga in</button></div>`
+    );
+    els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+    els.modalCard.querySelector("#vault-signin").onclick = async () => { if (await initIdentity(true)) openVault(); else toast("Kunde inte logga in.", "error", 3000); };
+    return;
+  }
+  openModal(
+    `<div class="vault-head">
+       <div><h3 style="margin:0">Kunskapsbank</h3><p class="sub" style="margin:2px 0 0">Företagets delade minne — Simba grundar sina svar i detta i varje session.</p></div>
+       <button class="btn primary" id="vault-new" style="flex:none;padding:7px 12px">＋ Ny</button>
+     </div>
+     <input id="vault-q" class="files-q" type="search" placeholder="Sök i kunskapsbanken…" autocomplete="off" />
+     <div id="vault-list" class="vault-list"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  els.modalCard.querySelector("#vault-new").onclick = () => vaultEdit(null);
+  const qEl = els.modalCard.querySelector("#vault-q");
+  let deb;
+  qEl.addEventListener("input", () => { clearTimeout(deb); deb = setTimeout(() => loadVault(qEl.value.trim()), 300); });
+  loadVault("");
+}
+
+async function loadVault(query) {
+  const listEl = els.modalCard.querySelector("#vault-list");
+  if (!listEl) return;
+  listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Söker…</div>';
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/vault?q=${encodeURIComponent(query || "")}`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { listEl.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta.")}</div>`; return; }
+    vaultCanWrite = !!j.canWrite;
+    const newBtn = els.modalCard.querySelector("#vault-new");
+    if (newBtn) newBtn.hidden = !vaultCanWrite;
+    const entries = j.entries || [];
+    if (!entries.length) {
+      listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Tomt än. Lägg till företagets fakta, policys och definitioner så minns Simba dem överallt.</div>';
+      return;
+    }
+    // Group by topic (the "branches" of the mind map).
+    const byTopic = {};
+    for (const e of entries) (byTopic[e.topic] = byTopic[e.topic] || []).push(e);
+    listEl.innerHTML = Object.keys(byTopic).sort().map((topic) =>
+      `<div class="vault-topic"><div class="vault-topic-h">${escapeHtml(topic)} <span class="vault-count">${byTopic[topic].length}</span></div>` +
+      byTopic[topic].map((e) => `
+        <div class="vault-item" data-id="${escapeHtml(e.id)}">
+          <div class="vault-main"><div class="vault-title">${escapeHtml(e.title)}</div>
+          <div class="vault-snip">${escapeHtml(String(e.content).slice(0, 140))}</div></div>
+          ${vaultCanWrite ? `<div class="vault-acts"><button class="conv-act" data-act="edit" title="Redigera">✎</button><button class="conv-act" data-act="del" title="Ta bort">🗑</button></div>` : ""}
+        </div>`).join("") + `</div>`).join("");
+    listEl.querySelectorAll(".vault-item").forEach((it) => {
+      const id = it.dataset.id;
+      const entry = entries.find((e) => e.id === id);
+      it.querySelector('[data-act="edit"]')?.addEventListener("click", () => vaultEdit(entry));
+      it.querySelector('[data-act="del"]')?.addEventListener("click", async () => {
+        if (!(await uiConfirm(`Ta bort "${entry.title}" ur kunskapsbanken?`, { danger: true }))) { openVault(); return; }
+        const t = await getSsoToken(false);
+        await fetch(`${API_BASE}/api/vault/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${t}` } }).catch(() => {});
+        openVault();
+      });
+    });
+  } catch { listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå kunskapsbanken.</div>'; }
+}
+
+// Add or edit a vault entry, then return to the vault list.
+function vaultEdit(entry) {
+  const e = entry || { topic: "Allmänt", title: "", content: "", tags: [] };
+  openModal(
+    `<h3>${entry ? "Redigera post" : "Ny post"}</h3>
+     <label class="vault-l">Ämne / gren</label>
+     <input id="v-topic" class="files-q" type="text" value="${escapeHtml(e.topic || "")}" placeholder="t.ex. Produkter, Policys, Kunder" />
+     <label class="vault-l">Titel</label>
+     <input id="v-title" class="files-q" type="text" value="${escapeHtml(e.title || "")}" placeholder="Kort, specifik titel" />
+     <label class="vault-l">Innehåll</label>
+     <textarea id="v-content" class="memory-text" rows="6" placeholder="Faktan, skriven så den är användbar senare.">${escapeHtml(e.content || "")}</textarea>
+     <label class="vault-l">Taggar (kommaseparerade)</label>
+     <input id="v-tags" class="files-q" type="text" value="${escapeHtml((e.tags || []).join(", "))}" placeholder="valfritt" />
+     <div class="modal-actions"><button class="btn" data-act="cancel">Avbryt</button><button class="btn primary" data-act="save">Spara</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = () => openVault();
+  els.modalCard.querySelector('[data-act="save"]').onclick = async () => {
+    const body = {
+      topic: els.modalCard.querySelector("#v-topic").value.trim(),
+      title: els.modalCard.querySelector("#v-title").value.trim(),
+      content: els.modalCard.querySelector("#v-content").value.trim(),
+      tags: els.modalCard.querySelector("#v-tags").value.split(",").map((s) => s.trim()).filter(Boolean),
+    };
+    if (!body.title || !body.content) { toast("Ange titel och innehåll.", "error", 2500); return; }
+    const token = await getSsoToken(false);
+    const url = entry ? `${API_BASE}/api/vault/${encodeURIComponent(entry.id)}` : `${API_BASE}/api/vault`;
+    const r = await fetch(url, { method: entry ? "PUT" : "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }).catch(() => null);
+    if (r && r.ok) { toast("Sparat i kunskapsbanken", "success", 1500); openVault(); }
+    else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte spara.", "error", 3000); }
+  };
 }
 
 /* ---- Cloud file browser (OneDrive/SharePoint) -------------------------- */

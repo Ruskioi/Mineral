@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { chooseModel } from "../server/router.js";
+import { createEntry, searchVault, retrieveForContext, listVault } from "../server/vault.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(resolve(root, p), "utf8");
@@ -30,6 +31,12 @@ const assert = (cond, msg) => { if (!cond) throw new Error(msg || "assertion fai
 
 const server = read("server/server.js");
 const taskpane = read("src/taskpane/taskpane.js");
+
+// Prepare vault store behaviour (async) before the synchronous checks run.
+await createEntry("t-test", { topic: "X", title: "Pris", content: "Produkten kostar 990 kr.", tags: ["pris"] });
+const _vaultHits = await searchVault("t-test", "vad kostar produkten");
+const _vaultOtherOrgCount = (await listVault("t-other")).length;
+void retrieveForContext;
 
 console.log("\nSimba ship-safety checks\n");
 
@@ -340,6 +347,20 @@ check("Tier 2 features (export, artifacts, palette, multi-attach, MCP)", () => {
   assert(/function openCommandPalette/.test(taskpane) && /e\.key === "k"/.test(taskpane), "command palette (⌘K) missing");
   assert(/let pendingAttachments = \[\]/.test(taskpane) && /MAX_ATTACH/.test(taskpane), "multi-file attach missing");
   assert(/SIMBA_MCP_SERVERS/.test(server) && /mcp_servers/.test(server), "MCP connector plumbing missing");
+});
+
+check("company knowledge vault (Simba's shared mind) is wired", () => {
+  // backend: schemas, endpoints, retrieval injection
+  assert(/name: "search_vault"/.test(server) && /name: "save_to_vault"/.test(server), "vault tools missing");
+  assert(/app\.get\("\/api\/vault"/.test(server) && /app\.post\("\/api\/vault"/.test(server) && /app\.delete\("\/api\/vault\/:id"/.test(server), "vault endpoints missing");
+  assert(/retrieveForContext\(orgOf\(user\)/.test(server), "chat must inject the org vault context");
+  assert(/Företagets kunskapsbank/.test(server), "system prompt must describe the vault");
+  // client UI + tools
+  assert(/function openVault/.test(taskpane) && /function vaultEdit/.test(taskpane), "vault UI missing");
+  assert(/"search_vault", "save_to_vault"/.test(taskpane), "vault tools must work in desktop mode");
+  // store behavior (org-scoped CRUD + keyword retrieval), prepared below
+  assert(_vaultHits.some((e) => e.title === "Pris"), "vault keyword search should find the entry");
+  assert(_vaultOtherOrgCount === 0, "vault must be isolated per org");
 });
 
 check("Tier 1 features (stop, conv management, job email, user quota)", () => {
