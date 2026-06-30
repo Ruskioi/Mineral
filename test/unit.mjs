@@ -366,6 +366,12 @@ check("shared workspace syncs context across surfaces", () => {
   assert(/name: "save_to_workspace"/.test(server) && /name: "get_workspace"/.test(server), "workspace tools missing");
   assert(/"save_to_workspace", "get_workspace"/.test(taskpane), "workspace tools must work cross-surface (desktop)");
   assert(_wsCtx.includes("Q3-synctest"), "workspace context should round-trip");
+  // Settings → Synk view + Outlook current-email reading
+  assert(/data-tab="workspace"/.test(taskpane) && /function populateWorkspace/.test(taskpane), "workspace settings view missing");
+  assert(/name: "read_current_email"/.test(server) && /async read_current_email\(/.test(taskpane), "read-current-email tool missing");
+  assert(/Office\.context\.mailbox/.test(taskpane), "current-email must use the Outlook mailbox item");
+  assert(/IS_OUTLOOK/.test(taskpane) && /function toolAllowed/.test(taskpane), "Outlook host gating missing");
+  assert(/surface === "outlook"/.test(server), "server should have an Outlook surface note");
 });
 
 check("Outlook mail (read/send/analyze) is wired", () => {

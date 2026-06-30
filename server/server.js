@@ -327,6 +327,9 @@ const TOOLS = [
       id: { type: "string", description: "The message id from list_emails." },
     }, required: ["id"] } },
 
+  { name: "read_current_email", description: "Read the email currently open in Outlook (subject, sender, recipients, body) directly from the mailbox — no id needed. Use when the user refers to 'this email' / 'det här mejlet' while in Outlook.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
   { name: "send_email", description: "Send an email as the signed-in user (or reply to a message by passing reply_to_id). The user is shown a confirmation with the draft before anything is sent. Use to send or reply on the user's behalf after drafting the content.",
     input_schema: { type: "object", properties: {
       to: { type: "string", description: "Recipient address(es), comma-separated. Omit when reply_to_id is set to reply to the sender." },
@@ -772,6 +775,11 @@ function buildSystem(memory, surface, vault, workspace) {
     "OneDrive/SharePoint-filer (list_files/open_file), schemalägga återkommande jobb " +
     "(schedule_task) och minnas det viktiga (remember). Live-redigering av ett kalkylark " +
     "sker i Excel-tillägget; nämn det bara om användaren uttryckligen vill ändra ett öppet ark." });
+  else if (surface === "outlook") blocks.push({ type: "text", text:
+    "[Läge] Du körs inuti Microsoft Outlook. Du kan läsa det MEJL SOM ÄR ÖPPET just nu direkt " +
+    "med read_current_email (be om det när användaren säger 'det här mejlet'), samt arbeta med " +
+    "hela brevlådan (list_emails/read_email/send_email), molnfiler, kunskapsbanken och det delade " +
+    "arbetsutrymmet. Live-redigering av kalkylark sker i Excel-tillägget." });
   else blocks.push({ type: "text", text:
     "[Läge] Du körs inuti Microsoft Excel. Du har full tillgång till kalkylarksverktygen — " +
     "läs och redigera arket direkt — utöver dina allmänna förmågor (webb, kod, dokument, minne)." });

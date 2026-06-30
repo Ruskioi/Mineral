@@ -33,6 +33,16 @@ let pendingAttachments = []; // [{name, kind, block}] user-attached files for th
 const MAX_ATTACH = 6;
 let activeAgent = null; // a selected specialist agent persona for the next message(s)
 let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
+let IS_OUTLOOK = false; // true when running inside Outlook (mailbox item available)
+// Tools that only make sense inside Outlook (read the open message via Office.js).
+const OUTLOOK_TOOLS = new Set(["read_current_email"]);
+// Whether a tool may run on the current surface.
+function toolAllowed(name) {
+  if (IS_EXCEL) return true;                                  // Excel: all tools
+  if (typeof DESKTOP_TOOLS !== "undefined" && DESKTOP_TOOLS.has(name)) return true; // shared tools
+  if (IS_OUTLOOK && OUTLOOK_TOOLS.has(name)) return true;     // Outlook-only tools
+  return false;
+}
 
 // Specialist agents (à la Claude Code / Cowork / Design): each is a focused
 // persona that steers Simba's tools toward one kind of work. Selecting one runs
@@ -347,7 +357,11 @@ function boot(isExcel) {
 // Boot inside Excel via Office.onReady; otherwise (Electron/desktop or a plain
 // browser) boot in desktop mode. The timeout is a fallback if Office never readies.
 if (typeof Office !== "undefined" && Office.onReady) {
-  Office.onReady((info) => boot(Boolean(info && info.host === Office.HostType.Excel)));
+  Office.onReady((info) => {
+    const host = info && info.host;
+    IS_OUTLOOK = host === Office.HostType.Outlook;
+    boot(host === Office.HostType.Excel);
+  });
 } else {
   boot(false);
 }
@@ -752,6 +766,26 @@ const tools = {
       if (!r.ok) return { error: j.error || "Kunde inte öppna meddelandet." };
       return { message: j.message };
     } catch { return { error: "Kunde inte nå e-posttjänsten." }; }
+  },
+
+  async read_current_email() {
+    try {
+      const item = (typeof Office !== "undefined") && Office.context && Office.context.mailbox && Office.context.mailbox.item;
+      if (!item) return { error: "Det här fungerar bara i Outlook med ett mejl öppet." };
+      const out = { id: item.itemId || null };
+      if (typeof item.subject === "string") out.subject = item.subject; // read mode
+      const from = item.from || item.sender;
+      if (from && from.emailAddress) { out.from = from.emailAddress; out.fromName = from.displayName || ""; }
+      if (Array.isArray(item.to)) out.to = item.to.map((r) => r.emailAddress).filter(Boolean);
+      out.body = await new Promise((resolve) => {
+        try {
+          if (item.body && typeof item.body.getAsync === "function") {
+            item.body.getAsync("text", (res) => resolve(res && res.status === "succeeded" ? String(res.value || "").slice(0, 50000) : ""));
+          } else resolve("");
+        } catch { resolve(""); }
+      });
+      return out;
+    } catch (e) { return { error: e.message || "Kunde inte läsa det öppna mejlet." }; }
   },
 
   async send_email({ to, cc, subject, body, reply_to_id }) {
@@ -1163,7 +1197,7 @@ const tools = {
           try {
             if (use.name === "delegate_task" || use.name === "propose_plan") {
               result = { error: "Inte tillgängligt inuti en subagent." };
-            } else if (!IS_EXCEL && !DESKTOP_TOOLS.has(use.name)) {
+            } else if (!toolAllowed(use.name)) {
               result = { error: "Det här kräver Excel." };
             } else {
               const fn = tools[use.name];
@@ -1665,7 +1699,7 @@ const READ_TOOLS = new Set([
   "get_selection", "read_range", "get_sheet_info", "list_sheets", "describe_workbook",
   "find", "capture_view", "analyze_data", "web_lookup", "run_code", "trace_cell",
   "list_charts", "list_files", "open_file", "list_schedules",
-  "search_vault", "analyze_vault", "open_vault_file", "get_workspace", "list_emails", "read_email",
+  "search_vault", "analyze_vault", "open_vault_file", "get_workspace", "list_emails", "read_email", "read_current_email",
 ]);
 
 // Run a single tool call: render its activity step, execute it (respecting the
@@ -1675,7 +1709,7 @@ async function runOneTool(use, group) {
   let result, isError = false;
   try {
     const fn = tools[use.name];
-    if (!IS_EXCEL && !DESKTOP_TOOLS.has(use.name)) {
+    if (!toolAllowed(use.name)) {
       result = { error: "Det här kräver Excel. Öppna Simba inuti Excel för att läsa eller redigera arket." };
     } else {
       result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
@@ -1777,7 +1811,7 @@ async function callBackend(history, onDelta) {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ messages: history, speed, memory: memoryList(), surface: IS_EXCEL ? "excel" : "desktop" }),
+      body: JSON.stringify({ messages: history, speed, memory: memoryList(), surface: IS_EXCEL ? "excel" : (IS_OUTLOOK ? "outlook" : "desktop") }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -2062,6 +2096,7 @@ function openSettings() {
        <button class="tab active" data-tab="general">Allmänt</button>
        <button class="tab" data-tab="memory">Minne</button>
        <button class="tab" data-tab="chats">Chattar</button>
+       <button class="tab" data-tab="workspace">Synk</button>
        <button class="tab" data-tab="schedules">Scheman</button>
      </div>
 
@@ -2110,6 +2145,15 @@ function openSettings() {
        ${signedIn ? '<div id="conv-list" class="conv-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>' : '<div class="hint" style="padding:2px">Logga in (fliken Minne) för att se sparade chattar.</div>'}
      </div>
 
+     <div class="tab-panel" data-panel="workspace" hidden>
+       <div class="setting-row" style="border-top:none">
+         <div><div class="label">Arbetsutrymme</div><div class="hint">Delad arbetskontext som synkas mellan Excel, Outlook, webb och dator</div></div>
+       </div>
+       ${signedIn
+          ? '<div id="ws-list" class="sched-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>'
+          : '<div class="hint" style="padding:2px 2px 4px">Logga in med Microsoft för att synka arbetsutrymmet mellan dina appar. Be sedan Simba att spara t.ex. en tabell — så når du den i Outlook.</div>'}
+     </div>
+
      <div class="tab-panel" data-panel="schedules" hidden>
        <div class="setting-row" style="border-top:none">
          <div><div class="label">Scheman</div><div class="hint">Automatiska jobb som körs åt dig${signedIn ? " – pausa eller ta bort här" : ""}</div></div>
@@ -2124,12 +2168,13 @@ function openSettings() {
      </div>`
   );
   // Lazy-load each tab's data the first time it's shown.
-  const loaded = { chats: false, schedules: false };
+  const loaded = { chats: false, schedules: false, workspace: false };
   const showTab = (name) => {
     els.modalCard.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
     els.modalCard.querySelectorAll(".tab-panel").forEach((p) => { p.hidden = p.dataset.panel !== name; });
     if (name === "chats" && signedIn && !loaded.chats) { loaded.chats = true; populateConvList(); }
     if (name === "schedules" && signedIn && !loaded.schedules) { loaded.schedules = true; populateSchedules(); }
+    if (name === "workspace" && signedIn && !loaded.workspace) { loaded.workspace = true; populateWorkspace(); }
   };
   els.modalCard.querySelector("#settings-tabs").addEventListener("click", (e) => {
     const t = e.target.closest(".tab");
@@ -2315,6 +2360,7 @@ function toolResultHint(name, input, result) {
     case "open_file": return result.name || "";
     case "list_emails": return Array.isArray(result.messages) ? `${result.messages.length} mejl` : "";
     case "read_email": return result.message?.subject || "";
+    case "read_current_email": return result.subject || (result.error ? "" : "öppet mejl");
     case "send_email": return result.sent ? "skickat" : (result.skipped ? "avbrutet" : "");
     case "create_document": return result.filename || "";
     case "find_errors": return typeof result.count === "number" ? `${result.count} fel` : "";
@@ -2351,6 +2397,7 @@ function toolLabel(name, input) {
     open_file: `Öppnar ${input?.name || "fil"}`,
     list_emails: input?.query ? `Söker i mejlen: "${input.query}"` : "Läser din inkorg",
     read_email: "Öppnar ett mejl",
+    read_current_email: "Läser det öppna mejlet",
     send_email: "Skickar ett mejl",
     schedule_task: input?.name ? `Schemalägger: ${input.name}` : "Skapar ett schema",
     list_schedules: "Hämtar dina scheman",
@@ -3164,6 +3211,36 @@ async function populateSchedules() {
       item.querySelector('[data-act="del"]').onclick = async () => { await jobDelete(id); populateSchedules(); };
     });
   } catch { el.innerHTML = hint("Kunde inte hämta scheman."); }
+}
+
+// Settings → Synk: the shared workspace (cross-surface working context).
+async function populateWorkspace() {
+  const el = els.modalCard.querySelector("#ws-list");
+  if (!el) return;
+  const hint = (t) => `<div class="hint" style="padding:4px 2px">${t}</div>`;
+  try {
+    const token = await getSsoToken(false);
+    const r = token && await fetch(`${API_BASE}/api/workspace`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = r && r.ok ? await r.json() : null;
+    if (!j) { el.innerHTML = hint("Kunde inte hämta arbetsutrymmet."); return; }
+    const items = j.items || [];
+    if (!items.length) { el.innerHTML = hint('Tomt än. Be Simba spara något här, t.ex. "spara den här tabellen i arbetsutrymmet" i Excel — sen når du den i Outlook.'); return; }
+    el.innerHTML = items.map((it) => `
+      <div class="sched-item" data-id="${escapeHtml(it.id)}">
+        <div class="sched-main">
+          <div class="sched-name">${escapeHtml(it.label || "Notis")}${it.source ? ` <span class="vault-count">${escapeHtml(it.source)}</span>` : ""}</div>
+          <div class="sched-meta">${escapeHtml(String(it.content || "").replace(/\s+/g, " ").slice(0, 120))}</div>
+        </div>
+        <div class="sched-acts"><button class="msg-act" data-act="del" title="Ta bort" aria-label="Ta bort">🗑</button></div>
+      </div>`).join("");
+    el.querySelectorAll(".sched-item").forEach((item) => {
+      item.querySelector('[data-act="del"]').onclick = async () => {
+        const t = await getSsoToken(false);
+        await fetch(`${API_BASE}/api/workspace/${encodeURIComponent(item.dataset.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${t}` } }).catch(() => {});
+        populateWorkspace();
+      };
+    });
+  } catch { el.innerHTML = hint("Kunde inte nå arbetsutrymmet."); }
 }
 
 /* ---- Command palette (⌘K) ---------------------------------------------- */
