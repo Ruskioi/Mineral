@@ -109,6 +109,18 @@ Guidelines:
 - If the user has editing set to "off" or declines a confirmation, a tool returns
   {skipped:true}. Explain what you would have done and how to enable editing.
 
+Working on large tasks (plan & delegate):
+- For a BIG job (roughly 4+ edits, or one that reshapes the sheet — a full report,
+  model, or dashboard), call propose_plan FIRST with a short numbered plan and wait
+  for approval. If approved, execute it; if declined, ask what to change. Skip planning
+  for small, obvious requests — just do them.
+- You can split a big job into independent pieces with delegate_task: each runs as a
+  focused subagent with the same tools and returns a short result. Good for parts that
+  stand alone (e.g. "build the summary sheet", "make the four regional charts"). The
+  subagent can't see this chat, so put everything it needs in task/context. Don't
+  delegate trivial one-step actions — do those yourself. Keep doing the orchestration
+  (planning, sequencing, final summary) in the main thread.
+
 Memory:
 - You have a per-user memory. Durable facts the user has told you are provided to you
   under a heading like "[Vad du minns om användaren]". Use them to personalize your help
@@ -304,6 +316,18 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       note: { type: "string", description: "A single short fact to remember, phrased so it is useful later." },
     }, required: ["note"] } },
+
+  { name: "propose_plan", description: "Before a LARGE multi-step task (roughly 4+ edits, or a build that reshapes the sheet), present a short numbered plan and get the user's go-ahead. Returns {approved}. If approved, carry out the plan; if not, ask what to change instead of re-proposing the same plan. Skip this for small, obvious tasks.",
+    input_schema: { type: "object", properties: {
+      title: { type: "string", description: "A one-line summary of what you'll do." },
+      steps: { type: "array", description: "The ordered steps you intend to take, each a short sentence.", items: { type: "string" } },
+    }, required: ["title", "steps"] } },
+
+  { name: "delegate_task", description: "Hand a single, self-contained sub-task to a focused subagent that works on its own (with the same tools) and returns a short result. Use to break a big job into independent parts (e.g. 'build the summary sheet', 'create the regional charts') so each runs with clean focus. Don't delegate trivial one-step actions; do them yourself.",
+    input_schema: { type: "object", properties: {
+      task: { type: "string", description: "The complete, self-contained instruction for the subagent." },
+      context: { type: "string", description: "Optional facts the subagent needs (addresses, names, conventions) since it does not see this conversation." },
+    }, required: ["task"] } },
 
   { name: "merge_cells", description: "Merge a range into a single cell. Use for a title banner spanning the columns of a table, then center and enlarge it with format_range.",
     input_schema: { type: "object", properties: {

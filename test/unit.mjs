@@ -190,6 +190,14 @@ check("document generation (Skills) is wired", () => {
   assert(/renderDownload/.test(taskpane) && /saveBase64/.test(taskpane), "client should render a downloadable file");
 });
 
+check("agent patterns (plan + delegate subagents) are wired", () => {
+  assert(/name: "propose_plan"/.test(server) && /name: "delegate_task"/.test(server), "plan/delegate tool schemas missing");
+  assert(/function confirmPlan/.test(taskpane) && /function renderPlan/.test(taskpane), "client plan approval UI missing");
+  assert(/subagentDepth/.test(taskpane), "subagent recursion guard missing");
+  assert(/function toolResultContent/.test(taskpane), "shared tool-result builder missing (used by the subagent loop)");
+  assert(/propose_plan", "delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
+});
+
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {
   assert(/rateLimited/.test(server), "missing rate limiter");
   assert(/validateMessages/.test(server), "missing message validation");

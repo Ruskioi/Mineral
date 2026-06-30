@@ -33,9 +33,10 @@ let pendingAttachment = null; // {name, kind, block} a user-attached file for th
 let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "list_files", "open_file", "create_document"]);
+const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "list_files", "open_file", "create_document", "propose_plan", "delegate_task"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
+let subagentDepth = 0;       // guards delegate_task against runaway recursion
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
 
 /* Per-user memory: short durable notes kept in localStorage and sent with each
@@ -827,6 +828,65 @@ const tools = {
     return { saved: true, note: text };
   },
 
+  /* ---------------- agent control: plan + delegate ---------------- */
+
+  async propose_plan({ title, steps }) {
+    const list = Array.isArray(steps) ? steps.map((s) => String(s).trim()).filter(Boolean) : [];
+    if (!list.length) return { error: "Planen saknar steg." };
+    renderPlan(title, list); // leave the plan visible in the chat as a record
+    if (editMode === "auto" || autoApproveTurn) return { approved: true, note: "Autoläge — kör direkt." };
+    const ok = await confirmPlan(title || "Planen");
+    return ok
+      ? { approved: true }
+      : { approved: false, reason: "Användaren avböjde planen. Föreslå inte samma plan igen — fråga vad som ska ändras." };
+  },
+
+  async delegate_task({ task, context }) {
+    const goal = String(task || "").trim();
+    if (!goal) return { error: "Ingen uppgift angavs." };
+    if (subagentDepth > 0) return { error: "En subagent kan inte delegera vidare." };
+    const intro = context ? `${String(context).trim()}\n\nUppgift: ${goal}` : `Uppgift: ${goal}`;
+    const sub = [{
+      role: "user",
+      content: `Du är en fokuserad subagent åt Simba. Utför ENBART denna avgränsade uppgift, helt och hållet, och svara sedan med ett KORT resultat (vad du gjorde, viktiga adresser/siffror). Be aldrig om förtydliganden — gör rimliga antaganden.\n\n${intro}`,
+    }];
+    subagentDepth++;
+    let steps = 0;
+    try {
+      for (let i = 0; i < 10; i++) {
+        const reply = await callBackend(sub, null); // silent: no streaming bubble for sub-steps
+        if (!reply || !Array.isArray(reply.content)) return { done: false, steps, summary: "Subagenten gav ett oväntat svar." };
+        sub.push({ role: "assistant", content: reply.content });
+        if (reply.stop_reason !== "tool_use") {
+          const text = reply.content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
+          return { done: true, steps, summary: text || "(subagenten slutförde utan textsvar)" };
+        }
+        const toolUses = reply.content.filter((b) => b.type === "tool_use");
+        const results = [];
+        for (const use of toolUses) {
+          steps++;
+          let result, isError = false;
+          try {
+            if (use.name === "delegate_task" || use.name === "propose_plan") {
+              result = { error: "Inte tillgängligt inuti en subagent." };
+            } else if (!IS_EXCEL && !DESKTOP_TOOLS.has(use.name)) {
+              result = { error: "Det här kräver Excel." };
+            } else {
+              const fn = tools[use.name];
+              result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
+            }
+          } catch (e) { result = { error: e.message || String(e) }; isError = true; }
+          if (result && result.error) isError = true;
+          results.push({ type: "tool_result", tool_use_id: use.id, content: toolResultContent(result), is_error: isError });
+        }
+        sub.push({ role: "user", content: results });
+      }
+      return { done: false, steps, summary: "Subagenten nådde stegtaket utan att bli klar." };
+    } finally {
+      subagentDepth--;
+    }
+  },
+
   async merge_cells({ address, across = false }) {
     const ok = await gateEdit({ kind: "edit", address, summary: `Sammanfoga ${address}` });
     if (!ok) return declined(ok);
@@ -1280,6 +1340,24 @@ async function regenerate() {
   }
 }
 
+// Build the content blocks for a tool_result: images/PDFs go in as real
+// vision/document blocks so the model can SEE them; everything else is JSON.
+function toolResultContent(result) {
+  if (result && result.image && result.image.data) {
+    return [
+      { type: "image", source: { type: "base64", media_type: result.image.media_type || "image/png", data: result.image.data } },
+      { type: "text", text: `(bild: ${result.name || result.address || "fil"})` },
+    ];
+  }
+  if (result && result.document && result.document.data) {
+    return [
+      { type: "document", source: { type: "base64", media_type: result.document.media_type || "application/pdf", data: result.document.data } },
+      { type: "text", text: `(dokument: ${result.name || "fil"})` },
+    ];
+  }
+  return JSON.stringify(result);
+}
+
 async function runAgentLoop() {
   let group = null; // collapsible activity card for this turn's tool steps
   for (let i = 0; i < 12; i++) {
@@ -1336,23 +1414,7 @@ async function runAgentLoop() {
       }
       if (result && result.error) isError = true;
       markStepDone(group, step, isError, toolResultHint(use.name, use.input, result));
-      let content;
-      if (result && result.image && result.image.data) {
-        // Image tool result so the vision model can SEE the captured range/chart/file.
-        content = [
-          { type: "image", source: { type: "base64", media_type: result.image.media_type || "image/png", data: result.image.data } },
-          { type: "text", text: `(bild: ${result.name || result.address || "fil"})` },
-        ];
-      } else if (result && result.document && result.document.data) {
-        // PDF document tool result (e.g. an opened OneDrive PDF).
-        content = [
-          { type: "document", source: { type: "base64", media_type: result.document.media_type || "application/pdf", data: result.document.data } },
-          { type: "text", text: `(dokument: ${result.name || "fil"})` },
-        ];
-      } else {
-        content = JSON.stringify(result);
-      }
-      results.push({ type: "tool_result", tool_use_id: use.id, content, is_error: isError });
+      results.push({ type: "tool_result", tool_use_id: use.id, content: toolResultContent(result), is_error: isError });
     }
     messages.push({ role: "user", content: results });
   }
@@ -1507,6 +1569,54 @@ function confirmEdit(details) {
     }
 
     dock.innerHTML = "";            // one question at a time
+    dock.appendChild(card);
+    card.querySelector('[data-act="apply"]').onclick = () => finish(true);
+    card.querySelector('[data-act="all"]').onclick = () => finish("all");
+    card.querySelector('[data-act="cancel"]').onclick = () => finish(false);
+    document.addEventListener("keydown", onKey);
+    setTimeout(() => card.querySelector('[data-act="apply"]').focus(), 30);
+  });
+}
+
+// Render Simba's proposed plan as a tidy card in the chat so it stays visible
+// while (and after) the user decides whether to run it.
+function renderPlan(title, steps) {
+  const md = `**📋 ${title || "Plan"}**\n\n` + steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
+  renderMessage("assistant", md);
+}
+
+/** Asks the user to approve a proposed plan; resolves true (run) / false (cancel). */
+function confirmPlan(title) {
+  return new Promise((resolve) => {
+    const dock = els.askDock;
+    let settled = false;
+    const card = document.createElement("div");
+    card.className = "ask-card";
+    card.innerHTML =
+      `<div class="ask-head"><span class="ask-ic" aria-hidden="true">📋</span><span class="ask-sub">Simba föreslår en plan.</span></div>
+       <div class="ask-body"><p class="confirm-summary">${escapeHtml(title)} — se planen ovan. Köra den?</p></div>
+       <div class="ask-actions">
+         <button class="btn" type="button" data-act="cancel">Avbryt</button>
+         <button class="btn ghost" type="button" data-act="all" title="Kör planen och godkänn alla ändringar i den">Kör + godkänn alla</button>
+         <button class="btn primary" type="button" data-act="apply">Kör planen</button>
+       </div>
+       <p class="ask-hint">Enter för att köra · Skift+Enter för att godkänna alla · Esc för att avbryta</p>`;
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); finish(false); }
+      else if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); finish("all"); }
+      else if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    };
+    function finish(v) {
+      if (settled) return;
+      settled = true;
+      if (v === "all") autoApproveTurn = true; // run the plan without prompting on each edit
+      document.removeEventListener("keydown", onKey);
+      card.classList.add("leaving");
+      card.addEventListener("animationend", () => card.remove(), { once: true });
+      setTimeout(() => card.remove(), 260);
+      resolve(v === "all" ? true : v);
+    }
+    dock.innerHTML = "";
     dock.appendChild(card);
     card.querySelector('[data-act="apply"]').onclick = () => finish(true);
     card.querySelector('[data-act="all"]').onclick = () => finish("all");
@@ -1722,6 +1832,8 @@ function toolResultHint(name, input, result) {
     case "set_column_width": return result.width === "auto" ? "auto" : (result.width != null ? `${result.width} pt` : "");
     case "set_row_height": return result.height === "auto" ? "auto" : (result.height != null ? `${result.height} pt` : "");
     case "remember": return result.saved ? "sparat" : "";
+    case "propose_plan": return result.approved ? "godkänd" : (result.approved === false ? "avböjd" : "");
+    case "delegate_task": return typeof result.steps === "number" ? `${result.steps} steg` : "";
     case "list_files": return Array.isArray(result.files) ? `${result.files.length} filer` : "";
     case "open_file": return result.name || "";
     case "create_document": return result.filename || "";
@@ -1772,6 +1884,8 @@ function toolLabel(name, input) {
     merge_cells: `Sammanfogar ${input?.address || "celler"}`,
     freeze_panes: "Låser rutor",
     remember: "Sparar i minnet",
+    propose_plan: "Gör upp en plan",
+    delegate_task: input?.task ? `Delegerar: ${String(input.task).slice(0, 40)}` : "Delegerar en deluppgift",
     find_errors: "Söker efter formelfel",
     conditional_formatting: `Villkorsformaterar ${input?.address || "ett område"}`,
     data_validation: `Lägger till rullgardin i ${input?.address || "ett område"}`,
