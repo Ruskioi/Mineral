@@ -991,6 +991,23 @@ const tools = {
     if (!ok) return declined(ok);
     const result = await Excel.run(async (ctx) => {
       const range = parseRange(ctx, address);
+      range.load(["values", "address"]);
+      await ctx.sync();
+      // Office.js merge KEEPS ONLY the top-left cell and silently discards the
+      // rest — which wipes a title written into a centered/non-top-left cell.
+      // Move the first non-empty value into the cell merge will keep, so the
+      // title survives. (across = merge each row, so preserve per row.)
+      const vals = range.values || [];
+      const nonEmpty = (v) => v !== "" && v != null;
+      const firstIn = (arr) => { for (const v of arr || []) if (nonEmpty(v)) return v; return undefined; };
+      if (across) {
+        for (let r = 0; r < vals.length; r++) {
+          if (!nonEmpty(vals[r]?.[0])) { const v = firstIn(vals[r]); if (v !== undefined) range.getCell(r, 0).values = [[v]]; }
+        }
+      } else if (!nonEmpty(vals[0]?.[0])) {
+        let v; for (const row of vals) { v = firstIn(row); if (v !== undefined) break; }
+        if (v !== undefined) range.getCell(0, 0).values = [[v]];
+      }
       range.merge(!!across);
       range.load("address");
       await ctx.sync();
@@ -1439,6 +1456,34 @@ async function regenerate() {
   }
 }
 
+// Read-only tools (no side effects) — safe to run concurrently within a turn.
+const READ_TOOLS = new Set([
+  "get_selection", "read_range", "get_sheet_info", "list_sheets", "describe_workbook",
+  "find", "capture_view", "analyze_data", "web_lookup", "run_code", "trace_cell",
+  "list_charts", "list_files", "open_file", "list_schedules",
+]);
+
+// Run a single tool call: render its activity step, execute it (respecting the
+// desktop/Excel gate), and return the tool_result block for the model.
+async function runOneTool(use, group) {
+  const step = groupAddStep(group, use.name, use.input);
+  let result, isError = false;
+  try {
+    const fn = tools[use.name];
+    if (!IS_EXCEL && !DESKTOP_TOOLS.has(use.name)) {
+      result = { error: "Det här kräver Excel. Öppna Simba inuti Excel för att läsa eller redigera arket." };
+    } else {
+      result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
+    }
+  } catch (e) {
+    result = { error: e.message || String(e) };
+    isError = true;
+  }
+  if (result && result.error) isError = true;
+  markStepDone(group, step, isError, toolResultHint(use.name, use.input, result));
+  return { type: "tool_result", tool_use_id: use.id, content: toolResultContent(result), is_error: isError };
+}
+
 // Build the content blocks for a tool_result: images/PDFs go in as real
 // vision/document blocks so the model can SEE them; everything else is JSON.
 function toolResultContent(result) {
@@ -1495,25 +1540,17 @@ async function runAgentLoop() {
     if (reply.stop_reason !== "tool_use") { finalizeToolGroup(group); return; }
 
     const toolUses = reply.content.filter((b) => b.type === "tool_use");
-    const results = [];
-    for (const use of toolUses) {
-      if (!group) group = createToolGroup();
-      const step = groupAddStep(group, use.name, use.input);
-      let result, isError = false;
-      try {
-        const fn = tools[use.name];
-        if (!IS_EXCEL && !DESKTOP_TOOLS.has(use.name)) {
-          result = { error: "Det här kräver Excel. Öppna Simba inuti Excel för att läsa eller redigera arket." };
-        } else {
-          result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
-        }
-      } catch (e) {
-        result = { error: e.message || String(e) };
-        isError = true;
-      }
-      if (result && result.error) isError = true;
-      markStepDone(group, step, isError, toolResultHint(use.name, use.input, result));
-      results.push({ type: "tool_result", tool_use_id: use.id, content: toolResultContent(result), is_error: isError });
+    if (toolUses.length && !group) group = createToolGroup();
+    // Read-only steps have no side effects and can run concurrently — a big
+    // latency win on "thinking" turns that fan out several reads. Anything that
+    // mutates the sheet (or could prompt for confirmation) runs sequentially in
+    // order, since order matters and parallel edit dialogs would collide.
+    let results;
+    if (toolUses.length > 1 && toolUses.every((u) => READ_TOOLS.has(u.name))) {
+      results = await Promise.all(toolUses.map((use) => runOneTool(use, group)));
+    } else {
+      results = [];
+      for (const use of toolUses) results.push(await runOneTool(use, group));
     }
     messages.push({ role: "user", content: results });
   }

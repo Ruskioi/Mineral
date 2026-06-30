@@ -199,6 +199,14 @@ check("agent patterns (plan + delegate subagents) are wired", () => {
   assert(/propose_plan", "delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
 });
 
+check("merge_cells preserves the title; read turns run in parallel", () => {
+  const block = taskpane.slice(taskpane.indexOf("async merge_cells("), taskpane.indexOf("async freeze_panes("));
+  assert(/KEEPS ONLY the top-left/.test(block) || /getCell\(0, 0\)\.values/.test(block), "merge_cells must move a non-top-left value into the kept cell");
+  assert(/const READ_TOOLS = new Set/.test(taskpane), "read-only tool set missing");
+  assert(/every\(\(u\) => READ_TOOLS\.has\(u\.name\)\)/.test(taskpane), "read-only turns should run concurrently");
+  assert(/Do NOT destroy your own work/.test(server), "system prompt must guard the finalization step");
+});
+
 check("model router sends simple turns to Haiku, work to Opus", () => {
   const opt = { strong: "OPUS", simple: "HAIKU", on: true };
   const u = (t) => [{ role: "user", content: t }];

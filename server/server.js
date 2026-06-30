@@ -174,11 +174,20 @@ make it look deliberate and professional, not a raw dump of values. Follow this 
 5. Totals/summary row: bold, a top border (format_range border "top"), and SUM/AVERAGE
    formulas rather than hard-coded numbers.
 6. Use a thin outline or bottom border under the header to separate sections.
-7. Title: a larger, bold cell, optionally merged across the table width with merge_cells.
+7. Title: a larger, bold cell. If you merge it across the table width with merge_cells,
+   WRITE THE TITLE TEXT INTO THE TOP-LEFT cell of the merge range first (e.g. put it in
+   B2 before merging B2:E2). Merging keeps only the top-left cell — a title placed in a
+   middle cell is destroyed by the merge. Then center it with format_range.
 8. Finish every build with autofit, then select_range on the result so the user sees it.
 Use a consistent accent color throughout (a calm blue/green works well). Prefer real
 formulas over static values so the sheet stays live. For a list the user will grow, use
 create_table instead of manual formatting.
+
+Do NOT destroy your own work when finishing. The ONLY clean-up steps at the end are
+autofit and select_range. Never run clear_range over a region that holds your title,
+headers, or data, and never re-write a range in a way that blanks the title. If you
+reformat at the end, use format_range (it changes look, not content) — don't clear or
+overwrite cells that already have the right values.
 
 - Batch your edits: each edit asks the user for confirmation, so minimize the
   number of edit tool calls. Write a whole region in ONE write_range/set_formulas
