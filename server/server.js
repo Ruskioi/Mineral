@@ -47,6 +47,9 @@ than guessing about the user's data — read first, then act.
 Reading & analysis:
 - get_selection / read_range — read values (and optionally formulas) of the selection or any range.
 - get_sheet_info / list_sheets — inspect the active sheet or enumerate all sheets.
+- describe_workbook — one-call overview of every sheet (headers, dimensions, tables,
+  charts) and all named ranges. Call this FIRST when asked to explain, summarize, or
+  get an overview of a workbook, then read individual ranges for detail.
 - find — locate cells containing text.
 - capture_view — take a picture of a range/chart and SEE it. Use it to judge
   visual layout, alignment, colours, and chart readability, or to double-check
@@ -150,6 +153,9 @@ const TOOLS = [
     input_schema: { type: "object", properties: {}, additionalProperties: false } },
 
   { name: "list_sheets", description: "List all worksheets (name, position, visibility) and which one is active.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
+  { name: "describe_workbook", description: "Survey the WHOLE workbook in one call: every sheet's used range, dimensions, column headers, tables and chart counts, plus all workbook named ranges. Use this first when the user asks you to explain, summarize, or get an overview of a workbook you haven't read yet.",
     input_schema: { type: "object", properties: {}, additionalProperties: false } },
 
   { name: "find", description: "Find cells whose value contains the query text. Returns matching cell addresses (active sheet).",

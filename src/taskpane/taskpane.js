@@ -403,6 +403,58 @@ const tools = {
     });
   },
 
+  async describe_workbook() {
+    return Excel.run(async (ctx) => {
+      const wsCol = ctx.workbook.worksheets;
+      wsCol.load("items/name,items/position,items/visibility");
+      const names = ctx.workbook.names;
+      names.load("items/name,items/type,items/formula,items/visible");
+      await ctx.sync();
+
+      const sheets = wsCol.items;
+      const useds = sheets.map((s) => s.getUsedRangeOrNullObject(true));
+      const tables = sheets.map((s) => s.tables);
+      const charts = sheets.map((s) => s.charts);
+      useds.forEach((u) => u.load(["address", "rowCount", "columnCount"]));
+      tables.forEach((t) => t.load("items/name"));
+      charts.forEach((c) => c.load("items/name"));
+      await ctx.sync();
+
+      const headerRanges = useds.map((u) => (u.isNullObject ? null : u.getRow(0)));
+      headerRanges.forEach((h) => { if (h) h.load("values"); });
+      await ctx.sync();
+
+      const out = sheets.map((s, i) => {
+        const u = useds[i];
+        const empty = u.isNullObject;
+        const headerRow = (!empty && headerRanges[i] && headerRanges[i].values) ? headerRanges[i].values[0] : null;
+        const headers = headerRow
+          ? headerRow.map((v) => (v === "" || v == null ? null : String(v))).slice(0, 50)
+          : [];
+        return {
+          name: s.name,
+          position: s.position,
+          hidden: s.visibility !== "Visible",
+          usedRange: empty ? null : u.address,
+          rows: empty ? 0 : u.rowCount,
+          columns: empty ? 0 : u.columnCount,
+          headers,
+          tables: tables[i].items.map((t) => t.name),
+          charts: charts[i].items.length,
+        };
+      });
+
+      return {
+        sheetCount: sheets.length,
+        sheets: out,
+        namedRanges: names.items
+          .filter((n) => n.visible !== false)
+          .map((n) => ({ name: n.name, refersTo: n.formula, type: n.type }))
+          .slice(0, 100),
+      };
+    });
+  },
+
   async find({ query, match_case = false }) {
     return Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
@@ -1606,6 +1658,7 @@ function toolResultHint(name, input, result) {
     case "apply_filter": return result.filtered ? "filtrerat" : (result.applied ? "filter på" : "");
     case "remove_duplicates": return typeof result.removed === "number" ? `${result.removed} borttagna` : "";
     case "create_named_range": return result.name || input?.name || "";
+    case "describe_workbook": return typeof result.sheetCount === "number" ? `${result.sheetCount} blad` : "";
     default: return result.address || "";
   }
 }
@@ -1616,6 +1669,7 @@ function toolLabel(name, input) {
     read_range: `Läser ${input?.address || "ett område"}`,
     get_sheet_info: "Granskar arket",
     list_sheets: "Tittar på arbetsboken",
+    describe_workbook: "Kartlägger hela arbetsboken",
     find: `Söker efter "${input?.query || ""}"`,
     capture_view: `Tittar på ${input?.address || "arket"}`,
     analyze_data: `Analyserar ${input?.address || "data"}`,
