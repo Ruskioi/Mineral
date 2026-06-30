@@ -63,7 +63,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "web_lookup", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -267,6 +267,8 @@ function boot(isExcel) {
   els.vault?.addEventListener("click", openVault);
   els.mail = document.getElementById("mail");
   els.mail?.addEventListener("click", openMail);
+  els.connectors = document.getElementById("connectors");
+  els.connectors?.addEventListener("click", openConnectors);
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
 
   els.editMode.addEventListener("click", (e) => {
@@ -345,6 +347,7 @@ function boot(isExcel) {
     if (ssoServerConfigured && els.cloud) els.cloud.hidden = false; // cloud files need SSO
     if (ssoServerConfigured && els.vault) els.vault.hidden = false; // vault is org-scoped (SSO)
     if (ssoServerConfigured && els.mail) els.mail.hidden = false; // Outlook mail needs SSO/Graph
+    if (ssoServerConfigured && els.connectors) els.connectors.hidden = false; // data sources are org-scoped (SSO)
     initIdentity();
   }).catch(() => {});
 
@@ -1127,6 +1130,32 @@ const tools = {
     } catch { return { error: "Kunde inte nå arbetsutrymmet." }; }
   },
 
+  async list_data_sources() {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att nå företagets datakällor." };
+    try {
+      const r = await fetch(`${API_BASE}/api/connectors`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte hämta datakällor." };
+      return { sources: (j.connectors || []).map((c) => ({ name: c.name, endpoints: (c.endpoints || []).map((e) => ({ key: e.key, label: e.label, description: e.description })) })) };
+    } catch { return { error: "Kunde inte nå datakälletjänsten." }; }
+  },
+
+  async query_data_source({ source, endpoint, params }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att hämta data." };
+    if (!source || !endpoint) return { error: "Ange datakälla och endpoint (se list_data_sources)." };
+    try {
+      const r = await fetch(`${API_BASE}/api/connectors/query`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ source, endpoint, params }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte hämta data." };
+      return { source: j.source, endpoint: j.endpoint, data: j.data };
+    } catch { return { error: "Kunde inte nå datakälletjänsten." }; }
+  },
+
   async analyze_vault({ focus }) {
     const token = await getSsoToken(false);
     if (!token) return { error: "Logga in med Microsoft för att analysera kunskapsbanken." };
@@ -1699,7 +1728,7 @@ const READ_TOOLS = new Set([
   "get_selection", "read_range", "get_sheet_info", "list_sheets", "describe_workbook",
   "find", "capture_view", "analyze_data", "web_lookup", "run_code", "trace_cell",
   "list_charts", "list_files", "open_file", "list_schedules",
-  "search_vault", "analyze_vault", "open_vault_file", "get_workspace", "list_emails", "read_email", "read_current_email",
+  "search_vault", "analyze_vault", "open_vault_file", "get_workspace", "list_data_sources", "query_data_source", "list_emails", "read_email", "read_current_email",
 ]);
 
 // Run a single tool call: render its activity step, execute it (respecting the
@@ -2350,6 +2379,8 @@ function toolResultHint(name, input, result) {
     case "open_vault_file": return result.name || "";
     case "save_to_workspace": return result.saved ? "sparat" : "";
     case "get_workspace": return Array.isArray(result.items) ? `${result.items.length} objekt` : "";
+    case "list_data_sources": return Array.isArray(result.sources) ? `${result.sources.length} datakällor` : "";
+    case "query_data_source": return result.endpoint || "";
     case "run_code": return result.result ? "klart" : "";
     case "propose_plan": return result.approved ? "godkänd" : (result.approved === false ? "avböjd" : "");
     case "delegate_task": return typeof result.steps === "number" ? `${result.steps} steg` : "";
@@ -2424,6 +2455,8 @@ function toolLabel(name, input) {
     open_vault_file: "Öppnar en bilaga ur kunskapsbanken",
     save_to_workspace: "Sparar i arbetsutrymmet",
     get_workspace: "Hämtar arbetsutrymmet",
+    list_data_sources: "Letar efter datakällor",
+    query_data_source: input?.endpoint ? `Hämtar data: ${input.source || ""}/${input.endpoint}` : "Hämtar data från ekonomisystem",
     propose_plan: "Gör upp en plan",
     delegate_task: input?.task ? `Delegerar: ${String(input.task).slice(0, 40)}` : "Delegerar en deluppgift",
     find_errors: "Söker efter formelfel",
@@ -3257,6 +3290,7 @@ function commandList() {
   ];
   if (ssoServerConfigured) cmds.splice(3, 0, { icon: "📚", label: "Kunskapsbank", run: () => openVault() });
   if (ssoServerConfigured) cmds.splice(4, 0, { icon: "📧", label: "E-post", run: () => openMail() });
+  if (ssoServerConfigured) cmds.splice(5, 0, { icon: "🔌", label: "Datakällor (ekonomisystem)", run: () => openConnectors() });
   if (ssoServerConfigured) cmds.splice(5, 0, { icon: "☁", label: "Molnfiler", run: () => openFilesBrowser() });
   if (busy) cmds.unshift({ icon: "◼", label: "Stoppa Simba", run: () => stopGeneration() });
   return cmds;
@@ -3578,6 +3612,104 @@ function vaultEdit(entry) {
     const url = entry ? `${API_BASE}/api/vault/${encodeURIComponent(entry.id)}` : `${API_BASE}/api/vault`;
     const r = await fetch(url, { method: entry ? "PUT" : "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }).catch(() => null);
     if (r && r.ok) { toast("Sparat i kunskapsbanken", "success", 1500); openVault(); }
+    else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte spara.", "error", 3000); }
+  };
+}
+
+/* ---- Finance / business-system connectors (admin) --------------------- */
+async function openConnectors() {
+  const token = await getSsoToken(false);
+  if (!token) {
+    openModal(`<h3>Datakällor</h3><p class="sub">Logga in med Microsoft för att se företagets datakällor (ekonomisystem m.m.).</p>
+      <div class="modal-actions"><button class="btn" data-act="cancel">Avbryt</button><button class="btn primary" id="dc-signin">Logga in</button></div>`);
+    els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+    els.modalCard.querySelector("#dc-signin").onclick = async () => { if (await initIdentity(true)) openConnectors(); else toast("Kunde inte logga in.", "error", 3000); };
+    return;
+  }
+  openModal(
+    `<div class="vault-head">
+       <div><h3 style="margin:0">Datakällor</h3><p class="sub" style="margin:2px 0 0">Brygga till ekonomisystem (Fortnox, Visma, projektverktyg…). Simba kan hämta och sammanfatta fakturering, intäkter och projekt.</p></div>
+       <button class="btn primary" id="dc-new" style="padding:7px 12px" hidden>＋ Ny</button>
+     </div>
+     <div id="dc-list" class="vault-list"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  els.modalCard.querySelector("#dc-new").onclick = () => connectorEdit(null);
+  loadConnectors();
+}
+
+async function loadConnectors() {
+  const el = els.modalCard.querySelector("#dc-list");
+  if (!el) return;
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/connectors`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { el.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta.")}</div>`; return; }
+    const canManage = !!j.canManage;
+    const nb = els.modalCard.querySelector("#dc-new"); if (nb) nb.hidden = !canManage;
+    const cs = j.connectors || [];
+    if (!cs.length) {
+      el.innerHTML = `<div class="hint" style="padding:6px 2px">${canManage ? "Inga datakällor än. Lägg till t.ex. Fortnox eller Visma med bas-URL, API-nyckel och de läs-endpoints Simba får använda." : "Inga datakällor är konfigurerade. Be en administratör lägga till ert ekonomisystem."}</div>`;
+      return;
+    }
+    el.innerHTML = cs.map((c) => `
+      <div class="vault-item" data-id="${escapeHtml(c.id)}">
+        <div class="vault-main"><div class="vault-title">🔌 ${escapeHtml(c.name)}</div>
+        <div class="vault-snip">${escapeHtml(c.base_url)} · ${(c.endpoints || []).length} endpoints${c.headerNames?.length ? ` · 🔑 ${c.headerNames.length}` : ""}</div></div>
+        ${canManage ? `<div class="vault-acts"><button class="conv-act" data-act="edit" title="Redigera">✎</button><button class="conv-act" data-act="del" title="Ta bort">🗑</button></div>` : ""}
+      </div>`).join("");
+    el.querySelectorAll(".vault-item").forEach((it) => {
+      const c = cs.find((x) => x.id === it.dataset.id);
+      it.querySelector('[data-act="edit"]')?.addEventListener("click", () => connectorEdit(c));
+      it.querySelector('[data-act="del"]')?.addEventListener("click", async () => {
+        if (!(await uiConfirm(`Ta bort datakällan "${c.name}"?`, { danger: true }))) { openConnectors(); return; }
+        const t = await getSsoToken(false);
+        await fetch(`${API_BASE}/api/connectors/${encodeURIComponent(c.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${t}` } }).catch(() => {});
+        openConnectors();
+      });
+    });
+  } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå datakälletjänsten.</div>'; }
+}
+
+function connectorEdit(c) {
+  const e = c || { name: "", base_url: "https://", endpoints: [], headerNames: [] };
+  const endpointLines = (e.endpoints || []).map((x) => `${x.label || x.key} | ${x.path}${x.description ? ` | ${x.description}` : ""}`).join("\n");
+  openModal(
+    `<h3>${c ? "Redigera datakälla" : "Ny datakälla"}</h3>
+     <label class="vault-l">Namn</label>
+     <input id="dc-name" class="files-q" type="text" value="${escapeHtml(e.name || "")}" placeholder="t.ex. Fortnox" />
+     <label class="vault-l">Bas-URL (HTTPS)</label>
+     <input id="dc-base" class="files-q" type="text" value="${escapeHtml(e.base_url || "https://")}" placeholder="https://api.fortnox.se/3" />
+     <label class="vault-l">Autentiseringsheaders ${c ? "(lämna tomt för att behålla)" : ""}</label>
+     <textarea id="dc-headers" class="memory-text" rows="3" placeholder="En per rad, Header: värde&#10;Access-Token: ...&#10;Client-Secret: ...">${c && e.headerNames?.length ? `# befintliga: ${e.headerNames.join(", ")}` : ""}</textarea>
+     <label class="vault-l">Endpoints (en per rad: etikett | sökväg | beskrivning)</label>
+     <textarea id="dc-endpoints" class="memory-text" rows="5" placeholder="Obetalda fakturor | invoices?filter=unpaid | Fakturor som inte betalats&#10;Projekt | projects | Pågående projekt">${escapeHtml(endpointLines)}</textarea>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Avbryt</button><button class="btn primary" data-act="save">Spara</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = () => openConnectors();
+  els.modalCard.querySelector('[data-act="save"]').onclick = async () => {
+    const name = els.modalCard.querySelector("#dc-name").value.trim();
+    const base_url = els.modalCard.querySelector("#dc-base").value.trim();
+    const headersRaw = els.modalCard.querySelector("#dc-headers").value;
+    const endpointsRaw = els.modalCard.querySelector("#dc-endpoints").value;
+    if (!name || !/^https:\/\//i.test(base_url)) { toast("Ange namn och en HTTPS bas-URL.", "error", 2800); return; }
+    const endpoints = endpointsRaw.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [label, path, description] = l.split("|").map((s) => s.trim());
+      return { label, path, description: description || "" };
+    }).filter((x) => x.path);
+    const body = { name, base_url, endpoints };
+    // Only send headers if the admin typed real ones (not the "# befintliga" hint).
+    const headerLines = headersRaw.split("\n").map((s) => s.trim()).filter((s) => s && !s.startsWith("#"));
+    if (headerLines.length) {
+      body.headers = {};
+      for (const line of headerLines) { const i = line.indexOf(":"); if (i > 0) body.headers[line.slice(0, i).trim()] = line.slice(i + 1).trim(); }
+    }
+    const token = await getSsoToken(false);
+    const url = c ? `${API_BASE}/api/connectors/${encodeURIComponent(c.id)}` : `${API_BASE}/api/connectors`;
+    const r = await fetch(url, { method: c ? "PUT" : "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }).catch(() => null);
+    if (r && r.ok) { toast("Datakälla sparad", "success", 1500); openConnectors(); }
     else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte spara.", "error", 3000); }
   };
 }

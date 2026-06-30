@@ -24,6 +24,7 @@ import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.j
 import { startScheduler, schedulerEnabled } from "./scheduler.js";
 import { chooseModel, lastUserText } from "./router.js";
 import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
+import { listConnectors, createConnector, updateConnector, deleteConnector, queryConnector } from "./connectors.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -199,6 +200,16 @@ Company knowledge vault (your shared, long-term mind):
   durable, company-wide fact worth keeping for everyone, offer to save it with
   save_to_vault (confirm first; choose a clear topic/branch). Use the per-user remember
   tool for personal preferences, and the vault for shared company knowledge. Never store secrets.
+
+Business & finance systems (live company data):
+- Your organization may connect finance/business systems (e.g. Fortnox, Visma, a
+  project tool) as data sources. Use list_data_sources to see what's available and
+  query_data_source to fetch live data, then summarize it clearly — how the companies
+  are doing, invoicing status, overdue invoices, revenue, project progress, etc.
+- Read the data, then present it: key figures first, a short plain-language assessment,
+  and offer to write it into the sheet (write_range/create_chart) or draft an email.
+  This data is sensitive — only share it with the signed-in user; never invent numbers
+  you didn't fetch. If no sources are configured, tell the user an admin can add one.
 
 Working across surfaces (Excel ↔ Outlook ↔ web/desktop):
 - You are the SAME Simba on every surface for a signed-in user. Conversations, memory and
@@ -487,6 +498,16 @@ const TOOLS = [
 
   { name: "get_workspace", description: "List the user's shared workspace items (working context synced across Excel/Outlook/web). Use to fetch something they saved on another surface — e.g. read in Outlook a table they captured in Excel. The items are also auto-provided each turn, but call this to see them all.",
     input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
+  { name: "list_data_sources", description: "List the connected business/finance systems (e.g. Fortnox, Visma, a project tool) and the read endpoints available on each — their keys, labels and what they return. Call this first to discover what live company data you can fetch (invoicing, revenue, projects, customers).",
+    input_schema: { type: "object", properties: {}, additionalProperties: false } },
+
+  { name: "query_data_source", description: "Fetch live data from a connected finance/business system via a whitelisted endpoint (from list_data_sources), then summarize/analyze it for the user — how the companies are doing, invoicing status, project progress, etc. Read-only.",
+    input_schema: { type: "object", properties: {
+      source: { type: "string", description: "Data source name or id (from list_data_sources)." },
+      endpoint: { type: "string", description: "Endpoint key or label to call." },
+      params: { type: "object", description: "Optional query parameters (e.g. {\"from\":\"2026-01-01\",\"status\":\"unpaid\"}).", additionalProperties: true },
+    }, required: ["source", "endpoint"] } },
 
   { name: "analyze_vault", description: "Analyze the whole company knowledge vault: coverage gaps, contradictions/duplicates/outdated entries, structure quality, why it looks the way it does, and concrete improvements. Use when the user asks to review/audit/improve the company knowledge base.",
     input_schema: { type: "object", properties: {
@@ -1234,6 +1255,52 @@ app.delete("/api/jobs/:id", async (req, res) => {
   if (!user) return;
   try { await deleteJob(user.key, req.params.id); res.json({ ok: true }); }
   catch (err) { console.error("[Simba] job delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort schemat." }); }
+});
+
+// ---- Finance / business-system connectors (bridge to economy systems) ----
+// Config (base URL + secret headers + whitelisted endpoints) is admin-gated;
+// reading data is allowed in-org. Secrets stay server-side.
+app.get("/api/connectors", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ connectors: await listConnectors(orgOf(user)), canManage: canWriteVault(user) }); }
+  catch (err) { console.error("[Simba] connectors list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta datakällor." }); }
+});
+
+app.post("/api/connectors", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan lägga till datakällor." });
+  try { res.json({ connector: await createConnector(orgOf(user), req.body || {}) }); }
+  catch (err) { console.error("[Simba] connector create failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte spara datakällan." }); }
+});
+
+app.put("/api/connectors/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan ändra datakällor." });
+  try {
+    const c = await updateConnector(orgOf(user), req.params.id, req.body || {});
+    if (!c) return res.status(404).json({ error: "Hittades inte." });
+    res.json({ connector: c });
+  } catch (err) { console.error("[Simba] connector update failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte uppdatera." }); }
+});
+
+app.delete("/api/connectors/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan ta bort datakällor." });
+  try { await deleteConnector(orgOf(user), req.params.id); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] connector delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort." }); }
+});
+
+app.post("/api/connectors/query", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const { source, endpoint, params } = req.body || {};
+  if (!source || !endpoint) return res.status(400).json({ error: "Ange datakälla och endpoint." });
+  try { res.json(await queryConnector(orgOf(user), source, endpoint, params)); }
+  catch (err) { console.error("[Simba] connector query failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte hämta data." }); }
 });
 
 // ---- Shared workspace (syncs the user's working context across surfaces) ---

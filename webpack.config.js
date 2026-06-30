@@ -31,6 +31,7 @@ export default async (env, argv) => {
       clean: true,
     },
     resolve: { extensions: [".js"] },
+    performance: { maxEntrypointSize: 600000, maxAssetSize: 600000 },
     module: {
       rules: [
         {

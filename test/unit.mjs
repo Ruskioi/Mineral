@@ -46,6 +46,13 @@ const _vaultFileBytes = _vf ? Buffer.from(_vf.data, "base64").toString() : "";
 // Shared workspace round-trip (cross-surface context).
 await saveWorkspace("t-ws", { label: "T", content: "Q3-synctest data", source: "Excel" });
 const _wsCtx = await workspaceContext("t-ws");
+// Connectors: secrets hidden in the public list; HTTPS enforced.
+const _conn = await import("../server/connectors.js");
+await _conn.createConnector("t-conn", { name: "Fortnox", base_url: "https://api.example.com", headers: { "Access-Token": "topsecret" }, endpoints: [{ label: "Fakturor", path: "invoices" }] });
+const _connList = await _conn.listConnectors("t-conn");
+const _connListJson = JSON.stringify(_connList);
+const _connHeaderNames = _connList[0]?.headerNames || [];
+const _connHttpsRejected = await _conn.createConnector("t-conn", { name: "bad", base_url: "http://x.com", endpoints: [] }).then(() => false).catch((e) => e.status === 400);
 
 console.log("\nSimba ship-safety checks\n");
 
@@ -356,6 +363,19 @@ check("Tier 2 features (export, artifacts, palette, multi-attach, MCP)", () => {
   assert(/function openCommandPalette/.test(taskpane) && /e\.key === "k"/.test(taskpane), "command palette (⌘K) missing");
   assert(/let pendingAttachments = \[\]/.test(taskpane) && /MAX_ATTACH/.test(taskpane), "multi-file attach missing");
   assert(/SIMBA_MCP_SERVERS/.test(server) && /mcp_servers/.test(server), "MCP connector plumbing missing");
+});
+
+check("finance/business connectors bridge is wired & safe", () => {
+  const conn = read("server/connectors.js");
+  assert(/export async function queryConnector/.test(conn) && /export async function createConnector/.test(conn), "connector store missing");
+  assert(/HTTPS/.test(conn) && /publicConnector/.test(conn), "connectors must be HTTPS-only and hide secrets");
+  assert(/app\.post\("\/api\/connectors\/query"/.test(server) && /app\.post\("\/api\/connectors"/.test(server), "connector endpoints missing");
+  assert(/canWriteVault\(user\)/.test(server.slice(server.indexOf('app.post("/api/connectors"'), server.indexOf('app.post("/api/connectors/query"'))), "connector config must be admin-gated");
+  assert(/name: "list_data_sources"/.test(server) && /name: "query_data_source"/.test(server), "connector tools missing");
+  assert(/function openConnectors/.test(taskpane) && /function connectorEdit/.test(taskpane), "connector admin UI missing");
+  // store behavior prepared below
+  assert(_connHeaderNames.includes("Access-Token") && !_connListJson.includes("topsecret"), "connector list must expose header names but never secret values");
+  assert(_connHttpsRejected === true, "non-HTTPS base URL must be rejected");
 });
 
 check("shared workspace syncs context across surfaces", () => {
