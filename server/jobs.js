@@ -241,6 +241,22 @@ export async function dueJobs(nowMs = Date.now()) {
     .map((j) => ({ ...rowToJob(j), userKey: j.user_key }));
 }
 
+// Atomically claim a due job by pushing its next_run to a lease time, so a second
+// instance won't run it too. Returns true if THIS caller won the claim.
+export async function claimJob(id, leaseUntilMs, nowMs = Date.now()) {
+  await ensureReady();
+  if (pool) {
+    const r = await pool.query(
+      "UPDATE simba_jobs SET next_run = $2 WHERE id = $1 AND enabled = true AND next_run IS NOT NULL AND next_run <= $3 RETURNING id",
+      [id, leaseUntilMs, nowMs]
+    );
+    return r.rowCount > 0;
+  }
+  const j = mem.get(id);
+  if (j && j.enabled && j.next_run != null && j.next_run <= nowMs) { j.next_run = leaseUntilMs; return true; }
+  return false;
+}
+
 // Record the outcome of a run and schedule the next occurrence.
 export async function recordRun(id, { status, result, ranAtMs = Date.now() }) {
   await ensureReady();

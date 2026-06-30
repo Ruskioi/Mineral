@@ -317,6 +317,16 @@ check("scheduled server-side agent is wired", () => {
   assert(pkg.dependencies.exceljs, "missing dependency: exceljs");
 });
 
+check("Tier 3 hardening (CI, retry/backoff, scheduler claim+retry)", () => {
+  const ci = read(".github/workflows/ci.yml");
+  assert(/npm (run )?(check|test)/.test(ci) && /node server\/server\.js/.test(ci), "CI must run checks + smoke-test the server");
+  assert(/function withRetry/.test(server) && /function isRetryable/.test(server), "server retry/backoff missing");
+  assert(/withRetry\(\(\) => client\.messages\.create/.test(server), "server-tool calls should use retry");
+  const jobs = read("server/jobs.js"), sched = read("server/scheduler.js");
+  assert(/export async function claimJob/.test(jobs), "scheduler job-claim (multi-instance safety) missing");
+  assert(/claimJob\(job\.id/.test(sched) && /attempt < 2/.test(sched), "scheduler must claim + retry jobs");
+});
+
 check("Tier 2 features (export, artifacts, palette, multi-attach, MCP)", () => {
   assert(/function exportChat/.test(taskpane), "chat export missing");
   assert(/function openArtifact/.test(taskpane) && /preview-btn/.test(taskpane), "HTML artifact preview missing");

@@ -716,6 +716,24 @@ function withConversationCache(messages) {
 // blocks + stop_reason) for the task pane's agent loop. Fast mode runs on the
 // beta endpoint and has its own rate limit, so we fall back to standard speed if
 // it errors BEFORE any text was streamed (otherwise we can't cleanly recover).
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const backoffMs = (i) => Math.min(8000, 500 * 2 ** i) + Math.floor(Math.random() * 250);
+function isRetryable(e) {
+  const s = e?.status;
+  return s === 429 || s === 500 || s === 502 || s === 503 || s === 529 || e?.name === "APIConnectionError" || e?.name === "APIConnectionTimeoutError";
+}
+// Retry a one-shot (non-streaming) API call with exponential backoff.
+async function withRetry(fn, label = "") {
+  for (let i = 0; ; i++) {
+    try { return await fn(); }
+    catch (e) {
+      if (!isRetryable(e) || i >= 2) throw e;
+      await sleep(backoffMs(i));
+      console.warn(`[Simba] retry ${label} ${i + 1} after ${e?.status || e?.message}`);
+    }
+  }
+}
+
 async function runModel(messages, speed, memory, surface, onText) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
   const model = chooseModel(messages, speed, { strong: MODEL, simple: MODEL_SIMPLE, on: ROUTER_ON });
@@ -749,7 +767,16 @@ async function runModel(messages, speed, memory, surface, onText) {
       console.warn("[Simba] fast mode unavailable, using standard speed:", e?.status || e?.message);
     }
   }
-  return await run(base);
+  // Retry transient API errors with backoff — but only while nothing has streamed
+  // yet (we can't safely restart a half-emitted reply).
+  for (let i = 0; ; i++) {
+    try { return await run(base); }
+    catch (e) {
+      if (emitted || !isRetryable(e) || i >= 2) throw e;
+      await sleep(backoffMs(i));
+      console.warn(`[Simba] chat retry ${i + 1} after ${e?.status || e?.message}`);
+    }
+  }
 }
 
 function rateLimited() {
@@ -871,7 +898,7 @@ app.post("/api/chat", async (req, res) => {
 async function runWithServerTools({ system, content, tools }) {
   const messages = [{ role: "user", content }];
   for (let i = 0; i < 6; i++) {
-    const resp = await client.messages.create({ model: MODEL, max_tokens: 8000, system, tools, messages });
+    const resp = await withRetry(() => client.messages.create({ model: MODEL, max_tokens: 8000, system, tools, messages }), "server-tools");
     if (resp.stop_reason === "pause_turn") { // server tool still working — resume
       messages.push({ role: "assistant", content: resp.content });
       continue;
@@ -912,14 +939,14 @@ async function generateDocument(skillId, instructions) {
   const messages = [{ role: "user", content: instructions }];
   let last;
   for (let i = 0; i < 8; i++) {
-    last = await client.beta.messages.create({
+    last = await withRetry(() => client.beta.messages.create({
       model: MODEL,
       max_tokens: 16000,
       betas: ["code-execution-2025-08-25", "skills-2025-10-02"],
       container: { skills: [{ type: "anthropic", skill_id: skillId, version: "latest" }] },
       tools: [{ type: "code_execution_20260521", name: "code_execution" }],
       messages,
-    });
+    }), "document");
     if (last.stop_reason === "pause_turn") { messages.push({ role: "assistant", content: last.content }); continue; }
     break;
   }

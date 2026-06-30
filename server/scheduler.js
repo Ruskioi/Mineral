@@ -11,7 +11,7 @@
  * may run twice.
  */
 import ExcelJS from "exceljs";
-import { dueJobs, recordRun } from "./jobs.js";
+import { dueJobs, recordRun, claimJob } from "./jobs.js";
 import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, graphAppConfigured } from "./graph.js";
 import { XLSX_TOOLS, executeXlsxTool } from "./xlsx-tools.js";
 
@@ -93,17 +93,23 @@ async function tick(client, model) {
   try {
     const jobs = await dueJobs(Date.now());
     for (const job of jobs) {
+      // Claim it first (lease 15 min) so a second instance won't double-run it.
+      if (!(await claimJob(job.id, Date.now() + 15 * 60_000))) continue;
       const ranAtMs = Date.now();
       let status = "error", result = "Okänt fel";
-      try {
-        ({ status, result } = await runJob(client, model, job));
-        console.log(`[Simba] job ${job.id} (${job.name}) -> ${status}`);
-      } catch (e) {
-        console.error(`[Simba] job ${job.id} failed:`, e?.message || e);
-        result = (e?.message || "Okänt fel").slice(0, 400);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          ({ status, result } = await runJob(client, model, job));
+          break;
+        } catch (e) {
+          result = (e?.message || "Okänt fel").slice(0, 400);
+          if (attempt === 0) { await new Promise((r) => setTimeout(r, 3000)); continue; } // one retry
+          console.error(`[Simba] job ${job.id} failed:`, e?.message || e);
+        }
       }
-      await recordRun(job.id, { status, result, ranAtMs });
+      await recordRun(job.id, { status, result, ranAtMs }); // sets the real next_run
       await notify(job, status, result).catch((e) => console.error(`[Simba] notify failed for ${job.id}:`, e?.message || e));
+      console.log(`[Simba] job ${job.id} (${job.name}) -> ${status}`);
     }
   } catch (e) {
     console.error("[Simba] scheduler tick failed:", e?.message || e);
