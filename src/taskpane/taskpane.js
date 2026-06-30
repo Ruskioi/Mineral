@@ -3434,7 +3434,7 @@ async function renderOrgAgents() {
             </div>
           </div>
           <div class="oa-runs" hidden></div>
-        </div>`).join("") : '<div class="hint" style="padding:4px 2px">Inga centrala agenter än.' + (canManage ? " Skapa en tidsavstämmare med ＋ Ny." : " Be en administratör skapa en.") + "</div>"}
+        </div>`).join("") : '<div class="hint" style="padding:4px 2px">Inga centrala agenter än.' + (canManage ? " Skapa en tidsavstämmare eller fakturaläsare med ＋ Ny." : " Be en administratör skapa en.") + "</div>"}
       </div>`;
 
     el.innerHTML = approvalsHtml + agentsHtml;
@@ -3475,7 +3475,7 @@ async function renderOrgAgents() {
   } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte hämta agenter.</div>'; }
 }
 
-function agentTypeLabel(t) { return ({ time_reconciler: "Tidsavstämmare" }[t]) || t; }
+function agentTypeLabel(t) { return ({ time_reconciler: "Tidsavstämmare", supplier_invoice: "Leverantörsfakturor" }[t]) || t; }
 
 async function toggleAgentRuns(card, id) {
   const box = card.querySelector(".oa-runs");
@@ -3490,29 +3490,63 @@ async function toggleAgentRuns(card, id) {
     : '<div class="hint" style="padding:4px 2px">Ingen aktivitet än.</div>';
 }
 
-function agentCreateForm() {
+const AGENT_TYPES = {
+  time_reconciler: {
+    label: "Tidsavstämmare",
+    desc: "Samlar in timmar som mejlas till en adress och sammanställer dem på ett valt datum.",
+    nameDefault: "Tidsavstämmare",
+    mailboxLabel: "Agentens e-postadress (dit folk mejlar sina timmar)",
+    mailboxPh: "tidrapport@dittforetag.se",
+    recipientLabel: "Sammanställningen mejlas till",
+  },
+  supplier_invoice: {
+    label: "Leverantörsfakturor",
+    desc: "Leverantörer mejlar fakturor (PDF/bild) till en adress. Agenten läser dem, tar ut belopp, förfallodatum och OCR, och mejlar en attestlista till ekonomi. Den registrerar eller betalar inget automatiskt.",
+    nameDefault: "Leverantörsfakturor",
+    mailboxLabel: "Agentens e-postadress (dit leverantörer mejlar fakturor)",
+    mailboxPh: "faktura@dittforetag.se",
+    recipientLabel: "Attestlistan mejlas till",
+  },
+};
+
+function agentCreateForm(type = "time_reconciler") {
+  const t = AGENT_TYPES[type] ? type : "time_reconciler";
+  const cfg = AGENT_TYPES[t];
+  const typeOpts = Object.entries(AGENT_TYPES).map(([k, v]) => `<option value="${k}"${k === t ? " selected" : ""}>${escapeHtml(v.label)}</option>`).join("");
+  const scheduleField = t === "supplier_invoice"
+    ? `<div><label class="vault-l">Kontrollintervall (minuter)</label><input id="oa-interval" class="files-q" type="number" min="5" max="1440" value="30" /></div>`
+    : `<div><label class="vault-l">Dag i månaden</label><input id="oa-day" class="files-q" type="number" min="1" max="31" value="25" /></div>`;
   openModal(
-    `<h3>Ny agent — Tidsavstämmare</h3>
-     <p class="sub">Samlar in timmar som mejlas till en adress och sammanställer dem på ett valt datum.</p>
-     <label class="vault-l">Namn</label><input id="oa-name" class="files-q" type="text" value="Tidsavstämmare" />
-     <label class="vault-l">Agentens e-postadress (dit folk mejlar sina timmar)</label><input id="oa-mailbox" class="files-q" type="text" placeholder="tidrapport@dittforetag.se" />
-     <label class="vault-l">Sammanställningen mejlas till</label><input id="oa-recipient" class="files-q" type="text" placeholder="ekonomi@dittforetag.se" />
+    `<h3>Ny agent</h3>
+     <label class="vault-l">Typ av agent</label>
+     <select id="oa-type" class="mail-folder" style="width:100%">${typeOpts}</select>
+     <p class="sub" id="oa-desc" style="margin-top:8px">${escapeHtml(cfg.desc)}</p>
+     <label class="vault-l">Namn</label><input id="oa-name" class="files-q" type="text" value="${escapeHtml(cfg.nameDefault)}" />
+     <label class="vault-l">${escapeHtml(cfg.mailboxLabel)}</label><input id="oa-mailbox" class="files-q" type="text" placeholder="${escapeHtml(cfg.mailboxPh)}" />
+     <label class="vault-l">${escapeHtml(cfg.recipientLabel)}</label><input id="oa-recipient" class="files-q" type="text" placeholder="ekonomi@dittforetag.se" />
      <div class="dc-grid">
-       <div><label class="vault-l">Dag i månaden</label><input id="oa-day" class="files-q" type="number" min="1" max="31" value="25" /></div>
+       ${scheduleField}
        <div><label class="vault-l">Godkännande krävs</label><select id="oa-appr" class="mail-folder" style="width:100%"><option value="1">Ja – granska före utskick</option><option value="0">Nej – skicka direkt</option></select></div>
      </div>
      <div class="modal-actions"><button class="btn" data-act="back">Tillbaka</button><button class="btn primary" data-act="save">Skapa agent</button></div>`
   );
+  // Switching type re-renders the form with that type's fields/labels.
+  els.modalCard.querySelector("#oa-type").onchange = (e) => agentCreateForm(e.target.value);
   els.modalCard.querySelector('[data-act="back"]').onclick = () => openAgents();
   els.modalCard.querySelector('[data-act="save"]').onclick = async () => {
     const name = els.modalCard.querySelector("#oa-name").value.trim();
     const mailbox = els.modalCard.querySelector("#oa-mailbox").value.trim();
     const recipient = els.modalCard.querySelector("#oa-recipient").value.trim();
-    const runDay = Math.min(31, Math.max(1, parseInt(els.modalCard.querySelector("#oa-day").value, 10) || 25));
     const requireApproval = els.modalCard.querySelector("#oa-appr").value === "1";
     if (!name || !mailbox || !recipient) { toast("Fyll i namn, agentens adress och mottagare.", "error", 3000); return; }
+    const config = { mailbox, recipient, requireApproval, tzOffset: new Date().getTimezoneOffset() };
+    if (t === "supplier_invoice") {
+      config.intervalMinutes = Math.min(1440, Math.max(5, parseInt(els.modalCard.querySelector("#oa-interval").value, 10) || 30));
+    } else {
+      config.runDay = Math.min(31, Math.max(1, parseInt(els.modalCard.querySelector("#oa-day").value, 10) || 25));
+    }
     const token = await getSsoToken(false);
-    const body = { name, type: "time_reconciler", config: { mailbox, recipient, runDay, requireApproval, tzOffset: new Date().getTimezoneOffset() } };
+    const body = { name, type: t, config };
     const r = await fetch(`${API_BASE}/api/agents`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }).catch(() => null);
     if (r && r.ok) { toast("Agent skapad", "success", 1800); openAgents(); setTimeout(() => els.modalCard.querySelector('[data-v="org"]')?.click(), 50); }
     else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte skapa.", "error", 3000); }

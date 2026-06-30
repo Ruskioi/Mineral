@@ -395,6 +395,19 @@ check("centralized org agents (visible, logged, approvable) are wired", () => {
   assert(_agentRuns >= 1 && _agentApprovalsAfter === 0, "agent run-log + approval decision should round-trip");
 });
 
+check("supplier-invoice agent (leverantörsfakturor) is wired", () => {
+  const sch = read("server/scheduler.js");
+  const gr = read("server/graph.js");
+  assert(/supplier_invoice/.test(sch) && /function runSupplierInvoice/.test(sch), "supplier-invoice executor missing");
+  assert(/function extractInvoice/.test(sch) && /type: "document"/.test(sch) && /application\/pdf/.test(sch), "invoice PDF/image extraction missing");
+  assert(/intervalMinutes/.test(sch) && /seenIds/.test(sch), "invoice poll interval / dedupe cursor missing");
+  assert(/agent\.type === "supplier_invoice"/.test(sch), "runOrgAgent must dispatch the invoice type");
+  assert(/export async function getMailboxAttachments/.test(gr) && /hasAttachments/.test(gr), "app-only attachment read missing");
+  // client: a type selector + label so admins can create it
+  assert(/AGENT_TYPES/.test(taskpane) && /supplier_invoice/.test(taskpane) && /Leverantörsfakturor/.test(taskpane), "invoice agent not offered in the create form");
+  assert(/id="oa-type"/.test(taskpane), "agent type selector missing");
+});
+
 check("API templates (Fortnox/Visma) in the connector builder", () => {
   assert(/CONNECTOR_TEMPLATES/.test(taskpane) && /fortnox/.test(taskpane) && /visma/.test(taskpane), "connector templates missing");
   assert(/id="dc-template"/.test(taskpane), "template selector missing in the builder");

@@ -12,7 +12,7 @@
  */
 import ExcelJS from "exceljs";
 import { dueJobs, recordRun, claimJob } from "./jobs.js";
-import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, listMailboxMessages, graphAppConfigured } from "./graph.js";
+import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, listMailboxMessages, getMailboxAttachments, graphAppConfigured } from "./graph.js";
 import { allEnabledAgents, setAgentState, logRun, createApproval } from "./orgagents.js";
 import { XLSX_TOOLS, executeXlsxTool } from "./xlsx-tools.js";
 
@@ -137,9 +137,14 @@ async function notify(job, status, result) {
 
 const esc = (s) => String(s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
-// Run one centralized org agent now. Currently: the time reconciler.
+// Run one centralized org agent now, dispatching by type.
 export async function runOrgAgent(client, model, agent) {
-  if (agent.type !== "time_reconciler") return { status: "skipped", summary: "Okänd agenttyp." };
+  if (agent.type === "time_reconciler") return runTimeReconciler(client, model, agent);
+  if (agent.type === "supplier_invoice") return runSupplierInvoice(client, model, agent);
+  return { status: "skipped", summary: "Okänd agenttyp." };
+}
+
+async function runTimeReconciler(client, model, agent) {
   const tid = agent.org_key;
   const cfg = agent.config || {};
   if (!cfg.mailbox || !cfg.recipient) return { status: "error", summary: "Saknar mailbox eller mottagare." };
@@ -169,26 +174,131 @@ export async function runOrgAgent(client, model, agent) {
   return { status: "sent", summary: `Skickade till ${cfg.recipient}`, period };
 }
 
-// On each tick, run due time-reconciler agents (once per month, on/after runDay).
+/* ---- Supplier-invoice agent (leverantörsfakturor) -----------------------
+ * Suppliers email invoices (PDF/image) to a dedicated address. The agent reads
+ * the new ones, has the model extract the key fields, compiles an accounts-
+ * payable summary, and (after approval) emails it to the finance contact. It
+ * dedupes by message id and persists its own cursor so manual and scheduled
+ * runs never double-count. Read-only towards finance systems — a human attests. */
+
+// Pull the first JSON object out of a model reply (tolerant of prose/fences).
+function parseJsonObject(text) {
+  const s = String(text || "");
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try { return JSON.parse(s.slice(start, end + 1)); } catch { return null; }
+}
+
+const INVOICE_SYSTEM = `Du läser EN leverantörsfaktura (bifogad som PDF eller bild) och extraherar fälten.
+Svara ENBART med ett giltigt JSON-objekt, inga förklaringar. Hitta ALDRIG på värden — använd tom sträng om ett fält saknas.`;
+
+async function extractInvoice(client, model, file) {
+  const isPdf = /pdf/i.test(file.type) || /\.pdf$/i.test(file.name || "");
+  if (!file.data) return null;
+  const block = isPdf
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: file.data } }
+    : { type: "image", source: { type: "base64", media_type: file.type || "image/png", data: file.data } };
+  const instruction = `Extrahera fakturafält ur "${file.name}". Returnera JSON med nycklarna: ` +
+    `supplier, invoice_no, invoice_date, due_date, amount_excl_vat, vat, amount_incl_vat, currency, ocr, bankgiro, plusgiro, iban, notes.`;
+  const resp = await client.messages.create({
+    model, max_tokens: 1200, system: INVOICE_SYSTEM,
+    messages: [{ role: "user", content: [block, { type: "text", text: instruction }] }],
+  });
+  const text = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  return parseJsonObject(text);
+}
+
+function formatInvoiceSummary(invoices) {
+  const lines = invoices.map((inv, i) => {
+    const amt = inv.amount_incl_vat || inv.amount_excl_vat || "?";
+    return `${i + 1}. ${inv.supplier || "Okänd leverantör"} — fakturanr ${inv.invoice_no || "?"}\n` +
+      `   Belopp: ${amt} ${inv.currency || ""}  ·  Förfaller: ${inv.due_date || "?"}  ·  OCR: ${inv.ocr || "-"}\n` +
+      `   Betalning: ${[inv.bankgiro && "BG " + inv.bankgiro, inv.plusgiro && "PG " + inv.plusgiro, inv.iban && "IBAN " + inv.iban].filter(Boolean).join(", ") || "-"}\n` +
+      `   Från: ${inv.from || "?"} · Fil: ${inv.file || "?"}${inv.notes ? `\n   Notering: ${inv.notes}` : ""}`;
+  });
+  return `Nya leverantörsfakturor att attestera (${invoices.length} st):\n\n${lines.join("\n\n")}\n\n` +
+    `Granska och attestera i ert ekonomisystem. Simba läser fakturorna men registrerar eller betalar dem inte automatiskt.`;
+}
+
+async function runSupplierInvoice(client, model, agent) {
+  const tid = agent.org_key;
+  const cfg = agent.config || {};
+  if (!cfg.mailbox || !cfg.recipient) return { status: "error", summary: "Saknar mailbox eller mottagare." };
+  const state = agent.state || {};
+  const seen = new Set(Array.isArray(state.seenIds) ? state.seenIds : []);
+
+  const token = await appOnlyGraphToken(tid);
+  // Look back from the last check (with a buffer) or 21 days on the first run.
+  const since = state.lastCheck
+    ? new Date(Date.parse(state.lastCheck) - 6 * 3600_000)
+    : new Date(Date.now() - 21 * 24 * 3600_000);
+  const msgs = await listMailboxMessages(token, cfg.mailbox, since.toISOString());
+  const fresh = msgs.filter((m) => m.hasAttachments && !seen.has(m.id)).slice(0, 12);
+
+  const invoices = [];
+  for (const m of fresh) {
+    let atts = [];
+    try { atts = await getMailboxAttachments(token, cfg.mailbox, m.id); } catch { atts = []; }
+    const files = atts.filter((a) => /pdf/i.test(a.type) || /^image\//i.test(a.type) || /\.pdf$/i.test(a.name || ""));
+    for (const f of files) {
+      try {
+        const data = await extractInvoice(client, model, f);
+        if (data) invoices.push({ ...data, from: m.from, file: f.name, received: m.received });
+      } catch (e) { console.error(`[Simba] invoice parse failed (${f.name}):`, e?.message || e); }
+    }
+    seen.add(m.id);
+  }
+
+  // Persist the cursor regardless of outcome so we never re-read the same mail.
+  await setAgentState(tid, agent.id, { lastCheck: new Date().toISOString(), seenIds: [...seen].slice(-500) });
+
+  if (!invoices.length) {
+    await logRun(tid, agent.id, { status: "checked", summary: `Inga nya fakturor (granskade ${fresh.length} mejl)` });
+    return { status: "checked", summary: `Inga nya fakturor` };
+  }
+
+  const summaryText = formatInvoiceSummary(invoices);
+  const subject = `Leverantörsfakturor – ${invoices.length} nya att attestera`;
+  const run = await logRun(tid, agent.id, { status: "compiled", summary: `Läste ${invoices.length} faktura(or) ur ${fresh.length} mejl`, detail: { invoices } });
+
+  if (cfg.requireApproval !== false) {
+    await createApproval(tid, agent.id, run.id, "send_email", { to: cfg.recipient, subject, body: summaryText, mailbox: cfg.mailbox });
+    return { status: "awaiting_approval", summary: `Väntar på godkännande – ${invoices.length} fakturor` };
+  }
+  await sendMailAsUser(token, cfg.mailbox, cfg.recipient, subject, `<pre style="white-space:pre-wrap;font-family:system-ui">${esc(summaryText)}</pre>`);
+  await logRun(tid, agent.id, { status: "sent", summary: `Skickade fakturasammanställning till ${cfg.recipient}` });
+  return { status: "sent", summary: `Skickade ${invoices.length} fakturor till ${cfg.recipient}` };
+}
+
+// On each tick, run due org agents: time reconciler (monthly, on/after runDay)
+// and supplier-invoice (polls its inbox every cfg.intervalMinutes).
 async function tickAgents(client, model) {
   let agents = [];
   try { agents = await allEnabledAgents(); } catch (e) { console.error("[Simba] agents list failed:", e?.message || e); return; }
   for (const a of agents) {
-    if (a.type !== "time_reconciler") continue;
     const cfg = a.config || {};
-    const offset = Number.isFinite(cfg.tzOffset) ? cfg.tzOffset : 0;
-    const now = new Date(Date.now() - offset * 60_000);
-    const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    if (now.getUTCDate() < (Number(cfg.runDay) || 25)) continue;
-    if ((a.state || {}).lastPeriod === period) continue; // already handled this month
     try {
-      const res = await runOrgAgent(client, model, a);
-      await setAgentState(a.org_key, a.id, { lastPeriod: period, lastResult: res.status });
-      console.log(`[Simba] agent ${a.id} (${a.name}) -> ${res.status}`);
+      if (a.type === "time_reconciler") {
+        const offset = Number.isFinite(cfg.tzOffset) ? cfg.tzOffset : 0;
+        const now = new Date(Date.now() - offset * 60_000);
+        const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+        if (now.getUTCDate() < (Number(cfg.runDay) || 25)) continue;
+        if ((a.state || {}).lastPeriod === period) continue; // already handled this month
+        const res = await runOrgAgent(client, model, a);
+        await setAgentState(a.org_key, a.id, { lastPeriod: period, lastResult: res.status });
+        console.log(`[Simba] agent ${a.id} (${a.name}) -> ${res.status}`);
+      } else if (a.type === "supplier_invoice") {
+        const everyMs = Math.max(5, Number(cfg.intervalMinutes) || 30) * 60_000;
+        const last = (a.state || {}).lastCheck ? Date.parse(a.state.lastCheck) : 0;
+        if (Date.now() - last < everyMs) continue; // not due yet
+        const res = await runOrgAgent(client, model, a); // persists its own cursor
+        await setAgentState(a.org_key, a.id, { lastResult: res.status });
+        console.log(`[Simba] agent ${a.id} (${a.name}) -> ${res.status}`);
+      }
     } catch (e) {
       console.error(`[Simba] agent ${a.id} failed:`, e?.message || e);
       await logRun(a.org_key, a.id, { status: "error", summary: (e?.message || "Fel").slice(0, 300) }).catch(() => {});
-      await setAgentState(a.org_key, a.id, { lastPeriod: period }).catch(() => {});
     }
   }
 }

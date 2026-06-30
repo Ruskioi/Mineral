@@ -202,7 +202,7 @@ export async function downloadDriveItem(graphToken, driveId, itemId, maxBytes = 
  *  application Graph permission Mail.Read. Used by the time-reconciler agent to
  *  collect hours mailed to its dedicated address. */
 export async function listMailboxMessages(graphToken, mailbox, sinceIso, top = 200) {
-  const sel = "$select=id,subject,from,receivedDateTime,bodyPreview,body";
+  const sel = "$select=id,subject,from,receivedDateTime,bodyPreview,body,hasAttachments";
   let path = `/users/${encodeURIComponent(mailbox)}/messages?${sel}&$top=${Math.min(500, top)}&$orderby=receivedDateTime desc`;
   if (sinceIso) path += `&$filter=receivedDateTime ge ${encodeURIComponent(sinceIso)}`;
   const r = await fetch(GRAPH + path, { headers: { Authorization: `Bearer ${graphToken}`, Prefer: 'outlook.body-content-type="text"' } });
@@ -215,7 +215,27 @@ export async function listMailboxMessages(graphToken, mailbox, sinceIso, top = 2
     id: m.id, subject: m.subject || "", received: m.receivedDateTime,
     from: m.from?.emailAddress?.address || "", fromName: m.from?.emailAddress?.name || "",
     body: (m.body?.content || m.bodyPreview || "").slice(0, 4000),
+    hasAttachments: !!m.hasAttachments,
   }));
+}
+
+/** List + download a message's file attachments from a specific mailbox (app-only).
+ *  Needs the application Graph permission Mail.Read. Used by the supplier-invoice
+ *  agent to read invoice PDFs/images sent to its address. Inline images skipped. */
+export async function getMailboxAttachments(graphToken, mailbox, messageId, maxBytes = 12 * 1024 * 1024) {
+  const base = `${GRAPH}/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}/attachments`;
+  const r = await fetch(`${base}?$select=id,name,contentType,size,isInline`, { headers: { Authorization: `Bearer ${graphToken}` } });
+  if (!r.ok) throw Object.assign(new Error(`Attachment listing failed (${r.status}).`), { status: r.status });
+  const j = await r.json();
+  const wanted = (j.value || []).filter((a) => a["@odata.type"]?.includes("fileAttachment") && !a.isInline && (!a.size || a.size <= maxBytes));
+  const out = [];
+  for (const a of wanted) {
+    const ar = await fetch(`${base}/${encodeURIComponent(a.id)}`, { headers: { Authorization: `Bearer ${graphToken}` } });
+    if (!ar.ok) continue;
+    const full = await ar.json();
+    out.push({ id: a.id, name: a.name, type: a.contentType, size: a.size, data: full.contentBytes || "" });
+  }
+  return out;
 }
 
 /** Send an email as a user (app-only). Needs the application Graph permission
