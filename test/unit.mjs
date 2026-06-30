@@ -362,6 +362,9 @@ check("Outlook mail (read/send/analyze) is wired", () => {
   for (const t of ["list_emails", "read_email", "send_email"]) assert(new RegExp(`name: "${t}"`).test(server), `${t} tool schema missing`);
   assert(/function confirmSend/.test(taskpane), "send-email confirmation preview missing");
   assert(/"list_emails", "read_email", "send_email"/.test(taskpane), "mail tools must work in desktop mode");
+  // Visual mail panel
+  assert(/id="mail"/.test(read("src/taskpane/taskpane.html")), "mail button missing from the header");
+  assert(/function openMail/.test(taskpane) && /function openMailRead/.test(taskpane) && /function mailCompose/.test(taskpane), "mail panel UI missing");
 });
 
 check("company knowledge vault (Simba's shared mind) is wired", () => {

@@ -947,6 +947,25 @@ body.desktop .welcome p { font-size: 15px; }
 .vault-acts { display: flex; gap: 2px; flex: none; }
 .vault-l { display: block; font-size: 11.5px; font-weight: 600; color: var(--ink-soft); margin: 10px 0 4px; }
 .vault-l:first-of-type { margin-top: 2px; }
+/* Outlook mail panel */
+.mail-list { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; }
+.mail-item {
+  display: flex; align-items: flex-start; gap: 9px; text-align: left;
+  border: 1px solid var(--border); background: var(--surface);
+  border-radius: 10px; padding: 9px 11px; cursor: pointer; font: inherit; color: var(--ink);
+  transition: background var(--speed), border-color var(--speed), transform var(--speed);
+}
+.mail-item:hover { background: var(--bg-soft); border-color: var(--accent); transform: translateX(1px); }
+.mail-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; background: transparent; }
+.mail-item.unread .mail-dot { background: var(--accent); }
+.mail-item.unread .mail-subj { font-weight: 700; }
+.mail-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.mail-row1 { display: flex; justify-content: space-between; gap: 8px; }
+.mail-from { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-date { flex: none; font-size: 11px; color: var(--ink-faint); }
+.mail-subj { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-prev { font-size: 11.5px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .vault-map { width: 100%; height: auto; display: block; }
 .vault-map .vm-node circle { transition: transform var(--speed); transform-origin: center; }
 .vault-map .vm-node:hover circle { stroke-width: 2.5; filter: brightness(1.03); }
