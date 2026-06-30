@@ -22,12 +22,18 @@ import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo } from "./graph.js";
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
 import { startScheduler, schedulerEnabled } from "./scheduler.js";
+import { chooseModel } from "./router.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, "../dist");
 
 const PORT = process.env.PORT || 3001;
 const MODEL = process.env.SIMBA_MODEL || "claude-opus-4-8";
+// Cheaper/faster model for simple turns. An automatic router (chooseModel) sends
+// plain conversational questions here and keeps Opus for sheet work, tool use,
+// attachments, and longer/complex prompts. Toggle with SIMBA_ROUTER=0.
+const MODEL_SIMPLE = process.env.SIMBA_MODEL_SIMPLE || "claude-haiku-4-5-20251001";
+const ROUTER_ON = process.env.SIMBA_ROUTER !== "0";
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
@@ -683,8 +689,9 @@ function withConversationCache(messages) {
 // it errors BEFORE any text was streamed (otherwise we can't cleanly recover).
 async function runModel(messages, speed, memory, surface, onText) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
+  const model = chooseModel(messages, speed, { strong: MODEL, simple: MODEL_SIMPLE, on: ROUTER_ON });
   const base = {
-    model: MODEL,
+    model,
     max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: { effort: cfg.effort },
@@ -698,7 +705,8 @@ async function runModel(messages, speed, memory, surface, onText) {
     s.on("text", (t) => { emitted = true; if (onText) onText(t); });
     return await s.finalMessage();
   };
-  if (cfg.fast) {
+  // Fast mode applies to the strong (Opus) model; Haiku is already fast.
+  if (cfg.fast && model === MODEL) {
     try {
       return await run({ ...base, speed: "fast", betas: ["fast-mode-2026-02-01"] }, true);
     } catch (e) {

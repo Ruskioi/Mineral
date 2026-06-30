@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { chooseModel } from "../server/router.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(resolve(root, p), "utf8");
@@ -196,6 +197,21 @@ check("agent patterns (plan + delegate subagents) are wired", () => {
   assert(/subagentDepth/.test(taskpane), "subagent recursion guard missing");
   assert(/function toolResultContent/.test(taskpane), "shared tool-result builder missing (used by the subagent loop)");
   assert(/propose_plan", "delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
+});
+
+check("model router sends simple turns to Haiku, work to Opus", () => {
+  const opt = { strong: "OPUS", simple: "HAIKU", on: true };
+  const u = (t) => [{ role: "user", content: t }];
+  assert(chooseModel(u("Vad är huvudstaden i Japan?"), "balanced", opt) === "HAIKU", "simple question should use the cheap model");
+  assert(chooseModel(u("Bygg en budget med summor"), "balanced", opt) === "OPUS", "build requests must use the strong model");
+  assert(chooseModel(u("Skriv en formel som summerar B"), "balanced", opt) === "OPUS", "formula requests must use the strong model");
+  assert(chooseModel(u("Hej\n\n[Aktuell markering: A1:B3]"), "balanced", opt) === "OPUS", "selection context must use the strong model");
+  assert(chooseModel(u("Hej"), "thorough", opt) === "OPUS", "thorough must force the strong model");
+  assert(chooseModel(u("Hej"), "balanced", { ...opt, on: false }) === "OPUS", "router off must force the strong model");
+  const loop = [{ role: "user", content: "x" }, { role: "assistant", content: [] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "{}" }] }];
+  assert(chooseModel(loop, "balanced", opt) === "OPUS", "mid tool-loop must use the strong model");
+  assert(/claude-haiku/.test(server), "server should configure a Haiku simple model");
+  assert(/chooseModel\(messages, speed/.test(server), "runModel must use the router");
 });
 
 check("PWA (installable web app) is wired", () => {
