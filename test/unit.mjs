@@ -237,6 +237,15 @@ check("PWA (installable web app) is wired", () => {
   assert(/site\.webmanifest/.test(wp) && /sw\.js/.test(wp), "webpack must copy the PWA files to the root");
 });
 
+check("cloud file browser is wired", () => {
+  const tp = read("src/taskpane/taskpane.html");
+  assert(/id="cloud"/.test(tp), "cloud-files button missing from the composer");
+  assert(/function openFilesBrowser/.test(taskpane) && /function pickCloudFile/.test(taskpane), "cloud browser functions missing");
+  assert(/\/api\/files\?q=/.test(taskpane), "browser must search /api/files");
+  assert(/\/api\/files\/open/.test(taskpane), "browser must open files via /api/files/open");
+  assert(/pendingAttachment = \{ name: j\.name/.test(taskpane), "opened cloud file should become an attachment");
+});
+
 check("settings panel exposes all features (incl. schedule management)", () => {
   assert(/function populateSchedules/.test(taskpane), "schedules manager UI missing");
   assert(/function jobSetEnabled/.test(taskpane) && /function jobDelete/.test(taskpane), "schedule pause/delete actions missing");

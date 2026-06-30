@@ -220,6 +220,8 @@ function boot(isExcel) {
   els.settings.addEventListener("click", openSettings);
   els.undo.addEventListener("click", () => { if (!busy) tools.revert_last_change(); });
   els.attach.addEventListener("click", () => els.fileInput.click());
+  els.cloud = document.getElementById("cloud");
+  els.cloud?.addEventListener("click", openFilesBrowser);
   els.fileInput.addEventListener("change", (e) => { const f = e.target.files?.[0]; if (f) handleAttach(f); e.target.value = ""; });
 
   els.editMode.addEventListener("click", (e) => {
@@ -288,6 +290,7 @@ function boot(isExcel) {
   fetch(`${API_BASE}/api/health`).then((r) => r.json()).then((h) => {
     if (h?.model) modelName = h.model;
     ssoServerConfigured = !!h?.ssoConfigured;
+    if (ssoServerConfigured && els.cloud) els.cloud.hidden = false; // cloud files need SSO
     initIdentity();
   }).catch(() => {});
 
@@ -2756,6 +2759,105 @@ async function populateSchedules() {
       item.querySelector('[data-act="del"]').onclick = async () => { await jobDelete(id); populateSchedules(); };
     });
   } catch { el.innerHTML = hint("Kunde inte hämta scheman."); }
+}
+
+/* ---- Cloud file browser (OneDrive/SharePoint) -------------------------- */
+function fileSizeText(n) {
+  if (!n && n !== 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${Math.round(n / 1024)} kB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+async function openFilesBrowser() {
+  const token = await getSsoToken(false);
+  if (!token) {
+    openModal(
+      `<h3>Molnfiler</h3>
+       <p class="sub">Logga in med Microsoft för att bläddra bland dina OneDrive- och SharePoint-filer.</p>
+       <div class="modal-actions">
+         <button class="btn" data-act="cancel">Avbryt</button>
+         <button class="btn primary" id="files-signin">Logga in</button>
+       </div>`
+    );
+    els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+    els.modalCard.querySelector("#files-signin").onclick = async () => {
+      const ok = await initIdentity(true);
+      if (ok) openFilesBrowser(); else toast("Kunde inte logga in.", "error", 3000);
+    };
+    return;
+  }
+  openModal(
+    `<h3>Molnfiler</h3>
+     <p class="sub">Sök i OneDrive/SharePoint och välj en fil. Den läses in så Simba kan använda den.</p>
+     <input id="files-q" class="files-q" type="search" placeholder="Sök filer…" autocomplete="off" />
+     <div id="files-list" class="files-list"><div class="hint" style="padding:6px 2px">Hämtar senaste filer…</div></div>
+     <div class="modal-actions"><button class="btn primary" data-act="cancel">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  const listEl = els.modalCard.querySelector("#files-list");
+  const qEl = els.modalCard.querySelector("#files-q");
+
+  const load = async (q) => {
+    listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Söker…</div>';
+    try {
+      const t = await getSsoToken(false);
+      const r = await fetch(`${API_BASE}/api/files?q=${encodeURIComponent(q || "")}`, { headers: { Authorization: `Bearer ${t}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { listEl.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta filer.")}</div>`; return; }
+      const files = j.files || [];
+      if (!files.length) { listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Inga filer hittades.</div>'; return; }
+      listEl.innerHTML = files.map((f, i) => `
+        <button class="file-item" data-i="${i}">
+          <span class="file-ic">${fileIcon(f.name)}</span>
+          <span class="file-main"><span class="file-name">${escapeHtml(f.name)}</span>
+          <span class="file-meta">${escapeHtml([fileSizeText(f.size), f.modified ? nextRunText(Date.parse(f.modified)) : ""].filter(Boolean).join(" · "))}</span></span>
+        </button>`).join("");
+      listEl.querySelectorAll(".file-item").forEach((b) =>
+        b.addEventListener("click", () => pickCloudFile(files[+b.dataset.i])));
+    } catch { listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå filtjänsten.</div>'; }
+  };
+
+  let deb;
+  qEl.addEventListener("input", () => { clearTimeout(deb); deb = setTimeout(() => load(qEl.value.trim()), 300); });
+  qEl.focus();
+  load(""); // recent files
+}
+
+function fileIcon(name) {
+  const n = String(name || "").toLowerCase();
+  if (/\.(xlsx|xls|csv|tsv)$/.test(n)) return "📊";
+  if (/\.(docx?|txt|md|rtf)$/.test(n)) return "📄";
+  if (/\.(pptx?|key)$/.test(n)) return "📈";
+  if (/\.pdf$/.test(n)) return "📕";
+  if (/\.(png|jpe?g|gif|webp|bmp|svg)$/.test(n)) return "🖼";
+  return "📁";
+}
+
+// Open a cloud file and stage it as an attachment for the next message.
+async function pickCloudFile(file) {
+  if (!file) return;
+  toast(`Öppnar ${file.name}…`, "info", 1500);
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/files/open`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ id: file.id }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(j.error || "Kunde inte öppna filen.", "error", 3500); return; }
+    if (j.kind === "text") {
+      pendingAttachment = { name: j.name, kind: "molnfil", block: { type: "text", text: `Fil "${j.name}" (från OneDrive/SharePoint):\n\n${j.text}` } };
+    } else if (j.kind === "image") {
+      pendingAttachment = { name: j.name, kind: "bild", block: { type: "image", source: { type: "base64", media_type: j.media_type, data: j.data } } };
+    } else if (j.kind === "pdf") {
+      pendingAttachment = { name: j.name, kind: "PDF", block: { type: "document", source: { type: "base64", media_type: "application/pdf", data: j.data } } };
+    } else { toast("Filtypen stöds inte ännu (text/CSV, bild eller PDF).", "error", 3500); return; }
+    renderAttachChip();
+    closeModalSilently();
+    toast(`La till ${j.name}`, "success");
+    els.prompt?.focus();
+  } catch { toast("Kunde inte nå filtjänsten.", "error", 3500); }
 }
 
 // The standalone app's persistent sidebar list.
