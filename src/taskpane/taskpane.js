@@ -1823,11 +1823,17 @@ function openSettings() {
        <button class="btn" id="settings-clear" style="flex:none;padding:7px 12px">Ny chatt</button>
      </div>
      ${signedIn ? '<div id="conv-list" class="conv-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>' : ""}
+     <div class="setting-row" style="margin-top:4px">
+       <div><div class="label">Scheman</div><div class="hint">Automatiska jobb som körs åt dig${signedIn ? " – pausa eller ta bort här" : ""}</div></div>
+     </div>
+     ${signedIn
+        ? '<div id="sched-list" class="sched-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>'
+        : '<div class="hint" style="padding:2px 2px 4px">Logga in med Microsoft för att skapa och hantera scheman. Be sedan Simba, t.ex. "varje måndag 08:00, uppdatera rapporten".</div>'}
      <div class="modal-actions">
        <button class="btn primary" data-act="done">Klar</button>
      </div>`
   );
-  if (signedIn) populateConvList();
+  if (signedIn) { populateConvList(); populateSchedules(); }
 
   els.modalCard.querySelector("#theme-seg").addEventListener("click", (e) => {
     const b = e.target.closest(".seg-btn");
@@ -2687,6 +2693,69 @@ async function populateConvList() {
   const el = els.modalCard.querySelector("#conv-list");
   if (!el) return;
   renderConvInto(el, await fetchConvList(), 12, closeModalSilently);
+}
+
+/* ---- Scheduled jobs management UI -------------------------------------- */
+const WEEKDAY_SV = ["söndag", "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag"];
+function scheduleSummary(s = {}) {
+  const t = s.time || "";
+  const freq = {
+    daily: "Varje dag",
+    weekdays: "Vardagar",
+    weekly: `Varje ${WEEKDAY_SV[s.weekday ?? 1] || "vecka"}`,
+    monthly: `Dag ${s.monthday ?? 1} varje månad`,
+    once: `En gång${s.onDate ? ` ${s.onDate}` : ""}`,
+  }[s.freq] || s.freq || "";
+  return `${freq}${t ? ` kl. ${t}` : ""}`.trim();
+}
+function nextRunText(ms) {
+  if (!ms) return "";
+  try { return new Date(ms).toLocaleString("sv-SE", { dateStyle: "short", timeStyle: "short" }); }
+  catch { return ""; }
+}
+async function jobSetEnabled(id, enabled) {
+  const token = await getSsoToken(false);
+  if (!token) return;
+  await fetch(`${API_BASE}/api/jobs/${encodeURIComponent(id)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ enabled }),
+  }).catch(() => {});
+}
+async function jobDelete(id) {
+  const token = await getSsoToken(false);
+  if (!token) return;
+  await fetch(`${API_BASE}/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+}
+async function populateSchedules() {
+  const el = els.modalCard.querySelector("#sched-list");
+  if (!el) return;
+  const hint = (t) => `<div class="hint" style="padding:4px 2px">${t}</div>`;
+  try {
+    const token = await getSsoToken(false);
+    const r = token && await fetch(`${API_BASE}/api/jobs`, { headers: { Authorization: `Bearer ${token}` } });
+    const data = r && r.ok ? await r.json() : null;
+    if (!data) { el.innerHTML = hint("Kunde inte hämta scheman."); return; }
+    const jobs = data.jobs || [];
+    const note = data.schedulerEnabled ? "" : hint("Schemaläggaren är avstängd på servern – jobb sparas men körs inte än.");
+    if (!jobs.length) { el.innerHTML = note + hint('Inga scheman än. Be Simba, t.ex. "varje måndag 08:00, uppdatera rapporten".'); return; }
+    el.innerHTML = note + jobs.map((j) => `
+      <div class="sched-item" data-id="${escapeHtml(j.id)}" data-enabled="${j.enabled ? 1 : 0}">
+        <div class="sched-main">
+          <div class="sched-name">${j.enabled ? "" : "⏸ "}${escapeHtml(j.name || "Schema")}</div>
+          <div class="sched-meta">${escapeHtml(scheduleSummary(j.schedule))}${j.target?.fileName ? ` · ${escapeHtml(j.target.fileName)}` : ""}${j.nextRun ? ` · nästa ${escapeHtml(nextRunText(j.nextRun))}` : ""}</div>
+          ${j.lastStatus ? `<div class="sched-meta">Senast: ${escapeHtml(j.lastStatus)}${j.lastResult ? ` – ${escapeHtml(String(j.lastResult).slice(0, 90))}` : ""}</div>` : ""}
+        </div>
+        <div class="sched-acts">
+          <button class="btn" data-act="toggle" style="padding:5px 10px">${j.enabled ? "Pausa" : "Återuppta"}</button>
+          <button class="msg-act" data-act="del" title="Ta bort schema" aria-label="Ta bort">🗑</button>
+        </div>
+      </div>`).join("");
+    el.querySelectorAll(".sched-item").forEach((item) => {
+      const id = item.dataset.id;
+      item.querySelector('[data-act="toggle"]').onclick = async () => { await jobSetEnabled(id, item.dataset.enabled !== "1"); populateSchedules(); };
+      item.querySelector('[data-act="del"]').onclick = async () => { await jobDelete(id); populateSchedules(); };
+    });
+  } catch { el.innerHTML = hint("Kunde inte hämta scheman."); }
 }
 
 // The standalone app's persistent sidebar list.

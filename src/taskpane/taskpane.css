@@ -761,6 +761,19 @@ body.desktop .welcome p { font-size: 15px; }
 .conv-item:hover { background: var(--bg-soft); border-color: var(--border-strong); }
 .conv-item.active { border-color: var(--accent); color: var(--accent-strong); font-weight: 600; }
 
+/* Scheduled-jobs manager (in settings) */
+.sched-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; margin: 2px 0 4px; }
+.sched-item {
+  display: flex; align-items: flex-start; gap: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+  border-radius: 10px; padding: 9px 11px;
+}
+.sched-item[data-enabled="0"] { opacity: 0.62; }
+.sched-main { min-width: 0; flex: 1; }
+.sched-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sched-meta { font-size: 11px; color: var(--ink-faint); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; }
+.sched-acts { display: flex; align-items: center; gap: 6px; flex: none; }
+
 /* ---------------- Inline ask box (slides up above the input) ---------------- */
 .ask-dock { display: flex; flex-direction: column; }
 .ask-card {

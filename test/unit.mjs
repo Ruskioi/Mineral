@@ -237,6 +237,16 @@ check("PWA (installable web app) is wired", () => {
   assert(/site\.webmanifest/.test(wp) && /sw\.js/.test(wp), "webpack must copy the PWA files to the root");
 });
 
+check("settings panel exposes all features (incl. schedule management)", () => {
+  assert(/function populateSchedules/.test(taskpane), "schedules manager UI missing");
+  assert(/function jobSetEnabled/.test(taskpane) && /function jobDelete/.test(taskpane), "schedule pause/delete actions missing");
+  assert(/id="sched-list"/.test(taskpane), "settings must render the schedules list");
+  // Settings hub still covers the rest of the features directly.
+  for (const re of [/theme-seg/, /speed-seg/, /memory-text/, /conv-list/, /memory-signin/]) {
+    assert(re.test(taskpane), `settings panel missing a control: ${re}`);
+  }
+});
+
 check("chat mascot watermark + scroll fix are wired", () => {
   const tp = read("src/taskpane/taskpane.html");
   const css = read("src/taskpane/taskpane.css");
