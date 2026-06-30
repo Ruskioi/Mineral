@@ -313,6 +313,7 @@ function boot(isExcel) {
   window.addEventListener("error", (e) => console.error("[Simba] error:", e.message));
 
   if (IS_EXCEL) {
+    if (els.messages.querySelector(".welcome")) { els.messages.innerHTML = welcomeHTML(); bindSuggestions(); }
     refreshContextPill();
     Excel.run(async (ctx) => {
       ctx.workbook.worksheets.onSelectionChanged?.add?.(refreshContextPill);
@@ -366,37 +367,51 @@ function applyDesktopMode() {
   }
 }
 
-// Suggestion chips differ by surface: general assistant on desktop/web, Excel
-// tasks inside the workbook.
-function desktopWelcomeHTML() {
+// A polished empty state: a mascot badge in a soft halo, a warm greeting, and
+// suggestion chips with leading icons. Surface-aware copy/suggestions.
+function suggestionChip(icon, text) {
+  return `<button class="suggestion" data-prompt="${escapeHtml(text)}"><span class="sg-ic" aria-hidden="true">${icon}</span><span class="sg-tx">${escapeHtml(text)}</span></button>`;
+}
+function heroWelcome(title, sub, items) {
   return (
-    `<h2>Hej, jag är Simba 👋</h2>` +
-    `<p>Din AI-assistent för precis allt — fråga, research, analys, kod, dokument och dina filer.</p>` +
-    `<div class="suggestions">` +
-    `<button class="suggestion">Förklara ett krångligt ämne enkelt</button>` +
-    `<button class="suggestion">Sök upp och sammanfatta senaste nyheterna om ett ämne</button>` +
-    `<button class="suggestion">Analysera en fil jag bifogar</button>` +
-    `<button class="suggestion">Skapa en PowerPoint från mina anteckningar</button>` +
-    `</div>`
+    `<div class="welcome-hero">` +
+      `<div class="welcome-badge"><span class="welcome-halo"></span>${MASCOT_IMG}</div>` +
+      `<h2>${escapeHtml(title)}</h2>` +
+      `<p>${escapeHtml(sub)}</p>` +
+    `</div>` +
+    `<div class="suggestions">${items.map(([ic, tx]) => suggestionChip(ic, tx)).join("")}</div>`
   );
 }
-
-function welcomeHTML() {
-  if (!IS_EXCEL) return `<div class="welcome">${desktopWelcomeHTML()}</div>`;
-  return (
-    `<div class="welcome"><h2>Ny chatt</h2>` +
-    `<p>Vad vill du göra med ditt kalkylark?</p>` +
-    `<div class="suggestions">` +
-    `<button class="suggestion">Sammanfatta arbetsboken</button>` +
-    `<button class="suggestion">Bygg en budget med summor och diagram</button>` +
-    `<button class="suggestion">Hitta och förklara formelfel</button>` +
-    `</div></div>`
+function desktopWelcomeHTML() {
+  return heroWelcome(
+    "Hej, jag är Simba",
+    "Din AI-assistent för precis allt — fråga, research, analys, kod, dokument och dina filer.",
+    [
+      ["💡", "Förklara ett krångligt ämne enkelt"],
+      ["📰", "Sök upp och sammanfatta de senaste nyheterna"],
+      ["📎", "Analysera en fil jag bifogar"],
+      ["📊", "Skapa en PowerPoint från mina anteckningar"],
+    ]
   );
+}
+function welcomeHTML() {
+  const inner = !IS_EXCEL
+    ? desktopWelcomeHTML()
+    : heroWelcome(
+        "Hej, jag är Simba",
+        "Din assistent i Excel — bygg, städa, analysera och förklara ditt ark.",
+        [
+          ["🧾", "Sammanfatta arbetsboken"],
+          ["📐", "Bygg en budget med summor och diagram"],
+          ["🔍", "Hitta och förklara formelfel"],
+        ]
+      );
+  return `<div class="welcome">${inner}</div>`;
 }
 
 function bindSuggestions() {
   document.querySelectorAll(".suggestion").forEach((b) =>
-    b.addEventListener("click", () => { els.prompt.value = b.textContent; onSend(); }));
+    b.addEventListener("click", () => { els.prompt.value = b.dataset.prompt || b.textContent; onSend(); }));
 }
 
 function hideSplash() {
