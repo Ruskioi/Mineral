@@ -547,6 +547,21 @@ body.has-chat .chat-watermark svg { opacity: 0.035; }
 .agent-chip .ac-x:hover { background: var(--bg-soft); color: var(--ink); }
 .icon-btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+/* Agent-as-avatar + "agent working" banner (each specialist appears as its own
+   sub-agent). */
+.avatar .agent-emoji { font-size: 15px; line-height: 1; }
+.msg.assistant .avatar:has(.agent-emoji) { background: var(--accent-tint); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.agent-run {
+  align-self: flex-start; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--ink-soft);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border: 1px dashed color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: 10px; padding: 6px 11px;
+  animation: rise 0.2s var(--ease) both;
+}
+.agent-run-ic { font-size: 15px; }
+.agent-run-txt b { color: var(--ink); font-weight: 600; }
+
 /* Agents panel */
 .agent-grid { display: flex; flex-direction: column; gap: 7px; margin: 4px 0 2px; }
 .agent-card {

@@ -244,6 +244,8 @@ check("specialist agents + tabbed settings are wired", () => {
   assert(/const AGENTS = \[/.test(taskpane), "agent definitions missing");
   assert(/function openAgents/.test(taskpane) && /function setActiveAgent/.test(taskpane), "agents panel logic missing");
   assert(/activeAgent\.directive/.test(taskpane), "agent directive must be injected into the turn");
+  assert(/function currentAvatar/.test(taskpane) && /currentAvatar\(\)/.test(taskpane), "agents should render with their own avatar");
+  assert(/function renderAgentRun/.test(taskpane), "agent 'working' banner missing");
   // Settings is now tabbed, not one long list.
   assert(/class="tabs"/.test(taskpane) && /data-tab="schedules"/.test(taskpane), "settings tabs missing");
   assert(/data-panel="memory"/.test(taskpane) && /data-panel="general"/.test(taskpane), "settings tab panels missing");

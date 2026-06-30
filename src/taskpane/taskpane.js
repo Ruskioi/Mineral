@@ -202,6 +202,12 @@ const POM_SVG = `
 // The mascot sprite — the inline vector above, used everywhere so it stays sharp.
 const MASCOT_IMG = POM_SVG;
 
+// Avatar for assistant output: the active specialist agent's icon while one is
+// running (so each agent appears as its own sub-agent), else Simba's mascot.
+function currentAvatar() {
+  return activeAgent ? `<span class="agent-emoji" title="${escapeHtml(activeAgent.name)}-agent">${activeAgent.icon}</span>` : MASCOT_IMG;
+}
+
 let booted = false;
 function boot(isExcel) {
   if (booted) return;
@@ -1435,6 +1441,7 @@ async function onSend() {
   messages.push({ role: "user", content });
   renderMessage("user", text, attach ? { file: `${attach.name} (${attach.kind})` } : null);
   clearAttachment();
+  if (activeAgent) renderAgentRun(activeAgent); // show the specialist sub-agent picking up the task
 
   autoApproveTurn = false; // each new request starts asking again
   setBusy(true);
@@ -1951,7 +1958,7 @@ function renderMessage(role, text, opts) {
   const fileChip = opts?.file ? `<div class="msg-file">📎 ${escapeHtml(opts.file)}</div>` : "";
   const body = text ? `<div class="bubble">${formatMarkdown(text)}</div>` : "";
   wrap.innerHTML = `
-    <div class="avatar">${role === "user" ? "🙂" : MASCOT_IMG}</div>
+    <div class="avatar">${role === "user" ? "🙂" : currentAvatar()}</div>
     <div class="body">${fileChip}${body}${actions}</div>`;
   els.messages.append(wrap);
   scrollDown();
@@ -1993,7 +2000,7 @@ function startStream() {
   clearTyping();
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
-  wrap.innerHTML = `<div class="avatar">${MASCOT_IMG}</div><div class="body"><div class="bubble streaming"></div></div>`;
+  wrap.innerHTML = `<div class="avatar">${currentAvatar()}</div><div class="body"><div class="bubble streaming"></div></div>`;
   els.messages.append(wrap);
   scrollDown();
   return { wrap, bubble: wrap.querySelector(".bubble"), text: "" };
@@ -2120,7 +2127,7 @@ function createToolGroup() {
   const wrap = document.createElement("div");
   wrap.className = "msg assistant tool-group";
   wrap.innerHTML = `
-    <div class="avatar">${MASCOT_IMG}</div>
+    <div class="avatar">${currentAvatar()}</div>
     <div class="body">
       <div class="tg-card open">
         <button class="tg-head" type="button" aria-expanded="true">
@@ -2186,7 +2193,7 @@ function renderTyping() {
   clearTyping();
   const el = document.createElement("div");
   el.className = "msg assistant";
-  el.innerHTML = `<div class="avatar">${MASCOT_IMG}</div><div class="body"><div class="bubble">
+  el.innerHTML = `<div class="avatar">${currentAvatar()}</div><div class="body"><div class="bubble">
     <span class="typing"><span></span><span></span><span></span></span></div></div>`;
   els.messages.append(el);
   activeTyping = el;
@@ -2863,6 +2870,18 @@ function renderAgentChip() {
     `<span class="ac-ic">${activeAgent.icon}</span><span class="ac-name">${escapeHtml(activeAgent.name)}-agent</span>` +
     `<button class="ac-x" type="button" title="Stäng av agent" aria-label="Stäng av agent">×</button>`;
   els.agentChip.querySelector(".ac-x").onclick = () => setActiveAgent(null);
+}
+
+// A banner that announces the specialist sub-agent picking up the turn.
+function renderAgentRun(agent) {
+  clearTyping();
+  const el = document.createElement("div");
+  el.className = "agent-run";
+  el.innerHTML =
+    `<span class="agent-run-ic">${agent.icon}</span>` +
+    `<span class="agent-run-txt"><b>${escapeHtml(agent.name)}-agenten</b> tar över och arbetar…</span>`;
+  els.messages.append(el);
+  scrollDown();
 }
 
 /* ---- Cloud file browser (OneDrive/SharePoint) -------------------------- */
