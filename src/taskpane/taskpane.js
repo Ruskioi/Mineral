@@ -29,7 +29,8 @@ const store = {
 let messages = [];
 let busy = false;
 let activeTyping = null; // the "thinking" dots; cleared once real content appears
-let pendingAttachment = null; // {name, kind, block} a user-attached file for the next message
+let pendingAttachments = []; // [{name, kind, block}] user-attached files for the next message
+const MAX_ATTACH = 6;
 let activeAgent = null; // a selected specialist agent persona for the next message(s)
 let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
 
@@ -252,7 +253,7 @@ function boot(isExcel) {
   els.agents = document.getElementById("agents");
   els.agentChip = document.getElementById("agent-chip");
   els.agents?.addEventListener("click", openAgents);
-  els.fileInput.addEventListener("change", (e) => { const f = e.target.files?.[0]; if (f) handleAttach(f); e.target.value = ""; });
+  els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
 
   els.editMode.addEventListener("click", (e) => {
     const btn = e.target.closest(".seg-btn");
@@ -281,6 +282,11 @@ function boot(isExcel) {
       }
       return;
     }
+    const pv = e.target.closest(".preview-btn");
+    if (pv) {
+      try { openArtifact(decodeURIComponent(escape(atob(pv.dataset.code || "")))); } catch { /* ignore */ }
+      return;
+    }
     const btn = e.target.closest(".copy-btn");
     if (!btn) return;
     const cb = btn.closest(".codeblock");
@@ -298,6 +304,7 @@ function boot(isExcel) {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !els.overlay.hidden) closeModal();
+    if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) { e.preventDefault(); openCommandPalette(); }
   });
 
   bindSuggestions();
@@ -1420,7 +1427,7 @@ function parseRange(ctx, address) {
 
 async function onSend() {
   const text = els.prompt.value.trim();
-  if ((!text && !pendingAttachment) || busy) return;
+  if ((!text && !pendingAttachments.length) || busy) return;
 
   clearWelcome();
   els.prompt.value = "";
@@ -1435,13 +1442,15 @@ async function onSend() {
     selectionNote = `\n\n[Aktuell markering: ${sel.address} (${sel.rowCount}×${sel.columnCount})]`;
   } catch { /* no active selection */ }
 
-  const attach = pendingAttachment;
+  const atts = pendingAttachments;
   const agentNote = activeAgent ? `${activeAgent.directive}\n\n` : "";
-  const promptText = agentNote + (text || (attach ? `Titta på den bifogade filen "${attach.name}".` : "")) + selectionNote;
-  // With an attachment, content is a block array (file first, then the question).
-  const content = attach ? [attach.block, { type: "text", text: promptText }] : promptText;
+  const fallback = atts.length === 1 ? `Titta på den bifogade filen "${atts[0].name}".`
+    : atts.length > 1 ? `Titta på de ${atts.length} bifogade filerna.` : "";
+  const promptText = agentNote + (text || fallback) + selectionNote;
+  // With attachments, content is a block array (files first, then the question).
+  const content = atts.length ? [...atts.map((a) => a.block), { type: "text", text: promptText }] : promptText;
   messages.push({ role: "user", content });
-  renderMessage("user", text, attach ? { file: `${attach.name} (${attach.kind})` } : null);
+  renderMessage("user", text, atts.length ? { file: atts.map((a) => a.name).join(", ") } : null);
   clearAttachment();
   if (activeAgent) renderAgentRun(activeAgent); // show the specialist sub-agent picking up the task
 
@@ -1688,6 +1697,7 @@ function parseSSE(block) {
 let modalResolver = null;
 
 function openModal(html, { onClose } = {}) {
+  els.modalCard.classList.remove("wide"); // reset any artifact-size from a prior modal
   els.modalCard.innerHTML = html;
   els.overlay.hidden = false;
   modalResolver = onClose || null;
@@ -1811,6 +1821,18 @@ function confirmPlan(title) {
 
 // Modal-based prompt/confirm (native window.prompt/confirm are blocked inside
 // the Office task pane, so we roll our own that work on every surface).
+// Render a model-generated HTML/SVG snippet in a sandboxed preview (artifacts).
+function openArtifact(html) {
+  openModal(
+    `<div class="artifact-head"><h3 style="margin:0">Förhandsvisning</h3><button class="btn" data-act="close">Stäng</button></div>
+     <iframe class="artifact-frame" sandbox="allow-scripts" title="Förhandsvisning"></iframe>`
+  );
+  els.modalCard.classList.add("wide");
+  const f = els.modalCard.querySelector(".artifact-frame");
+  if (f) f.srcdoc = html;
+  els.modalCard.querySelector('[data-act="close"]').onclick = closeModalSilently;
+}
+
 function uiPrompt(message, value = "") {
   return new Promise((resolve) => {
     openModal(
@@ -1909,7 +1931,10 @@ function openSettings() {
      <div class="tab-panel" data-panel="chats" hidden>
        <div class="setting-row" style="border-top:none">
          <div><div class="label">Konversationer</div><div class="hint">${signedIn ? "Dina chattar synkas mellan Excel, webb och dator" : "Logga in för att synka chattar mellan enheter"}</div></div>
-         <button class="btn" id="settings-clear" style="flex:none;padding:7px 12px">Ny chatt</button>
+         <div style="display:flex;gap:6px;flex:none">
+           <button class="btn" id="export-chat" style="padding:7px 12px">Exportera</button>
+           <button class="btn" id="settings-clear" style="padding:7px 12px">Ny chatt</button>
+         </div>
        </div>
        ${signedIn ? '<div id="conv-list" class="conv-list"><div class="hint" style="padding:4px 2px">Laddar…</div></div>' : '<div class="hint" style="padding:2px">Logga in (fliken Minne) för att se sparade chattar.</div>'}
      </div>
@@ -1979,6 +2004,7 @@ function openSettings() {
     }
   };
   els.modalCard.querySelector("#settings-clear").onclick = () => { resetChat(); closeModalSilently(); };
+  els.modalCard.querySelector("#export-chat").onclick = exportChat;
   els.modalCard.querySelector('[data-act="done"]').onclick = () => { saveMemoryFromText(); closeModalSilently(); };
 }
 
@@ -2021,6 +2047,27 @@ function renderDownload(filename, base64, mediaType) {
   wrap.querySelector(".dl-card").onclick = () => saveBase64(base64, filename, mediaType);
   els.messages.append(wrap);
   scrollDown();
+}
+
+// Export the current conversation as a Markdown file.
+function exportChat() {
+  if (!messages.length) { toast("Det finns inget att exportera ännu.", "info", 2000); return; }
+  const lines = [`# Simba-chatt — ${new Date().toLocaleString("sv-SE")}`, ""];
+  for (const m of messages) {
+    if (m.role === "user") {
+      const c = m.content;
+      if (Array.isArray(c) && c.some((b) => b && b.type === "tool_result")) continue;
+      let t = typeof c === "string" ? c : (Array.isArray(c) ? (c.find((b) => b && b.type === "text")?.text || "") : "");
+      t = t.replace(/\n\n\[Aktuell markering:[\s\S]*$/, "").replace(/^\[Agent:[^\]]*\][\s\S]*?\n\n/, "");
+      if (t.trim()) lines.push("## Du", "", t.trim(), "");
+    } else if (m.role === "assistant" && Array.isArray(m.content)) {
+      const t = m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
+      if (t) lines.push("## Simba", "", t, "");
+    }
+  }
+  const b64 = btoa(unescape(encodeURIComponent(lines.join("\n"))));
+  saveBase64(b64, `simba-chatt-${Date.now()}.md`, "text/markdown");
+  toast("Exporterade chatten", "success", 1500);
 }
 
 function saveBase64(base64, filename, mediaType) {
@@ -2262,31 +2309,31 @@ function readFile(file, asDataUrl) {
 }
 
 async function handleAttach(file) {
+  if (pendingAttachments.length >= MAX_ATTACH) { toast(`Max ${MAX_ATTACH} filer åt gången.`, "info", 2500); return; }
   if (file.size > ATTACH_MAX_BYTES) { toast("Filen är för stor (max 5 MB).", "error", 3500); return; }
   const name = file.name || "fil";
   const type = file.type || "";
   const isText = /^text\//.test(type) || /\.(csv|tsv|txt|md|json|tab)$/i.test(name);
   try {
+    let att = null;
     if (type === "application/pdf" || /\.pdf$/i.test(name)) {
       const data = (await readFile(file, true)).split(",")[1];
-      pendingAttachment = { name, kind: "PDF",
-        block: { type: "document", source: { type: "base64", media_type: "application/pdf", data } } };
+      att = { name, kind: "PDF", block: { type: "document", source: { type: "base64", media_type: "application/pdf", data } } };
     } else if (/^image\/(png|jpeg|gif|webp)$/.test(type)) {
       const data = (await readFile(file, true)).split(",")[1];
-      pendingAttachment = { name, kind: "bild",
-        block: { type: "image", source: { type: "base64", media_type: type, data } } };
+      att = { name, kind: "bild", block: { type: "image", source: { type: "base64", media_type: type, data } } };
     } else if (/^image\//.test(type)) {
       toast("Bildformatet stöds inte (använd PNG, JPG, GIF eller WebP).", "error", 3500);
       return;
     } else if (isText) {
       let text = await readFile(file, false);
       if (text.length > ATTACH_TEXT_MAX) text = text.slice(0, ATTACH_TEXT_MAX) + "\n…(avkortad)";
-      pendingAttachment = { name, kind: "text",
-        block: { type: "text", text: `Bifogad fil "${name}":\n\n${text}` } };
+      att = { name, kind: "text", block: { type: "text", text: `Bifogad fil "${name}":\n\n${text}` } };
     } else {
       toast("Filtypen stöds inte (CSV, text, bild eller PDF).", "error", 3500);
       return;
     }
+    pendingAttachments.push(att);
     renderAttachChip();
   } catch (e) {
     toast(e.message || "Kunde inte läsa filen.", "error", 3500);
@@ -2294,17 +2341,21 @@ async function handleAttach(file) {
 }
 
 function renderAttachChip() {
-  if (!pendingAttachment) { els.attachChip.hidden = true; els.attachChip.innerHTML = ""; return; }
+  if (!pendingAttachments.length) { els.attachChip.hidden = true; els.attachChip.innerHTML = ""; return; }
   els.attachChip.hidden = false;
-  els.attachChip.innerHTML =
-    `<span class="ac-ic">📎</span><span class="ac-name">${escapeHtml(pendingAttachment.name)}</span>` +
-    `<span class="ac-kind">${pendingAttachment.kind}</span>` +
-    `<button class="ac-x" type="button" title="Ta bort" aria-label="Ta bort bilaga">×</button>`;
-  els.attachChip.querySelector(".ac-x").onclick = clearAttachment;
+  els.attachChip.innerHTML = pendingAttachments.map((a, i) =>
+    `<span class="attach-pill"><span class="ac-ic">📎</span><span class="ac-name">${escapeHtml(a.name)}</span>` +
+    `<span class="ac-kind">${a.kind}</span>` +
+    `<button class="ac-x" type="button" data-i="${i}" title="Ta bort" aria-label="Ta bort bilaga">×</button></span>`).join("");
+  els.attachChip.querySelectorAll(".ac-x").forEach((b) => b.onclick = () => removeAttachment(+b.dataset.i));
 }
 
+function removeAttachment(i) {
+  pendingAttachments.splice(i, 1);
+  renderAttachChip();
+}
 function clearAttachment() {
-  pendingAttachment = null;
+  pendingAttachments = [];
   renderAttachChip();
 }
 
@@ -2328,11 +2379,16 @@ function formatMarkdown(text) {
   const blocks = [];
   const src = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, lang, code) => {
     const label = (lang || "").toLowerCase();
+    const raw = code.replace(/\n+$/, "");
+    const previewable = label === "html" || label === "svg" || (label === "xml" && /<svg/i.test(raw));
+    const previewBtn = previewable
+      ? `<button class="preview-btn" type="button" data-code="${btoa(unescape(encodeURIComponent(raw)))}">Förhandsgranska</button>`
+      : "";
     const html =
       `<div class="codeblock">` +
         `<div class="cb-head"><span class="cb-lang">${escapeHtml(label || "kod")}</span>` +
-        `<button class="copy-btn" type="button">Kopiera</button></div>` +
-        `<pre><code>${highlight(code.replace(/\n+$/, ""), lang)}</code></pre>` +
+        `<span class="cb-acts">${previewBtn}<button class="copy-btn" type="button">Kopiera</button></span></div>` +
+        `<pre><code>${highlight(raw, lang)}</code></pre>` +
       `</div>`;
     blocks.push(html);
     return `\u0000${blocks.length - 1}\u0000`;
@@ -2911,6 +2967,50 @@ async function populateSchedules() {
   } catch { el.innerHTML = hint("Kunde inte hämta scheman."); }
 }
 
+/* ---- Command palette (⌘K) ---------------------------------------------- */
+function commandList() {
+  const cmds = [
+    { icon: "＋", label: "Ny chatt", run: () => resetChat() },
+    { icon: "✦", label: "Agenter", run: () => openAgents() },
+    { icon: "⚙", label: "Inställningar", run: () => openSettings() },
+    { icon: "📤", label: "Exportera chatt", run: () => exportChat() },
+    { icon: "🎨", label: "Växla tema (ljust/mörkt)", run: () => {
+      const next = (document.documentElement.getAttribute("data-theme") === "dark") ? "light" : "dark";
+      applyTheme(next); store.set("simba.theme", next);
+    } },
+  ];
+  if (ssoServerConfigured) cmds.splice(3, 0, { icon: "☁", label: "Molnfiler", run: () => openFilesBrowser() });
+  if (busy) cmds.unshift({ icon: "◼", label: "Stoppa Simba", run: () => stopGeneration() });
+  return cmds;
+}
+
+function openCommandPalette() {
+  const cmds = commandList();
+  openModal(
+    `<input id="cmd-q" class="files-q" type="search" placeholder="Skriv ett kommando…" autocomplete="off" style="margin-top:0" />
+     <div id="cmd-list" class="files-list"></div>`
+  );
+  const qEl = els.modalCard.querySelector("#cmd-q");
+  const listEl = els.modalCard.querySelector("#cmd-list");
+  let view = cmds;
+  const render = () => {
+    listEl.innerHTML = view.map((c, i) =>
+      `<button class="file-item${i === 0 ? " active" : ""}" data-i="${i}"><span class="file-ic">${c.icon}</span><span class="file-main"><span class="file-name">${escapeHtml(c.label)}</span></span></button>`).join("")
+      || '<div class="hint" style="padding:6px 2px">Inget matchar.</div>';
+    listEl.querySelectorAll(".file-item").forEach((b) =>
+      b.addEventListener("click", () => { const c = view[+b.dataset.i]; closeModalSilently(); c?.run(); }));
+  };
+  const run = (c) => { closeModalSilently(); c?.run(); };
+  qEl.addEventListener("input", () => {
+    const q = qEl.value.trim().toLowerCase();
+    view = q ? cmds.filter((c) => c.label.toLowerCase().includes(q)) : cmds;
+    render();
+  });
+  qEl.addEventListener("keydown", (e) => { if (e.key === "Enter" && view[0]) { e.preventDefault(); run(view[0]); } });
+  render();
+  qEl.focus();
+}
+
 /* ---- Specialist agents (side panel) ------------------------------------ */
 function openAgents() {
   const cards = AGENTS.map((a) => `
@@ -3059,13 +3159,16 @@ async function pickCloudFile(file) {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { toast(j.error || "Kunde inte öppna filen.", "error", 3500); return; }
+    if (pendingAttachments.length >= MAX_ATTACH) { toast(`Max ${MAX_ATTACH} filer åt gången.`, "info", 2500); return; }
+    let att = null;
     if (j.kind === "text") {
-      pendingAttachment = { name: j.name, kind: "molnfil", block: { type: "text", text: `Fil "${j.name}" (från OneDrive/SharePoint):\n\n${j.text}` } };
+      att = { name: j.name, kind: "molnfil", block: { type: "text", text: `Fil "${j.name}" (från OneDrive/SharePoint):\n\n${j.text}` } };
     } else if (j.kind === "image") {
-      pendingAttachment = { name: j.name, kind: "bild", block: { type: "image", source: { type: "base64", media_type: j.media_type, data: j.data } } };
+      att = { name: j.name, kind: "bild", block: { type: "image", source: { type: "base64", media_type: j.media_type, data: j.data } } };
     } else if (j.kind === "pdf") {
-      pendingAttachment = { name: j.name, kind: "PDF", block: { type: "document", source: { type: "base64", media_type: "application/pdf", data: j.data } } };
+      att = { name: j.name, kind: "PDF", block: { type: "document", source: { type: "base64", media_type: "application/pdf", data: j.data } } };
     } else { toast("Filtypen stöds inte ännu (text/CSV, bild eller PDF).", "error", 3500); return; }
+    pendingAttachments.push(att);
     renderAttachChip();
     closeModalSilently();
     toast(`La till ${j.name}`, "success");

@@ -310,6 +310,15 @@ body.has-chat .chat-watermark svg { opacity: 0.035; }
 .copy-btn:hover { background: rgba(255, 255, 255, 0.2); }
 .copy-btn:active { transform: scale(0.92); }
 .copy-btn.copied { background: var(--accent); color: #fff; }
+.cb-acts { display: inline-flex; gap: 6px; }
+.preview-btn { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; transition: filter var(--speed), transform var(--speed); }
+.preview-btn:hover { filter: brightness(1.05); }
+.preview-btn:active { transform: scale(0.92); }
+
+/* Artifact preview (wide modal + sandboxed iframe) */
+.modal-card.wide { max-width: min(900px, 92vw); }
+.artifact-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.artifact-frame { width: 100%; height: min(70vh, 560px); border: 1px solid var(--border); border-radius: 10px; background: #fff; }
 
 /* Rich markdown inside bubbles */
 .bubble .md-h { font-family: var(--serif); font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin: 14px 0 6px; }
@@ -513,22 +522,22 @@ body.has-chat .chat-watermark svg { opacity: 0.035; }
 }
 .attach-btn:hover { background: var(--bg-soft); color: var(--ink); }
 .attach-btn:active { transform: scale(0.9); }
-.attach-chip {
-  display: flex; align-items: center; gap: 7px;
-  margin-bottom: 8px; padding: 7px 10px;
+.attach-chip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.attach-pill {
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; max-width: 240px;
   background: var(--accent-tint);
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   border-radius: 10px; font-size: 12.5px; color: var(--ink);
   animation: rise 0.2s var(--ease) both;
 }
-.attach-chip .ac-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attach-chip .ac-kind { color: var(--ink-faint); font-size: 11px; }
-.attach-chip .ac-x {
-  margin-left: auto; flex: none; border: none; background: transparent;
+.attach-pill .ac-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-pill .ac-kind { color: var(--ink-faint); font-size: 11px; flex: none; }
+.attach-pill .ac-x {
+  flex: none; border: none; background: transparent;
   color: var(--ink-soft); cursor: pointer; font-size: 16px; line-height: 1;
   width: 20px; height: 20px; border-radius: 6px;
 }
-.attach-chip .ac-x:hover { background: var(--bg-soft); color: var(--ink); }
+.attach-pill .ac-x:hover { background: var(--bg-soft); color: var(--ink); }
 
 /* Agent chip (active specialist) — same shape as the attach chip */
 .agent-chip {

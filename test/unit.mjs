@@ -257,7 +257,7 @@ check("cloud file browser is wired", () => {
   assert(/function openFilesBrowser/.test(taskpane) && /function pickCloudFile/.test(taskpane), "cloud browser functions missing");
   assert(/\/api\/files\?q=/.test(taskpane), "browser must search /api/files");
   assert(/\/api\/files\/open/.test(taskpane), "browser must open files via /api/files/open");
-  assert(/pendingAttachment = \{ name: j\.name/.test(taskpane), "opened cloud file should become an attachment");
+  assert(/pendingAttachments\.push\(att\)/.test(taskpane), "opened cloud file should become an attachment");
 });
 
 check("settings panel exposes all features (incl. schedule management)", () => {
@@ -315,6 +315,14 @@ check("scheduled server-side agent is wired", () => {
   assert(/client_credentials/.test(graph), "graph app-only (client_credentials) flow missing");
   const pkg = JSON.parse(read("package.json"));
   assert(pkg.dependencies.exceljs, "missing dependency: exceljs");
+});
+
+check("Tier 2 features (export, artifacts, palette, multi-attach, MCP)", () => {
+  assert(/function exportChat/.test(taskpane), "chat export missing");
+  assert(/function openArtifact/.test(taskpane) && /preview-btn/.test(taskpane), "HTML artifact preview missing");
+  assert(/function openCommandPalette/.test(taskpane) && /e\.key === "k"/.test(taskpane), "command palette (⌘K) missing");
+  assert(/let pendingAttachments = \[\]/.test(taskpane) && /MAX_ATTACH/.test(taskpane), "multi-file attach missing");
+  assert(/SIMBA_MCP_SERVERS/.test(server) && /mcp_servers/.test(server), "MCP connector plumbing missing");
 });
 
 check("Tier 1 features (stop, conv management, job email, user quota)", () => {

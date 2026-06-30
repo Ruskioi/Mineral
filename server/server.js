@@ -35,6 +35,19 @@ const MODEL = process.env.SIMBA_MODEL || "claude-opus-4-8";
 const MODEL_SIMPLE = process.env.SIMBA_MODEL_SIMPLE || "claude-haiku-4-5-20251001";
 const ROUTER_ON = process.env.SIMBA_ROUTER !== "0";
 
+// Optional remote MCP connectors (experimental, admin-configured, off by default).
+// SIMBA_MCP_SERVERS = JSON array like [{"name":"notion","url":"https://...","token":"..."}].
+// When set, these are passed to the model so it can use those servers' tools.
+let MCP_SERVERS = [];
+try {
+  if (process.env.SIMBA_MCP_SERVERS) {
+    MCP_SERVERS = JSON.parse(process.env.SIMBA_MCP_SERVERS)
+      .map((s) => ({ type: "url", url: String(s.url || ""), name: String(s.name || "mcp"), ...(s.token ? { authorization_token: String(s.token) } : {}) }))
+      .filter((s) => s.url);
+    if (MCP_SERVERS.length) console.log(`[Simba] MCP connectors: ${MCP_SERVERS.map((s) => s.name).join(", ")}`);
+  }
+} catch (e) { console.error("[Simba] SIMBA_MCP_SERVERS parse failed:", e.message); }
+
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
   console.error(
@@ -715,16 +728,22 @@ async function runModel(messages, speed, memory, surface, onText) {
     tools: TOOLS,
     messages: withConversationCache(messages),
   };
+  // Base betas from optional MCP connectors; fast mode adds its own.
+  const baseBetas = [];
+  if (MCP_SERVERS.length) { base.mcp_servers = MCP_SERVERS; baseBetas.push("mcp-client-2025-04-04"); }
+
   let emitted = false;
-  const run = async (params, beta) => {
-    const s = (beta ? client.beta.messages : client.messages).stream(params);
+  const run = async (params, extraBetas = []) => {
+    const betas = [...baseBetas, ...extraBetas];
+    const p = betas.length ? { ...params, betas } : params;
+    const s = (betas.length ? client.beta.messages : client.messages).stream(p);
     s.on("text", (t) => { emitted = true; if (onText) onText(t); });
     return await s.finalMessage();
   };
   // Fast mode applies to the strong (Opus) model; Haiku is already fast.
   if (cfg.fast && model === MODEL) {
     try {
-      return await run({ ...base, speed: "fast", betas: ["fast-mode-2026-02-01"] }, true);
+      return await run({ ...base, speed: "fast" }, ["fast-mode-2026-02-01"]);
     } catch (e) {
       if (emitted) throw e; // already streamed output — don't restart
       console.warn("[Simba] fast mode unavailable, using standard speed:", e?.status || e?.message);
