@@ -682,6 +682,21 @@ body.desktop .sidebar {
   color: var(--ink); cursor: pointer; transition: background var(--speed), border-color var(--speed);
 }
 .sb-new:hover { background: var(--accent-tint); border-color: var(--accent); }
+.sb-nav { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px 2px; }
+.sb-nav-item {
+  display: flex; align-items: center; gap: 10px;
+  text-align: left; width: 100%; border: 0; background: transparent;
+  padding: 8px 10px; border-radius: 9px; font-size: 13px; font-weight: 500;
+  color: var(--ink-soft); cursor: pointer;
+  transition: background var(--speed), color var(--speed);
+}
+.sb-nav-item:hover { background: var(--surface); color: var(--ink); }
+.sb-nav-ic { width: 18px; text-align: center; font-size: 14px; flex: none; opacity: 0.9; }
+.sb-convs-h {
+  padding: 10px 16px 4px; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint);
+  border-top: 1px solid var(--border); margin-top: 6px;
+}
 .sb-list { flex: 1; overflow-y: auto; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
 .sb-list .conv-item {
   text-align: left; width: 100%; border: 0; background: transparent;
@@ -699,6 +714,15 @@ body.desktop .sidebar {
 .sb-foot-btn:hover { background: var(--surface); color: var(--ink); }
 /* On a narrow standalone window, collapse the sidebar so the chat keeps room. */
 @media (max-width: 700px) { body.desktop .sidebar { display: none; } }
+/* On a wide desktop window the sidebar owns navigation, so the in-chat header
+ * collapses to just the chat title — the ⋯ menu lives in the sidebar instead. */
+body.desktop .app-header { padding: 14px 22px; }
+body.desktop .app-header #new-chat,
+body.desktop .app-header #menu { display: none; }
+@media (max-width: 700px) {
+  body.desktop .app-header #new-chat,
+  body.desktop .app-header #menu { display: inline-flex; }
+}
 
 /* Standalone app layout: a roomy, centered column like a real chat app, so the
  * desktop/web build reads as a full product rather than a narrow Excel sidebar. */

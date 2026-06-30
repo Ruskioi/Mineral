@@ -255,20 +255,11 @@ function boot(isExcel) {
   });
   els.prompt.addEventListener("input", autoGrow);
   els.newChat.addEventListener("click", resetChat);
-  els.settings.addEventListener("click", openSettings);
+  els.settings?.addEventListener("click", openSettings);
   els.undo.addEventListener("click", () => { if (!busy) tools.revert_last_change(); });
   els.attach.addEventListener("click", () => els.fileInput.click());
-  els.cloud = document.getElementById("cloud");
-  els.cloud?.addEventListener("click", openFilesBrowser);
-  els.agents = document.getElementById("agents");
   els.agentChip = document.getElementById("agent-chip");
-  els.agents?.addEventListener("click", openAgents);
-  els.vault = document.getElementById("vault");
-  els.vault?.addEventListener("click", openVault);
-  els.mail = document.getElementById("mail");
-  els.mail?.addEventListener("click", openMail);
-  els.connectors = document.getElementById("connectors");
-  els.connectors?.addEventListener("click", openConnectors);
+  document.getElementById("menu")?.addEventListener("click", openMenu);
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
 
   els.editMode.addEventListener("click", (e) => {
@@ -344,10 +335,7 @@ function boot(isExcel) {
   fetch(`${API_BASE}/api/health`).then((r) => r.json()).then((h) => {
     if (h?.model) modelName = h.model;
     ssoServerConfigured = !!h?.ssoConfigured;
-    if (ssoServerConfigured && els.cloud) els.cloud.hidden = false; // cloud files need SSO
-    if (ssoServerConfigured && els.vault) els.vault.hidden = false; // vault is org-scoped (SSO)
-    if (ssoServerConfigured && els.mail) els.mail.hidden = false; // Outlook mail needs SSO/Graph
-    if (ssoServerConfigured && els.connectors) els.connectors.hidden = false; // data sources are org-scoped (SSO)
+    buildSidebarNav(); // SSO-gated features appear once we know the server config
     initIdentity();
   }).catch(() => {});
 
@@ -382,6 +370,7 @@ function applyDesktopMode() {
     sb.hidden = false;
     document.getElementById("sb-new")?.addEventListener("click", () => { resetChat(); refreshSidebar(); });
     document.getElementById("sb-settings")?.addEventListener("click", openSettings);
+    buildSidebarNav();
     refreshSidebar();
   }
   // PWA: register the service worker so the web app is installable + offline-resilient.
@@ -3274,6 +3263,31 @@ async function populateWorkspace() {
       };
     });
   } catch { el.innerHTML = hint("Kunde inte nå arbetsutrymmet."); }
+}
+
+// A clean tap-friendly menu (the ⋯ button) — same actions as the ⌘K palette.
+function openMenu() {
+  const cmds = commandList();
+  openModal(`<h3>Meny</h3><div class="files-list" id="menu-list" style="max-height:60vh"></div><div class="modal-actions"><button class="btn primary" data-act="cancel">Stäng</button></div>`);
+  const list = els.modalCard.querySelector("#menu-list");
+  list.innerHTML = cmds.map((c, i) => `<button class="file-item" data-i="${i}"><span class="file-ic">${c.icon}</span><span class="file-main"><span class="file-name">${escapeHtml(c.label)}</span></span></button>`).join("");
+  list.querySelectorAll(".file-item").forEach((b) => b.addEventListener("click", () => { const c = cmds[+b.dataset.i]; closeModalSilently(); c?.run(); }));
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+}
+
+// The persistent feature nav in the desktop/web sidebar (Claude-style rail).
+function buildSidebarNav() {
+  const nav = document.getElementById("sb-nav");
+  if (!nav) return;
+  const items = [{ icon: "✦", label: "Agenter", run: openAgents }];
+  if (ssoServerConfigured) items.push(
+    { icon: "📚", label: "Kunskapsbank", run: openVault },
+    { icon: "📧", label: "E-post", run: openMail },
+    { icon: "☁", label: "Molnfiler", run: openFilesBrowser },
+    { icon: "🔌", label: "Datakällor", run: openConnectors },
+  );
+  nav.innerHTML = items.map((it, i) => `<button class="sb-nav-item" data-i="${i}"><span class="sb-nav-ic">${it.icon}</span>${escapeHtml(it.label)}</button>`).join("");
+  nav.querySelectorAll(".sb-nav-item").forEach((b) => b.addEventListener("click", () => items[+b.dataset.i].run()));
 }
 
 /* ---- Command palette (⌘K) ---------------------------------------------- */

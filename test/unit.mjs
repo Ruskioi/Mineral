@@ -272,7 +272,10 @@ check("PWA (installable web app) is wired", () => {
 
 check("specialist agents + tabbed settings are wired", () => {
   const tp = read("src/taskpane/taskpane.html");
-  assert(/id="agents"/.test(tp), "agents button missing from the chat header");
+  // Decluttered UI: features live in the sidebar nav + the ⋯ menu, not in the header.
+  assert(/id="menu"/.test(tp) && /id="sb-nav"/.test(tp), "menu button / sidebar nav missing");
+  assert(/function openMenu/.test(taskpane) && /function buildSidebarNav/.test(taskpane), "menu / sidebar nav builder missing");
+  assert(/label: "Agenter", run: openAgents/.test(taskpane), "Agenter must be reachable from the sidebar nav");
   assert(/id="agent-chip"/.test(tp), "active-agent chip missing");
   assert(/const AGENTS = \[/.test(taskpane), "agent definitions missing");
   assert(/function openAgents/.test(taskpane) && /function setActiveAgent/.test(taskpane), "agents panel logic missing");
@@ -285,8 +288,8 @@ check("specialist agents + tabbed settings are wired", () => {
 });
 
 check("cloud file browser is wired", () => {
-  const tp = read("src/taskpane/taskpane.html");
-  assert(/id="cloud"/.test(tp), "cloud-files button missing from the composer");
+  // Cloud files are reachable from the SSO-gated sidebar nav / ⋯ menu now.
+  assert(/label: "Molnfiler", run: openFilesBrowser/.test(taskpane), "Molnfiler must be reachable from the sidebar nav");
   assert(/function openFilesBrowser/.test(taskpane) && /function pickCloudFile/.test(taskpane), "cloud browser functions missing");
   assert(/\/api\/files\?q=/.test(taskpane), "browser must search /api/files");
   assert(/\/api\/files\/open/.test(taskpane), "browser must open files via /api/files/open");
@@ -433,8 +436,8 @@ check("Outlook mail (read/send/analyze) is wired", () => {
   for (const t of ["list_emails", "read_email", "send_email"]) assert(new RegExp(`name: "${t}"`).test(server), `${t} tool schema missing`);
   assert(/function confirmSend/.test(taskpane), "send-email confirmation preview missing");
   assert(/"list_emails", "read_email", "send_email"/.test(taskpane), "mail tools must work in desktop mode");
-  // Visual mail panel + folders + attachments
-  assert(/id="mail"/.test(read("src/taskpane/taskpane.html")), "mail button missing from the header");
+  // Visual mail panel + folders + attachments (reachable from the sidebar nav / ⋯ menu)
+  assert(/label: "E-post", run: openMail/.test(taskpane), "E-post must be reachable from the sidebar nav");
   assert(/function openMail/.test(taskpane) && /function openMailRead/.test(taskpane) && /function mailCompose/.test(taskpane), "mail panel UI missing");
   assert(/id="mail-folder"/.test(taskpane) && /sentitems/.test(taskpane), "mail folder selector missing");
   assert(/function loadMailAttachments/.test(taskpane), "mail attachment UI missing");

@@ -93,8 +93,10 @@
         <h1 class="sb-title">Simba AI</h1>
       </div>
       <button id="sb-new" class="sb-new" type="button">＋ Ny chatt</button>
-      <input id="sb-search" class="sb-search" type="search" placeholder="Sök chattar…" autocomplete="off" />
     </div>
+    <nav id="sb-nav" class="sb-nav" aria-label="Funktioner"></nav>
+    <div class="sb-convs-h">Chattar</div>
+    <input id="sb-search" class="sb-search" type="search" placeholder="Sök chattar…" autocomplete="off" />
     <div id="sb-list" class="sb-list" aria-label="Sparade chattar"></div>
     <div class="sb-foot">
       <button id="sb-settings" class="sb-foot-btn" type="button">⚙ Inställningar</button>
@@ -113,12 +115,8 @@
       </div>
       <div class="header-actions">
         <button id="undo" class="icon-btn" title="Ångra Simbas senaste ändring" aria-label="Ångra" disabled>↶</button>
-        <button id="agents" class="icon-btn" title="Agenter – specialiserade hjälpare" aria-label="Agenter">✦</button>
-        <button id="vault" class="icon-btn" title="Kunskapsbank – företagets delade minne" aria-label="Kunskapsbank" hidden>📚</button>
-        <button id="mail" class="icon-btn" title="E-post – din Outlook-inkorg" aria-label="E-post" hidden>📧</button>
-        <button id="connectors" class="icon-btn" title="Datakällor – brygga till ekonomisystem" aria-label="Datakällor" hidden>🔌</button>
-        <button id="settings" class="icon-btn" title="Inställningar" aria-label="Inställningar">⚙</button>
         <button id="new-chat" class="icon-btn" title="Ny chatt" aria-label="Ny chatt">＋</button>
+        <button id="menu" class="icon-btn" title="Meny – alla funktioner" aria-label="Meny">⋯</button>
       </div>
     </header>
 
@@ -140,7 +138,6 @@
       <div id="attach-chip" class="attach-chip" hidden></div>
       <div class="composer-row">
         <button id="attach" class="attach-btn" title="Bifoga en fil (CSV, text, bild eller PDF)" aria-label="Bifoga fil">📎</button>
-        <button id="cloud" class="attach-btn" title="Bläddra bland dina molnfiler (OneDrive/SharePoint)" aria-label="Molnfiler" hidden>☁</button>
         <input type="file" id="file-input" accept=".csv,.tsv,.txt,.md,.json,.tab,image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple hidden />
         <textarea id="prompt" rows="1" placeholder="Fråga Simba om ditt kalkylark…"></textarea>
         <button id="send" class="send-btn" title="Skicka" aria-label="Skicka">➤</button>
