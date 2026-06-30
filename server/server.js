@@ -23,7 +23,7 @@ import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInf
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
 import { startScheduler, schedulerEnabled } from "./scheduler.js";
 import { chooseModel, lastUserText } from "./router.js";
-import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext } from "./vault.js";
+import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -437,6 +437,16 @@ const TOOLS = [
       tags: { type: "array", description: "Optional keywords.", items: { type: "string" } },
     }, required: ["title", "content"] } },
 
+  { name: "analyze_vault", description: "Analyze the whole company knowledge vault: coverage gaps, contradictions/duplicates/outdated entries, structure quality, why it looks the way it does, and concrete improvements. Use when the user asks to review/audit/improve the company knowledge base.",
+    input_schema: { type: "object", properties: {
+      focus: { type: "string", description: "Optional area to focus the review on." },
+    } } },
+
+  { name: "open_vault_file", description: "Open a document/PDF/image attached to a knowledge-vault entry so you can read or see it. Pass the entry id (from search_vault).",
+    input_schema: { type: "object", properties: {
+      id: { type: "string", description: "The vault entry id whose attachment to open." },
+    }, required: ["id"] } },
+
   { name: "merge_cells", description: "Merge a range into a single cell. Use for a title banner spanning the columns of a table, then center and enlarge it with format_range.",
     input_schema: { type: "object", properties: {
       address: { type: "string", description: "A1-style range to merge, e.g. 'B2:E2'." },
@@ -579,6 +589,7 @@ app.get("/api/health", (_req, res) => {
     ssoConfigured,
     graphConfigured,
     schedulerEnabled,
+    vectorSearch: vectorEnabled,
     memoryStore: usingPostgres ? "postgres" : "ephemeral",
   });
 });
@@ -1180,10 +1191,50 @@ app.post("/api/vault", async (req, res) => {
   if (!user) return;
   if (!canWriteVault(user)) return res.status(403).json({ error: "Du har inte behörighet att ändra kunskapsbanken." });
   try {
-    const { topic, title, content, tags } = req.body || {};
-    const entry = await createEntry(orgOf(user), { topic, title, content, tags, author: user.email || user.name || "" });
+    const { topic, title, content, tags, file } = req.body || {};
+    const entry = await createEntry(orgOf(user), { topic, title, content, tags, file, author: user.email || user.name || "" });
     res.json({ entry });
   } catch (err) { console.error("[Simba] vault create failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte spara posten." }); }
+});
+
+// Read an entry's attached file (text/CSV → text, image → base64, pdf → base64).
+app.get("/api/vault/:id/file", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const f = await getVaultFile(orgOf(user), req.params.id);
+    if (!f) return res.status(404).json({ error: "Ingen bilaga." });
+    const lower = String(f.name || "").toLowerCase();
+    if (/\.(csv|tsv|txt|md|json|tab|xml|log)$/.test(lower) || /^text\//.test(f.type || "")) {
+      res.json({ kind: "text", name: f.name, text: Buffer.from(f.data, "base64").toString("utf8").slice(0, 200_000) });
+    } else if (/^image\/(png|jpe?g|gif|webp)$/.test(f.type || "") || /\.(png|jpe?g|gif|webp)$/.test(lower)) {
+      res.json({ kind: "image", name: f.name, media_type: f.type || "image/png", data: f.data });
+    } else if (/\.pdf$/.test(lower) || f.type === "application/pdf") {
+      res.json({ kind: "pdf", name: f.name, data: f.data });
+    } else {
+      res.status(415).json({ error: "Filtypen stöds inte för läsning." });
+    }
+  } catch (err) { console.error("[Simba] vault file failed:", err?.message || err); res.status(502).json({ error: "Kunde inte läsa bilagan." }); }
+});
+
+// Analyze the whole vault: gaps, inconsistencies, why-it-is, what to improve.
+app.post("/api/vault/analyze", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!apiKey) return res.status(503).json({ error: "Server saknar ANTHROPIC_API_KEY." });
+  try {
+    const dg = await vaultDigest(orgOf(user));
+    if (!dg.count) return res.json({ text: "Kunskapsbanken är tom — lägg till företagets fakta, dokument och policys först." });
+    const focus = String(req.body?.focus || "").slice(0, 500);
+    const sys = "Du är Simba och granskar företagets kunskapsbank (en delad kunskapsbas). " +
+      "Utifrån sammanfattningen: bedöm (1) täckning och LUCKOR (vad saknas?), (2) motsägelser/dubbletter/föråldrat, " +
+      "(3) strukturkvalitet på ämnena/grenarna, (4) VARFÖR banken ser ut som den gör, och (5) konkreta förbättringsförslag " +
+      "(vad ska läggas till, slås ihop, delas upp, förtydligas). Svara på svenska, kort och strukturerat med rubriker.";
+    const content = `Kunskapsbank: ${dg.count} poster i ämnena: ${dg.topics.join(", ")}.\n\nPoster:\n${dg.text}${focus ? `\n\nFokusera särskilt på: ${focus}` : ""}`;
+    const resp = await withRetry(() => client.messages.create({ model: MODEL, max_tokens: 4000, system: sys, messages: [{ role: "user", content }] }), "vault-analyze");
+    const text = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    res.json({ text, count: dg.count });
+  } catch (err) { console.error("[Simba] vault analyze failed:", err?.message || err); res.status(502).json({ error: "Kunde inte analysera kunskapsbanken." }); }
 });
 
 app.put("/api/vault/:id", async (req, res) => {
@@ -1191,7 +1242,7 @@ app.put("/api/vault/:id", async (req, res) => {
   if (!user) return;
   if (!canWriteVault(user)) return res.status(403).json({ error: "Du har inte behörighet att ändra kunskapsbanken." });
   try {
-    const entry = await updateEntry(orgOf(user), req.params.id, req.body || {});
+    const entry = await updateEntry(orgOf(user), req.params.id, req.body || {}); // body may include file
     if (!entry) return res.status(404).json({ error: "Hittades inte." });
     res.json({ entry });
   } catch (err) { console.error("[Simba] vault update failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte uppdatera posten." }); }

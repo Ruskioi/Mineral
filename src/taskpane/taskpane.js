@@ -53,7 +53,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "web_lookup", "run_code", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "web_lookup", "run_code", "list_files", "open_file", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -1014,6 +1014,35 @@ const tools = {
     } catch { return { error: "Kunde inte nå kunskapsbanken." }; }
   },
 
+  async analyze_vault({ focus }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att analysera kunskapsbanken." };
+    try {
+      const r = await fetch(`${API_BASE}/api/vault/analyze`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ focus }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte analysera." };
+      return { analysis: j.text, count: j.count };
+    } catch { return { error: "Kunde inte nå kunskapsbanken." }; }
+  },
+
+  async open_vault_file({ id }) {
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft först." };
+    if (!id) return { error: "Ange postens id (från search_vault)." };
+    try {
+      const r = await fetch(`${API_BASE}/api/vault/${encodeURIComponent(id)}/file`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j.error || "Kunde inte öppna bilagan." };
+      if (j.kind === "text") return { name: j.name, text: j.text };
+      if (j.kind === "image") return { name: j.name, image: { media_type: j.media_type, data: j.data } };
+      if (j.kind === "pdf") return { name: j.name, document: { media_type: "application/pdf", data: j.data } };
+      return { error: "Okänt filinnehåll." };
+    } catch { return { error: "Kunde inte nå kunskapsbanken." }; }
+  },
+
   /* ---------------- agent control: plan + delegate ---------------- */
 
   async propose_plan({ title, steps }) {
@@ -1557,6 +1586,7 @@ const READ_TOOLS = new Set([
   "get_selection", "read_range", "get_sheet_info", "list_sheets", "describe_workbook",
   "find", "capture_view", "analyze_data", "web_lookup", "run_code", "trace_cell",
   "list_charts", "list_files", "open_file", "list_schedules",
+  "search_vault", "analyze_vault", "open_vault_file",
 ]);
 
 // Run a single tool call: render its activity step, execute it (respecting the
@@ -2176,6 +2206,8 @@ function toolResultHint(name, input, result) {
     case "remember": return result.saved ? "sparat" : "";
     case "search_vault": return Array.isArray(result.entries) ? `${result.entries.length} träffar` : "";
     case "save_to_vault": return result.saved ? "sparat" : "";
+    case "analyze_vault": return typeof result.count === "number" ? `${result.count} poster` : "";
+    case "open_vault_file": return result.name || "";
     case "run_code": return result.result ? "klart" : "";
     case "propose_plan": return result.approved ? "godkänd" : (result.approved === false ? "avböjd" : "");
     case "delegate_task": return typeof result.steps === "number" ? `${result.steps} steg` : "";
@@ -2238,6 +2270,8 @@ function toolLabel(name, input) {
     remember: "Sparar i minnet",
     search_vault: input?.query ? `Söker i kunskapsbanken: "${input.query}"` : "Söker i kunskapsbanken",
     save_to_vault: "Sparar i kunskapsbanken",
+    analyze_vault: "Analyserar kunskapsbanken",
+    open_vault_file: "Öppnar en bilaga ur kunskapsbanken",
     propose_plan: "Gör upp en plan",
     delegate_task: input?.task ? `Delegerar: ${String(input.task).slice(0, 40)}` : "Delegerar en deluppgift",
     find_errors: "Söker efter formelfel",
@@ -3137,6 +3171,8 @@ function renderAgentRun(agent) {
 
 /* ---- Company knowledge vault (Simba's shared mind) --------------------- */
 let vaultCanWrite = false;
+let vaultView = "list";   // "list" | "map"
+let vaultEntries = [];    // cached for the map view + filtering
 async function openVault() {
   const token = await getSsoToken(false);
   if (!token) {
@@ -3151,17 +3187,33 @@ async function openVault() {
   openModal(
     `<div class="vault-head">
        <div><h3 style="margin:0">Kunskapsbank</h3><p class="sub" style="margin:2px 0 0">Företagets delade minne — Simba grundar sina svar i detta i varje session.</p></div>
-       <button class="btn primary" id="vault-new" style="flex:none;padding:7px 12px">＋ Ny</button>
+       <div style="display:flex;gap:6px;flex:none">
+         <button class="btn" id="vault-analyze" style="padding:7px 12px">Analysera</button>
+         <button class="btn primary" id="vault-new" style="padding:7px 12px">＋ Ny</button>
+       </div>
      </div>
-     <input id="vault-q" class="files-q" type="search" placeholder="Sök i kunskapsbanken…" autocomplete="off" />
+     <div class="tabs" id="vault-tabs" style="margin-bottom:10px">
+       <button class="tab active" data-v="list">Lista</button>
+       <button class="tab" data-v="map">Karta</button>
+     </div>
+     <input id="vault-q" class="files-q" type="search" placeholder="Sök (semantiskt + nyckelord)…" autocomplete="off" />
      <div id="vault-list" class="vault-list"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
      <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
   );
   els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
   els.modalCard.querySelector("#vault-new").onclick = () => vaultEdit(null);
+  els.modalCard.querySelector("#vault-analyze").onclick = analyzeVaultUI;
   const qEl = els.modalCard.querySelector("#vault-q");
   let deb;
   qEl.addEventListener("input", () => { clearTimeout(deb); deb = setTimeout(() => loadVault(qEl.value.trim()), 300); });
+  els.modalCard.querySelector("#vault-tabs").addEventListener("click", (e) => {
+    const t = e.target.closest(".tab");
+    if (!t) return;
+    els.modalCard.querySelectorAll("#vault-tabs .tab").forEach((x) => x.classList.toggle("active", x === t));
+    vaultView = t.dataset.v;
+    qEl.style.display = vaultView === "map" ? "none" : "";
+    if (vaultView === "map") renderVaultMap(); else loadVault(qEl.value.trim());
+  });
   loadVault("");
 }
 
@@ -3175,27 +3227,28 @@ async function loadVault(query) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { listEl.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta.")}</div>`; return; }
     vaultCanWrite = !!j.canWrite;
+    vaultEntries = j.entries || [];
     const newBtn = els.modalCard.querySelector("#vault-new");
     if (newBtn) newBtn.hidden = !vaultCanWrite;
-    const entries = j.entries || [];
-    if (!entries.length) {
-      listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Tomt än. Lägg till företagets fakta, policys och definitioner så minns Simba dem överallt.</div>';
+    if (vaultView === "map") { renderVaultMap(); return; }
+    if (!vaultEntries.length) {
+      listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Tomt än. Lägg till företagets fakta, policys, dokument och definitioner så minns Simba dem överallt.</div>';
       return;
     }
-    // Group by topic (the "branches" of the mind map).
     const byTopic = {};
-    for (const e of entries) (byTopic[e.topic] = byTopic[e.topic] || []).push(e);
+    for (const e of vaultEntries) (byTopic[e.topic] = byTopic[e.topic] || []).push(e);
     listEl.innerHTML = Object.keys(byTopic).sort().map((topic) =>
       `<div class="vault-topic"><div class="vault-topic-h">${escapeHtml(topic)} <span class="vault-count">${byTopic[topic].length}</span></div>` +
       byTopic[topic].map((e) => `
         <div class="vault-item" data-id="${escapeHtml(e.id)}">
-          <div class="vault-main"><div class="vault-title">${escapeHtml(e.title)}</div>
+          <div class="vault-main"><div class="vault-title">${e.file ? "📎 " : ""}${escapeHtml(e.title)}</div>
           <div class="vault-snip">${escapeHtml(String(e.content).slice(0, 140))}</div></div>
-          ${vaultCanWrite ? `<div class="vault-acts"><button class="conv-act" data-act="edit" title="Redigera">✎</button><button class="conv-act" data-act="del" title="Ta bort">🗑</button></div>` : ""}
+          <div class="vault-acts">${e.file ? `<button class="conv-act" data-act="open" title="Öppna bilaga">📄</button>` : ""}${vaultCanWrite ? `<button class="conv-act" data-act="edit" title="Redigera">✎</button><button class="conv-act" data-act="del" title="Ta bort">🗑</button>` : ""}</div>
         </div>`).join("") + `</div>`).join("");
     listEl.querySelectorAll(".vault-item").forEach((it) => {
       const id = it.dataset.id;
-      const entry = entries.find((e) => e.id === id);
+      const entry = vaultEntries.find((e) => e.id === id);
+      it.querySelector('[data-act="open"]')?.addEventListener("click", () => openVaultFilePreview(id, entry));
       it.querySelector('[data-act="edit"]')?.addEventListener("click", () => vaultEdit(entry));
       it.querySelector('[data-act="del"]')?.addEventListener("click", async () => {
         if (!(await uiConfirm(`Ta bort "${entry.title}" ur kunskapsbanken?`, { danger: true }))) { openVault(); return; }
@@ -3207,9 +3260,97 @@ async function loadVault(query) {
   } catch { listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå kunskapsbanken.</div>'; }
 }
 
-// Add or edit a vault entry, then return to the vault list.
+// A radial mind map: the company at the centre, topics as branches sized by
+// how much they hold. Click a branch to filter the list to it.
+function renderVaultMap() {
+  const listEl = els.modalCard.querySelector("#vault-list");
+  if (!listEl) return;
+  const byTopic = {};
+  for (const e of vaultEntries) (byTopic[e.topic] = byTopic[e.topic] || []).push(e);
+  const topics = Object.keys(byTopic).sort();
+  if (!topics.length) { listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Inget att kartlägga än.</div>'; return; }
+  const W = 600, H = 420, cx = W / 2, cy = H / 2, R = 150;
+  const nodes = topics.map((t, i) => {
+    const a = (i / topics.length) * Math.PI * 2 - Math.PI / 2;
+    const n = byTopic[t].length;
+    return { t, n, x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R, r: Math.max(20, Math.min(40, 16 + n * 3)) };
+  });
+  const lines = nodes.map((n) => `<line x1="${cx}" y1="${cy}" x2="${n.x.toFixed(1)}" y2="${n.y.toFixed(1)}" stroke="var(--border-strong)" stroke-width="1.5"/>`).join("");
+  const blobs = nodes.map((n) => `
+    <g class="vm-node" data-topic="${escapeHtml(n.t)}" style="cursor:pointer">
+      <circle cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${n.r}" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1.5"/>
+      <text x="${n.x.toFixed(1)}" y="${(n.y - 1).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="var(--ink)">${escapeHtml(n.t.slice(0, 12))}</text>
+      <text x="${n.x.toFixed(1)}" y="${(n.y + 12).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--accent-strong)">${n.n}</text>
+    </g>`).join("");
+  listEl.innerHTML =
+    `<svg class="vault-map" viewBox="0 0 ${W} ${H}" role="img" aria-label="Kunskapskarta">
+       ${lines}
+       <circle cx="${cx}" cy="${cy}" r="46" fill="var(--accent)"/>
+       <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Företaget</text>
+       <text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="10" fill="#fff" opacity="0.85">${vaultEntries.length} poster</text>
+       ${blobs}
+     </svg>`;
+  listEl.querySelectorAll(".vm-node").forEach((g) => g.addEventListener("click", () => {
+    // Switch to the list filtered to this branch.
+    vaultView = "list";
+    els.modalCard.querySelectorAll("#vault-tabs .tab").forEach((x) => x.classList.toggle("active", x.dataset.v === "list"));
+    const qEl = els.modalCard.querySelector("#vault-q");
+    qEl.style.display = ""; qEl.value = "";
+    const topic = g.dataset.topic;
+    const saved = vaultEntries;
+    vaultEntries = saved.filter((e) => e.topic === topic);
+    // reuse list rendering with the filtered set
+    const tmp = vaultEntries; vaultEntries = tmp; renderFilteredList();
+  }));
+}
+function renderFilteredList() {
+  const listEl = els.modalCard.querySelector("#vault-list");
+  if (!listEl) return;
+  listEl.innerHTML = vaultEntries.map((e) => `
+    <div class="vault-item" data-id="${escapeHtml(e.id)}">
+      <div class="vault-main"><div class="vault-title">${e.file ? "📎 " : ""}${escapeHtml(e.title)}</div>
+      <div class="vault-snip">[${escapeHtml(e.topic)}] ${escapeHtml(String(e.content).slice(0, 140))}</div></div>
+      <div class="vault-acts">${e.file ? `<button class="conv-act" data-act="open">📄</button>` : ""}${vaultCanWrite ? `<button class="conv-act" data-act="edit">✎</button>` : ""}</div>
+    </div>`).join("");
+  listEl.querySelectorAll(".vault-item").forEach((it) => {
+    const entry = vaultEntries.find((e) => e.id === it.dataset.id);
+    it.querySelector('[data-act="open"]')?.addEventListener("click", () => openVaultFilePreview(entry.id, entry));
+    it.querySelector('[data-act="edit"]')?.addEventListener("click", () => vaultEdit(entry));
+  });
+}
+
+// Open an entry's attachment in the artifact-style preview.
+async function openVaultFilePreview(id, entry) {
+  const res = await tools.open_vault_file({ id });
+  if (res.error) { toast(res.error, "error", 3000); return; }
+  if (res.text != null) openArtifact(`<pre style="white-space:pre-wrap;font-family:system-ui;padding:14px">${escapeHtml(res.text)}</pre>`);
+  else if (res.image) openArtifact(`<img src="data:${res.image.media_type};base64,${res.image.data}" style="max-width:100%"/>`);
+  else if (res.document) {
+    openModal(`<div class="artifact-head"><h3 style="margin:0">${escapeHtml(entry?.title || "Dokument")}</h3><button class="btn" data-act="close">Stäng</button></div>
+      <iframe class="artifact-frame" title="PDF"></iframe>`);
+    els.modalCard.classList.add("wide");
+    els.modalCard.querySelector(".artifact-frame").src = `data:application/pdf;base64,${res.document.data}`;
+    els.modalCard.querySelector('[data-act="close"]').onclick = closeModalSilently;
+  }
+}
+
+async function analyzeVaultUI() {
+  openModal(`<h3>Analys av kunskapsbanken</h3><div class="hint" style="padding:8px 2px"><span class="spinner"></span> Simba granskar banken…</div>`);
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/vault/analyze`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: "{}" });
+    const j = await r.json().catch(() => ({}));
+    const body = r.ok ? formatMarkdown(j.text || "") : `<p>${escapeHtml(j.error || "Kunde inte analysera.")}</p>`;
+    openModal(`<div class="artifact-head"><h3 style="margin:0">Analys av kunskapsbanken</h3><button class="btn" data-act="back">Tillbaka</button></div><div class="bubble" style="max-height:60vh;overflow:auto">${body}</div><div class="modal-actions"><button class="btn primary" data-act="close">Klar</button></div>`);
+    els.modalCard.querySelector('[data-act="back"]').onclick = () => openVault();
+    els.modalCard.querySelector('[data-act="close"]').onclick = closeModalSilently;
+  } catch { toast("Kunde inte nå kunskapsbanken.", "error", 3000); }
+}
+
+// Add or edit a vault entry (optionally with a file/PDF/document), then return.
 function vaultEdit(entry) {
   const e = entry || { topic: "Allmänt", title: "", content: "", tags: [] };
+  let pickedFile = null; // {name,type,data,text}
   openModal(
     `<h3>${entry ? "Redigera post" : "Ny post"}</h3>
      <label class="vault-l">Ämne / gren</label>
@@ -3220,8 +3361,25 @@ function vaultEdit(entry) {
      <textarea id="v-content" class="memory-text" rows="6" placeholder="Faktan, skriven så den är användbar senare.">${escapeHtml(e.content || "")}</textarea>
      <label class="vault-l">Taggar (kommaseparerade)</label>
      <input id="v-tags" class="files-q" type="text" value="${escapeHtml((e.tags || []).join(", "))}" placeholder="valfritt" />
+     <label class="vault-l">Bilaga (dokument, PDF, bild, CSV) — valfritt</label>
+     <div style="display:flex;align-items:center;gap:8px"><button class="btn" id="v-filebtn" type="button">Välj fil…</button><span id="v-filename" class="hint">${e.file ? escapeHtml(e.file.name) + " (befintlig)" : "Ingen vald"}</span></div>
+     <input type="file" id="v-file" accept=".csv,.tsv,.txt,.md,.json,.tab,image/png,image/jpeg,image/gif,image/webp,application/pdf" hidden />
      <div class="modal-actions"><button class="btn" data-act="cancel">Avbryt</button><button class="btn primary" data-act="save">Spara</button></div>`
   );
+  const fileInput = els.modalCard.querySelector("#v-file");
+  els.modalCard.querySelector("#v-filebtn").onclick = () => fileInput.click();
+  fileInput.onchange = async () => {
+    const f = fileInput.files?.[0];
+    if (!f) return;
+    if (f.size > 9 * 1024 * 1024) { toast("Filen är för stor (max 9 MB).", "error", 3000); return; }
+    const type = f.type || "";
+    const isText = /^text\//.test(type) || /\.(csv|tsv|txt|md|json|tab)$/i.test(f.name);
+    try {
+      if (isText) { const text = await readFile(f, false); pickedFile = { name: f.name, type: type || "text/plain", data: btoa(unescape(encodeURIComponent(text))), text: text.slice(0, 16000) }; }
+      else { const data = (await readFile(f, true)).split(",")[1]; pickedFile = { name: f.name, type, data, text: "" }; }
+      els.modalCard.querySelector("#v-filename").textContent = f.name;
+    } catch { toast("Kunde inte läsa filen.", "error", 3000); }
+  };
   els.modalCard.querySelector('[data-act="cancel"]').onclick = () => openVault();
   els.modalCard.querySelector('[data-act="save"]').onclick = async () => {
     const body = {
@@ -3230,6 +3388,7 @@ function vaultEdit(entry) {
       content: els.modalCard.querySelector("#v-content").value.trim(),
       tags: els.modalCard.querySelector("#v-tags").value.split(",").map((s) => s.trim()).filter(Boolean),
     };
+    if (pickedFile) body.file = pickedFile;
     if (!body.title || !body.content) { toast("Ange titel och innehåll.", "error", 2500); return; }
     const token = await getSsoToken(false);
     const url = entry ? `${API_BASE}/api/vault/${encodeURIComponent(entry.id)}` : `${API_BASE}/api/vault`;

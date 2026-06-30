@@ -37,6 +37,11 @@ await createEntry("t-test", { topic: "X", title: "Pris", content: "Produkten kos
 const _vaultHits = await searchVault("t-test", "vad kostar produkten");
 const _vaultOtherOrgCount = (await listVault("t-other")).length;
 void retrieveForContext;
+// File attachment round-trip (extracted text searchable; bytes retrievable).
+const _vaultMod = await import("../server/vault.js");
+const _fEntry = await _vaultMod.createEntry("t-file", { topic: "Y", title: "Prislista", content: "x", file: { name: "p.csv", type: "text/csv", data: Buffer.from("Plan,Pris").toString("base64"), text: "Plan,Pris" } });
+const _vf = await _vaultMod.getFile("t-file", _fEntry.id);
+const _vaultFileBytes = _vf ? Buffer.from(_vf.data, "base64").toString() : "";
 
 console.log("\nSimba ship-safety checks\n");
 
@@ -361,6 +366,23 @@ check("company knowledge vault (Simba's shared mind) is wired", () => {
   // store behavior (org-scoped CRUD + keyword retrieval), prepared below
   assert(_vaultHits.some((e) => e.title === "Pris"), "vault keyword search should find the entry");
   assert(_vaultOtherOrgCount === 0, "vault must be isolated per org");
+});
+
+check("vault is a rich knowledge base (vectors, files, analyze, map)", () => {
+  // semantic search (Voyage), gated + cosine helper
+  const emb = read("server/embeddings.js");
+  assert(/api\.voyageai\.com/.test(emb) && /export function cosine/.test(emb), "embeddings/vector search missing");
+  assert(/vectorEnabled/.test(server) && /sim \* 8 \+ kw/.test(read("server/vault.js")), "hybrid (vector+keyword) search missing");
+  // file attachments + retrieval
+  assert(/file_data/.test(read("server/vault.js")), "vault attachment storage missing");
+  assert(/app\.get\("\/api\/vault\/:id\/file"/.test(server), "vault file endpoint missing");
+  assert(_vaultFileBytes === "Plan,Pris", "attachment bytes should round-trip");
+  // analyze + tools
+  assert(/app\.post\("\/api\/vault\/analyze"/.test(server) && /name: "analyze_vault"/.test(server), "vault analyze missing");
+  assert(/name: "open_vault_file"/.test(server), "open_vault_file tool missing");
+  // client: map + analyze UI + file attach
+  assert(/function renderVaultMap/.test(taskpane) && /function analyzeVaultUI/.test(taskpane), "vault map / analyze UI missing");
+  assert(/id="v-file"/.test(taskpane), "vault entry file-attach UI missing");
 });
 
 check("Tier 1 features (stop, conv management, job email, user quota)", () => {
