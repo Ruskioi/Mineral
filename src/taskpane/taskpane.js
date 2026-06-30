@@ -208,6 +208,8 @@ function boot(isExcel) {
   applyTheme(store.get("simba.theme", "auto"));
   syncEditModeButtons();
   document.querySelector(".brand-mark").innerHTML = MASCOT_IMG;
+  const wm = document.getElementById("chat-watermark"); // faint grey mascot behind the chat
+  if (wm) wm.innerHTML = MASCOT_IMG;
 
   els.send.addEventListener("click", onSend);
   els.prompt.addEventListener("keydown", (e) => {
@@ -2580,6 +2582,7 @@ function scrollDown() {
 
 function clearWelcome() {
   els.messages.querySelector(".welcome")?.remove();
+  document.body.classList.add("has-chat"); // let the mascot watermark recede
 }
 
 function resetChat() {
@@ -2587,6 +2590,7 @@ function resetChat() {
   messages = [];
   els.messages.innerHTML = welcomeHTML();
   bindSuggestions();
+  document.body.classList.remove("has-chat"); // bring the welcome + watermark back
   if (signedIn) {
     conversationId = null; // a fresh server conversation is created on first save
   }
@@ -2696,6 +2700,7 @@ async function refreshSidebar() {
 // Rebuild the visible chat from a stored message list (skips tool plumbing).
 function renderHistory(msgs) {
   els.messages.innerHTML = "";
+  document.body.classList.toggle("has-chat", Array.isArray(msgs) && msgs.length > 0);
   for (const m of msgs) {
     if (m.role === "user") {
       const c = m.content;

@@ -237,6 +237,16 @@ check("PWA (installable web app) is wired", () => {
   assert(/site\.webmanifest/.test(wp) && /sw\.js/.test(wp), "webpack must copy the PWA files to the root");
 });
 
+check("chat mascot watermark + scroll fix are wired", () => {
+  const tp = read("src/taskpane/taskpane.html");
+  const css = read("src/taskpane/taskpane.css");
+  assert(/id="chat-watermark"/.test(tp), "watermark element missing from the template");
+  assert(/getElementById\("chat-watermark"\)/.test(taskpane), "client must fill the watermark with the mascot");
+  assert(/\.chat-watermark/.test(css) && /grayscale\(1\)/.test(css), "watermark must render the mascot in grey");
+  assert(/body\.has-chat/.test(css) && /classList\.add\("has-chat"\)/.test(taskpane), "watermark should recede once a chat starts");
+  assert(/\.messages\s*\{[^}]*min-height:\s*0/.test(css), "messages must set min-height:0 so content scrolls instead of being cut off");
+});
+
 check("web entry + conversation sidebar are wired", () => {
   const wp = read("webpack.config.js");
   assert(/filename:\s*"index\.html"/.test(wp), "webpack must emit index.html (the web entry)");
