@@ -12,7 +12,8 @@
  */
 import ExcelJS from "exceljs";
 import { dueJobs, recordRun, claimJob } from "./jobs.js";
-import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, graphAppConfigured } from "./graph.js";
+import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, listMailboxMessages, graphAppConfigured } from "./graph.js";
+import { allEnabledAgents, setAgentState, logRun, createApproval } from "./orgagents.js";
 import { XLSX_TOOLS, executeXlsxTool } from "./xlsx-tools.js";
 
 const TICK_MS = Number(process.env.SIMBA_SCHEDULER_TICK_MS || 60_000);
@@ -116,6 +117,7 @@ async function tick(client, model) {
   } finally {
     running = false;
   }
+  await tickAgents(client, model); // centralized org agents (time reconciler, …)
 }
 
 // Email the job's owner a short summary of the run (best effort, opt-in per job).
@@ -131,6 +133,64 @@ async function notify(job, status, result) {
   const html = `<p>Ditt schemalagda jobb <b>${esc(job.name)}</b> mot <b>${esc(t.fileName)}</b> ${ok ? "kördes klart" : "misslyckades"}.</p>` +
     `<p>${esc(result)}</p><hr><p style="color:#888;font-size:12px">Skickat automatiskt av Simba AI.</p>`;
   await sendMailAsUser(token, oid, t.email, subject, html);
+}
+
+const esc = (s) => String(s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+// Run one centralized org agent now. Currently: the time reconciler.
+export async function runOrgAgent(client, model, agent) {
+  if (agent.type !== "time_reconciler") return { status: "skipped", summary: "Okänd agenttyp." };
+  const tid = agent.org_key;
+  const cfg = agent.config || {};
+  if (!cfg.mailbox || !cfg.recipient) return { status: "error", summary: "Saknar mailbox eller mottagare." };
+  const offset = Number.isFinite(cfg.tzOffset) ? cfg.tzOffset : 0;
+  const now = new Date(Date.now() - offset * 60_000);
+  const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const sinceIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+
+  const token = await appOnlyGraphToken(tid);
+  const msgs = await listMailboxMessages(token, cfg.mailbox, sinceIso);
+  const submissions = msgs.map((m) => `Från: ${m.fromName || m.from} <${m.from}> (${m.received})\n${m.body}`).join("\n\n---\n\n").slice(0, 40000);
+
+  const sys = "Du är en tidsavstämmare. Sammanställ de inrapporterade timmarna till en tydlig tabell (Person | Timmar) plus en total, på svenska. Lyft fram oklarheter och vilka som inte rapporterat om det går att avgöra. Skriv ett kort, proffsigt mejl med sammanställningen. Hitta ALDRIG på siffror.";
+  const content = `Period: ${period}. Mejl inkomna till ${cfg.mailbox}:\n\n${submissions || "(inga mejl inkomna denna period)"}`;
+  const resp = await client.messages.create({ model, max_tokens: 3000, system: sys, messages: [{ role: "user", content }] });
+  const bodyText = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim() || "Inga timmar inrapporterade denna period.";
+  const subject = `Tidsammanställning ${period}`;
+
+  const run = await logRun(tid, agent.id, { status: "compiled", summary: `Sammanställde ${msgs.length} inrapporteringar för ${period}`, detail: { count: msgs.length, period } });
+
+  if (cfg.requireApproval !== false) {
+    await createApproval(tid, agent.id, run.id, "send_email", { to: cfg.recipient, subject, body: bodyText, mailbox: cfg.mailbox });
+    return { status: "awaiting_approval", summary: `Väntar på godkännande – ${msgs.length} inrapporteringar för ${period}`, period };
+  }
+  await sendMailAsUser(token, cfg.mailbox, cfg.recipient, subject, `<pre style="white-space:pre-wrap;font-family:system-ui">${esc(bodyText)}</pre>`);
+  await logRun(tid, agent.id, { status: "sent", summary: `Skickade sammanställningen till ${cfg.recipient}` });
+  return { status: "sent", summary: `Skickade till ${cfg.recipient}`, period };
+}
+
+// On each tick, run due time-reconciler agents (once per month, on/after runDay).
+async function tickAgents(client, model) {
+  let agents = [];
+  try { agents = await allEnabledAgents(); } catch (e) { console.error("[Simba] agents list failed:", e?.message || e); return; }
+  for (const a of agents) {
+    if (a.type !== "time_reconciler") continue;
+    const cfg = a.config || {};
+    const offset = Number.isFinite(cfg.tzOffset) ? cfg.tzOffset : 0;
+    const now = new Date(Date.now() - offset * 60_000);
+    const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    if (now.getUTCDate() < (Number(cfg.runDay) || 25)) continue;
+    if ((a.state || {}).lastPeriod === period) continue; // already handled this month
+    try {
+      const res = await runOrgAgent(client, model, a);
+      await setAgentState(a.org_key, a.id, { lastPeriod: period, lastResult: res.status });
+      console.log(`[Simba] agent ${a.id} (${a.name}) -> ${res.status}`);
+    } catch (e) {
+      console.error(`[Simba] agent ${a.id} failed:`, e?.message || e);
+      await logRun(a.org_key, a.id, { status: "error", summary: (e?.message || "Fel").slice(0, 300) }).catch(() => {});
+      await setAgentState(a.org_key, a.id, { lastPeriod: period }).catch(() => {});
+    }
+  }
 }
 
 export const schedulerEnabled = process.env.SIMBA_SCHEDULER === "1" && graphAppConfigured;

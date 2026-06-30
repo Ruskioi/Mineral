@@ -3333,12 +3333,17 @@ function openAgents() {
     </button>`).join("");
   openModal(
     `<h3>Agenter</h3>
-     <p class="sub">Specialiserade hjälpare som styr Simba mot en sorts arbete. Välj en — den gäller tills du stänger av den.</p>
-     <div class="agent-grid">${cards}</div>
-     <div class="modal-actions">
-       ${activeAgent ? '<button class="btn" id="agent-off">Stäng av agent</button>' : ""}
-       <button class="btn primary" data-act="cancel">Klar</button>
-     </div>`
+     <div class="tabs" id="agent-tabs" style="margin-bottom:10px">
+       <button class="tab active" data-v="personas">Snabbagenter</button>
+       ${ssoServerConfigured ? '<button class="tab" data-v="org">Organisation</button>' : ""}
+     </div>
+     <div id="agent-personas">
+       <p class="sub">Specialiserade hjälpare som styr Simba mot en sorts arbete. Välj en — den gäller tills du stänger av den.</p>
+       <div class="agent-grid">${cards}</div>
+       ${activeAgent ? '<div class="modal-actions"><button class="btn" id="agent-off">Stäng av agent</button></div>' : ""}
+     </div>
+     <div id="agent-org" hidden></div>
+     <div class="modal-actions"><button class="btn primary" data-act="cancel">Klar</button></div>`
   );
   els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
   const off = els.modalCard.querySelector("#agent-off");
@@ -3346,9 +3351,149 @@ function openAgents() {
   els.modalCard.querySelectorAll(".agent-card").forEach((b) =>
     b.addEventListener("click", () => {
       const a = AGENTS.find((x) => x.id === b.dataset.id);
-      setActiveAgent(activeAgent?.id === a.id ? null : a); // tap again to toggle off
+      setActiveAgent(activeAgent?.id === a.id ? null : a);
       closeModalSilently();
     }));
+  const tabs = els.modalCard.querySelector("#agent-tabs");
+  let orgLoaded = false;
+  tabs?.addEventListener("click", (e) => {
+    const t = e.target.closest(".tab"); if (!t) return;
+    tabs.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
+    const org = t.dataset.v === "org";
+    els.modalCard.querySelector("#agent-personas").hidden = org;
+    els.modalCard.querySelector("#agent-org").hidden = !org;
+    if (org && !orgLoaded) { orgLoaded = true; renderOrgAgents(); }
+  });
+}
+
+// The centralized org agents tab: pending approvals + the agent roster with
+// activity logs, all visible to the org; management/approval are admin-only.
+async function renderOrgAgents() {
+  const el = els.modalCard.querySelector("#agent-org");
+  if (!el) return;
+  el.innerHTML = '<div class="hint" style="padding:6px 2px">Laddar…</div>';
+  try {
+    const token = await getSsoToken(false);
+    if (!token) { el.innerHTML = '<div class="hint" style="padding:6px 2px">Logga in med Microsoft för att se organisationens agenter.</div>'; return; }
+    const auth = { Authorization: `Bearer ${token}` };
+    const [aR, apR] = await Promise.all([
+      fetch(`${API_BASE}/api/agents`, { headers: auth }).then((r) => r.json()).catch(() => ({})),
+      fetch(`${API_BASE}/api/agents-approvals`, { headers: auth }).then((r) => r.json()).catch(() => ({})),
+    ]);
+    const agents = aR.agents || [];
+    const canManage = !!aR.canManage;
+    const approvals = apR.approvals || [];
+    const canDecide = !!apR.canDecide;
+
+    const approvalsHtml = approvals.length ? `
+      <div class="oa-section"><div class="oa-h">⏳ Väntar på godkännande</div>
+      ${approvals.map((ap) => `
+        <div class="oa-appr" data-id="${escapeHtml(ap.id)}">
+          <div class="oa-appr-main"><b>${escapeHtml(ap.payload?.subject || ap.kind)}</b>
+          <div class="sched-meta">Till: ${escapeHtml(ap.payload?.to || "")}</div>
+          <pre class="oa-preview">${escapeHtml(String(ap.payload?.body || "").slice(0, 1200))}</pre></div>
+          ${canDecide ? `<div class="oa-appr-acts"><button class="btn danger" data-act="reject">Avvisa</button><button class="btn primary" data-act="approve">Godkänn & skicka</button></div>` : '<div class="hint">Endast administratörer kan godkänna.</div>'}
+        </div>`).join("")}</div>` : "";
+
+    const agentsHtml = `
+      <div class="oa-section"><div class="oa-h" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🤖 Organisationens agenter</span>
+        ${canManage ? '<button class="btn primary" id="oa-new" style="padding:5px 10px">＋ Ny</button>' : ""}
+      </div>
+      ${agents.length ? agents.map((a) => `
+        <div class="oa-agent" data-id="${escapeHtml(a.id)}">
+          <div class="oa-agent-head">
+            <div><div class="vault-title">${a.enabled ? "" : "⏸ "}${escapeHtml(a.name)}</div>
+            <div class="sched-meta">${escapeHtml(agentTypeLabel(a.type))}${a.state?.lastResult ? ` · senast: ${escapeHtml(a.state.lastResult)}` : ""}${a.config?.mailbox ? ` · ${escapeHtml(a.config.mailbox)}` : ""}</div></div>
+            <div class="oa-agent-acts">
+              <button class="btn oa-act" data-act="activity" style="padding:4px 9px">Aktivitet</button>
+              ${canManage ? '<button class="btn oa-act" data-act="run" style="padding:4px 9px">Kör nu</button><button class="msg-act" data-act="del" title="Ta bort">🗑</button>' : ""}
+            </div>
+          </div>
+          <div class="oa-runs" hidden></div>
+        </div>`).join("") : '<div class="hint" style="padding:4px 2px">Inga centrala agenter än.' + (canManage ? " Skapa en tidsavstämmare med ＋ Ny." : " Be en administratör skapa en.") + "</div>"}
+      </div>`;
+
+    el.innerHTML = approvalsHtml + agentsHtml;
+
+    // wire approvals
+    el.querySelectorAll(".oa-appr").forEach((row) => {
+      const id = row.dataset.id;
+      const decide = async (approve) => {
+        row.querySelectorAll("button").forEach((b) => (b.disabled = true));
+        const t = await getSsoToken(false);
+        const r = await fetch(`${API_BASE}/api/agents-approvals/${encodeURIComponent(id)}/decide`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({ approve }) });
+        if (r.ok) { toast(approve ? "Godkänt och skickat" : "Avvisat", "success", 1800); renderOrgAgents(); }
+        else { const j = await r.json().catch(() => ({})); toast(j.error || "Misslyckades", "error", 3000); renderOrgAgents(); }
+      };
+      row.querySelector('[data-act="approve"]')?.addEventListener("click", () => decide(true));
+      row.querySelector('[data-act="reject"]')?.addEventListener("click", () => decide(false));
+    });
+    // wire agents
+    el.querySelectorAll(".oa-agent").forEach((card) => {
+      const id = card.dataset.id;
+      card.querySelector('[data-act="activity"]')?.addEventListener("click", () => toggleAgentRuns(card, id));
+      card.querySelector('[data-act="run"]')?.addEventListener("click", async () => {
+        toast("Kör agenten…", "info", 1500);
+        const t = await getSsoToken(false);
+        const r = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(id)}/run`, { method: "POST", headers: { Authorization: `Bearer ${t}` } });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok) { toast(`Klart: ${j.result?.status || "ok"}`, "success", 2500); renderOrgAgents(); }
+        else toast(j.error || "Körningen misslyckades", "error", 3500);
+      });
+      card.querySelector('[data-act="del"]')?.addEventListener("click", async () => {
+        if (!(await uiConfirm("Ta bort den här agenten?", { danger: true }))) { renderOrgAgents(); return; }
+        const t = await getSsoToken(false);
+        await fetch(`${API_BASE}/api/agents/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${t}` } }).catch(() => {});
+        renderOrgAgents();
+      });
+    });
+    el.querySelector("#oa-new")?.addEventListener("click", agentCreateForm);
+  } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte hämta agenter.</div>'; }
+}
+
+function agentTypeLabel(t) { return ({ time_reconciler: "Tidsavstämmare" }[t]) || t; }
+
+async function toggleAgentRuns(card, id) {
+  const box = card.querySelector(".oa-runs");
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false; box.innerHTML = '<div class="hint" style="padding:4px 2px">Laddar aktivitet…</div>';
+  const t = await getSsoToken(false);
+  const r = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(id)}/runs`, { headers: { Authorization: `Bearer ${t}` } });
+  const j = await r.json().catch(() => ({}));
+  const runs = j.runs || [];
+  box.innerHTML = runs.length
+    ? runs.map((x) => `<div class="oa-run"><span class="oa-run-st oa-${escapeHtml(x.status)}">${escapeHtml(x.status || "")}</span> <span class="sched-meta">${escapeHtml(mailDate(x.at))} · ${escapeHtml(x.summary || "")}</span></div>`).join("")
+    : '<div class="hint" style="padding:4px 2px">Ingen aktivitet än.</div>';
+}
+
+function agentCreateForm() {
+  openModal(
+    `<h3>Ny agent — Tidsavstämmare</h3>
+     <p class="sub">Samlar in timmar som mejlas till en adress och sammanställer dem på ett valt datum.</p>
+     <label class="vault-l">Namn</label><input id="oa-name" class="files-q" type="text" value="Tidsavstämmare" />
+     <label class="vault-l">Agentens e-postadress (dit folk mejlar sina timmar)</label><input id="oa-mailbox" class="files-q" type="text" placeholder="tidrapport@dittforetag.se" />
+     <label class="vault-l">Sammanställningen mejlas till</label><input id="oa-recipient" class="files-q" type="text" placeholder="ekonomi@dittforetag.se" />
+     <div class="dc-grid">
+       <div><label class="vault-l">Dag i månaden</label><input id="oa-day" class="files-q" type="number" min="1" max="31" value="25" /></div>
+       <div><label class="vault-l">Godkännande krävs</label><select id="oa-appr" class="mail-folder" style="width:100%"><option value="1">Ja – granska före utskick</option><option value="0">Nej – skicka direkt</option></select></div>
+     </div>
+     <div class="modal-actions"><button class="btn" data-act="back">Tillbaka</button><button class="btn primary" data-act="save">Skapa agent</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="back"]').onclick = () => openAgents();
+  els.modalCard.querySelector('[data-act="save"]').onclick = async () => {
+    const name = els.modalCard.querySelector("#oa-name").value.trim();
+    const mailbox = els.modalCard.querySelector("#oa-mailbox").value.trim();
+    const recipient = els.modalCard.querySelector("#oa-recipient").value.trim();
+    const runDay = Math.min(31, Math.max(1, parseInt(els.modalCard.querySelector("#oa-day").value, 10) || 25));
+    const requireApproval = els.modalCard.querySelector("#oa-appr").value === "1";
+    if (!name || !mailbox || !recipient) { toast("Fyll i namn, agentens adress och mottagare.", "error", 3000); return; }
+    const token = await getSsoToken(false);
+    const body = { name, type: "time_reconciler", config: { mailbox, recipient, runDay, requireApproval, tzOffset: new Date().getTimezoneOffset() } };
+    const r = await fetch(`${API_BASE}/api/agents`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }).catch(() => null);
+    if (r && r.ok) { toast("Agent skapad", "success", 1800); openAgents(); setTimeout(() => els.modalCard.querySelector('[data-v="org"]')?.click(), 50); }
+    else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte skapa.", "error", 3000); }
+  };
 }
 
 function setActiveAgent(agent) {
@@ -3673,6 +3818,29 @@ async function loadConnectors() {
   } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå datakälletjänsten.</div>'; }
 }
 
+// Ready-made templates so an admin just picks a system and pastes the key.
+const CONNECTOR_TEMPLATES = {
+  fortnox: {
+    name: "Fortnox", base_url: "https://api.fortnox.se/3", headers: ["Access-Token", "Client-Secret"],
+    endpoints: [
+      { label: "Fakturor", path: "invoices", description: "Alla kundfakturor" },
+      { label: "Obetalda fakturor", path: "invoices?filter=unpaid", description: "Obetalda/förfallna fakturor" },
+      { label: "Kunder", path: "customers", description: "Kundregister" },
+      { label: "Projekt", path: "projects", description: "Projekt" },
+      { label: "Verifikationer", path: "vouchers", description: "Bokföringsverifikat" },
+    ],
+  },
+  visma: {
+    name: "Visma eEkonomi", base_url: "https://eaccountingapi.vismaonline.com/v2", headers: ["Authorization"],
+    endpoints: [
+      { label: "Kundfakturor", path: "customerinvoices", description: "Kundfakturor" },
+      { label: "Kunder", path: "customers", description: "Kundregister" },
+      { label: "Projekt", path: "projects", description: "Projekt" },
+      { label: "Artiklar", path: "articles", description: "Artiklar/produkter" },
+    ],
+  },
+};
+
 // A structured connector builder: dynamic auth-header rows + endpoint cards,
 // each with a live "Testa"-button that calls the real API while you build it.
 function connectorEdit(c) {
@@ -3680,6 +3848,12 @@ function connectorEdit(c) {
   openModal(
     `<div class="artifact-head"><h3 style="margin:0">${c ? "Redigera datakälla" : "Bygg en datakälla"}</h3><button class="btn" data-act="cancel">Tillbaka</button></div>
      <div class="dc-build">
+       ${c ? "" : `<label class="vault-l">Mall (valfritt)</label>
+       <select id="dc-template" class="mail-folder" style="width:100%">
+         <option value="">— Egen / tom —</option>
+         <option value="fortnox">Fortnox</option>
+         <option value="visma">Visma eEkonomi</option>
+       </select>`}
        <div class="dc-grid">
          <div><label class="vault-l">Namn</label><input id="dc-name" class="files-q" type="text" value="${escapeHtml(e.name || "")}" placeholder="t.ex. Fortnox" /></div>
          <div><label class="vault-l">Bas-URL (HTTPS)</label><input id="dc-base" class="files-q" type="text" value="${escapeHtml(e.base_url || "https://")}" placeholder="https://api.fortnox.se/3" /></div>
@@ -3762,6 +3936,16 @@ function connectorEdit(c) {
 
   els.modalCard.querySelector("#dc-add-header").onclick = () => addHeaderRow();
   els.modalCard.querySelector("#dc-add-ep").onclick = () => addEndpoint();
+  const tmplSel = els.modalCard.querySelector("#dc-template");
+  if (tmplSel) tmplSel.onchange = () => {
+    const t = CONNECTOR_TEMPLATES[tmplSel.value];
+    if (!t) return;
+    els.modalCard.querySelector("#dc-name").value = t.name;
+    els.modalCard.querySelector("#dc-base").value = t.base_url;
+    headersWrap.innerHTML = ""; t.headers.forEach((h) => addHeaderRow(h, ""));
+    epsWrap.innerHTML = ""; t.endpoints.forEach(addEndpoint);
+    toast(`Mall: ${t.name} — fyll bara i API-nyckeln`, "info", 2500);
+  };
   els.modalCard.querySelector('[data-act="cancel"]').onclick = () => openConnectors();
   els.modalCard.querySelector('[data-act="cancel2"]').onclick = () => openConnectors();
   els.modalCard.querySelector('[data-act="save"]').onclick = async () => {

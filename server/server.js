@@ -21,7 +21,9 @@ import { getMemory, setMemory, usingPostgres, listConversations, getConversation
 import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, listAttachments, getAttachment, MAIL_SCOPE } from "./graph.js";
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
-import { startScheduler, schedulerEnabled } from "./scheduler.js";
+import { startScheduler, schedulerEnabled, runOrgAgent } from "./scheduler.js";
+import { appOnlyGraphToken, sendMailAsUser } from "./graph.js";
+import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, listRuns, listApprovals, getApproval, decideApproval, logRun } from "./orgagents.js";
 import { chooseModel, lastUserText } from "./router.js";
 import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
 import { listConnectors, createConnector, updateConnector, deleteConnector, queryConnector, testConnector } from "./connectors.js";
@@ -1255,6 +1257,88 @@ app.delete("/api/jobs/:id", async (req, res) => {
   if (!user) return;
   try { await deleteJob(user.key, req.params.id); res.json({ ok: true }); }
   catch (err) { console.error("[Simba] job delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort schemat." }); }
+});
+
+// ---- Centralized org agents (shared, logged, approvable) -----------------
+// Everyone in the org can see the agents and their activity; managing them and
+// approving their actions is admin-gated (SIMBA_VAULT_ADMINS).
+app.get("/api/agents", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ agents: await listAgents(orgOf(user)), canManage: canWriteVault(user) }); }
+  catch (err) { console.error("[Simba] agents list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta agenter." }); }
+});
+
+app.post("/api/agents", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan skapa agenter." });
+  try { res.json({ agent: await createAgent(orgOf(user), { ...req.body, createdBy: user.email || user.name }) }); }
+  catch (err) { console.error("[Simba] agent create failed:", err?.message || err); res.status(502).json({ error: "Kunde inte skapa agenten." }); }
+});
+
+app.put("/api/agents/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan ändra agenter." });
+  try { const a = await updateAgent(orgOf(user), req.params.id, req.body || {}); if (!a) return res.status(404).json({ error: "Hittades inte." }); res.json({ agent: a }); }
+  catch (err) { console.error("[Simba] agent update failed:", err?.message || err); res.status(502).json({ error: "Kunde inte uppdatera." }); }
+});
+
+app.delete("/api/agents/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan ta bort agenter." });
+  try { await deleteAgent(orgOf(user), req.params.id); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] agent delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort." }); }
+});
+
+app.get("/api/agents/:id/runs", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ runs: await listRuns(orgOf(user), req.params.id) }); }
+  catch (err) { console.error("[Simba] agent runs failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta aktivitet." }); }
+});
+
+// Run an agent now (admin) — handy for testing without waiting for the date.
+app.post("/api/agents/:id/run", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan köra agenter." });
+  try {
+    const a = await getAgent(orgOf(user), req.params.id);
+    if (!a) return res.status(404).json({ error: "Hittades inte." });
+    const result = await runOrgAgent(client, MODEL, { ...a, org_key: orgOf(user) });
+    res.json({ result });
+  } catch (err) { console.error("[Simba] agent run failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Körningen misslyckades." }); }
+});
+
+app.get("/api/agents-approvals", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ approvals: await listApprovals(orgOf(user), "pending"), canDecide: canWriteVault(user) }); }
+  catch (err) { console.error("[Simba] approvals list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta godkännanden." }); }
+});
+
+app.post("/api/agents-approvals/:id/decide", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan godkänna." });
+  const approve = req.body?.approve === true;
+  try {
+    const ap = await getApproval(orgOf(user), req.params.id);
+    if (!ap || ap.status !== "pending") return res.status(404).json({ error: "Hittades inte eller redan beslutad." });
+    if (approve && ap.kind === "send_email") {
+      const p = ap.payload || {};
+      const token = await appOnlyGraphToken(orgOf(user));
+      const html = `<pre style="white-space:pre-wrap;font-family:system-ui">${String(p.body || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`;
+      await sendMailAsUser(token, p.mailbox, p.to, p.subject, html);
+      await logRun(orgOf(user), ap.agent_id, { status: "sent", summary: `Godkänt av ${user.email || user.name} – skickade till ${p.to}` });
+    } else if (!approve) {
+      await logRun(orgOf(user), ap.agent_id, { status: "rejected", summary: `Avvisat av ${user.email || user.name}` });
+    }
+    res.json({ approval: await decideApproval(orgOf(user), req.params.id, approve ? "approved" : "rejected", user.email || user.name) });
+  } catch (err) { console.error("[Simba] approval decide failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte slutföra." }); }
 });
 
 // ---- Finance / business-system connectors (bridge to economy systems) ----

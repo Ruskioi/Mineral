@@ -198,6 +198,26 @@ export async function downloadDriveItem(graphToken, driveId, itemId, maxBytes = 
   return { name: meta.name, size: meta.size ?? buffer.length, buffer };
 }
 
+/** Read recent messages from a specific mailbox (app-only). Needs the
+ *  application Graph permission Mail.Read. Used by the time-reconciler agent to
+ *  collect hours mailed to its dedicated address. */
+export async function listMailboxMessages(graphToken, mailbox, sinceIso, top = 200) {
+  const sel = "$select=id,subject,from,receivedDateTime,bodyPreview,body";
+  let path = `/users/${encodeURIComponent(mailbox)}/messages?${sel}&$top=${Math.min(500, top)}&$orderby=receivedDateTime desc`;
+  if (sinceIso) path += `&$filter=receivedDateTime ge ${encodeURIComponent(sinceIso)}`;
+  const r = await fetch(GRAPH + path, { headers: { Authorization: `Bearer ${graphToken}`, Prefer: 'outlook.body-content-type="text"' } });
+  if (!r.ok) {
+    const detail = (await r.text().catch(() => "")).slice(0, 300);
+    throw Object.assign(new Error(`Mailbox read failed (${r.status}). ${detail}`), { status: r.status });
+  }
+  const j = await r.json();
+  return (j.value || []).map((m) => ({
+    id: m.id, subject: m.subject || "", received: m.receivedDateTime,
+    from: m.from?.emailAddress?.address || "", fromName: m.from?.emailAddress?.name || "",
+    body: (m.body?.content || m.bodyPreview || "").slice(0, 4000),
+  }));
+}
+
 /** Send an email as a user (app-only). Needs the application Graph permission
  *  Mail.Send (admin consent). Used to notify a user when their scheduled job ran. */
 export async function sendMailAsUser(graphToken, senderOid, toEmail, subject, html) {

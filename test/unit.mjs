@@ -53,6 +53,16 @@ const _connList = await _conn.listConnectors("t-conn");
 const _connListJson = JSON.stringify(_connList);
 const _connHeaderNames = _connList[0]?.headerNames || [];
 const _connHttpsRejected = await _conn.createConnector("t-conn", { name: "bad", base_url: "http://x.com", endpoints: [] }).then(() => false).catch((e) => e.status === 400);
+// Org agents: run-log + approval round-trip.
+const _oa = await import("../server/orgagents.js");
+const _ag = await _oa.createAgent("t-oa", { name: "TR", type: "time_reconciler", config: { mailbox: "t@x.se", recipient: "e@x.se" } });
+const _agRun = await _oa.logRun("t-oa", _ag.id, { status: "compiled", summary: "x" });
+const _agRuns = (await _oa.listRuns("t-oa", _ag.id)).length;
+await _oa.createApproval("t-oa", _ag.id, _agRun.id, "send_email", { to: "e@x.se", subject: "s", body: "b" });
+const _pend = await _oa.listApprovals("t-oa");
+await _oa.decideApproval("t-oa", _pend[0].id, "approved", "boss");
+const _agentApprovalsAfter = (await _oa.listApprovals("t-oa")).length;
+const _agentRuns = _agRuns;
 
 console.log("\nSimba ship-safety checks\n");
 
@@ -363,6 +373,23 @@ check("Tier 2 features (export, artifacts, palette, multi-attach, MCP)", () => {
   assert(/function openCommandPalette/.test(taskpane) && /e\.key === "k"/.test(taskpane), "command palette (⌘K) missing");
   assert(/let pendingAttachments = \[\]/.test(taskpane) && /MAX_ATTACH/.test(taskpane), "multi-file attach missing");
   assert(/SIMBA_MCP_SERVERS/.test(server) && /mcp_servers/.test(server), "MCP connector plumbing missing");
+});
+
+check("centralized org agents (visible, logged, approvable) are wired", () => {
+  const oa = read("server/orgagents.js");
+  assert(/simba_agents/.test(oa) && /simba_agent_runs/.test(oa) && /simba_agent_approvals/.test(oa), "agents/runs/approvals tables missing");
+  assert(/export async function logRun/.test(oa) && /export async function decideApproval/.test(oa), "activity log / approvals missing");
+  assert(/app\.get\("\/api\/agents"/.test(server) && /app\.post\("\/api\/agents\/:id\/run"/.test(server) && /app\.post\("\/api\/agents-approvals\/:id\/decide"/.test(server), "agent endpoints missing");
+  assert(/export async function runOrgAgent/.test(read("server/scheduler.js")) && /time_reconciler/.test(read("server/scheduler.js")), "time-reconciler executor missing");
+  assert(/export async function listMailboxMessages/.test(read("server/graph.js")), "mailbox read (for the agent address) missing");
+  assert(/function renderOrgAgents/.test(taskpane) && /function agentCreateForm/.test(taskpane), "org-agents UI missing");
+  // store round-trip prepared below
+  assert(_agentRuns >= 1 && _agentApprovalsAfter === 0, "agent run-log + approval decision should round-trip");
+});
+
+check("API templates (Fortnox/Visma) in the connector builder", () => {
+  assert(/CONNECTOR_TEMPLATES/.test(taskpane) && /fortnox/.test(taskpane) && /visma/.test(taskpane), "connector templates missing");
+  assert(/id="dc-template"/.test(taskpane), "template selector missing in the builder");
 });
 
 check("finance/business connectors bridge is wired & safe", () => {

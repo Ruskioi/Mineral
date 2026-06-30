@@ -52,6 +52,10 @@ bc59ab01-8403-45c6-8796-ac3ef710b3e3   Outlook (om relevant)
 **API permissions → Add a permission → Microsoft Graph → Delegated**, lägg till:
 - `openid`, `profile`, `offline_access`, `User.Read`
 - (för Outlook-mejl: läsa/söka/skicka) **`Mail.Read`** och **`Mail.Send`**
+- (för centrala agenter, t.ex. tidsavstämmaren som läser sin egen adress och
+  mejlar sammanställningen) lägg även till **applikations**-behörigheterna
+  **`Mail.Read`** och **`Mail.Send`** (admin-medgivande). Skapa agentens adress
+  som en delad brevlåda i Exchange och ange den i agentens konfiguration.
 - (valfritt, för molnfiler) `Files.Read`
 - (valfritt, för schemalagda jobb som redigerar filer) **Application**-behörigheten
   `Files.ReadWrite.All`, och `Mail.Send` om jobben ska maila resultat.
