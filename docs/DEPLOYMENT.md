@@ -233,7 +233,9 @@ authenticates **as itself**. So this needs extra setup on top of sign-in above:
 1. **App-only Graph permission.** In the Azure app, add the **application**
    permission **`Files.ReadWrite.All`** (Microsoft Graph) and **grant admin
    consent**. (This is in addition to the delegated `Files.Read`.) The same
-   client id + secret are reused.
+   client id + secret are reused. To email users a summary after each run
+   (on by default), also add the application permission **`Mail.Send`**
+   (admin consent); without it jobs still run, the email is just skipped.
 2. **Pin the tenant.** Set `AAD_TENANT=<your-tenant-GUID>` (a concrete GUID, not
    `common`) — app-only tokens are minted per tenant.
 3. **Durable jobs.** Set `DATABASE_URL` so schedules survive restarts (a

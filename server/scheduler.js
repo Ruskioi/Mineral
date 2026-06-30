@@ -12,7 +12,7 @@
  */
 import ExcelJS from "exceljs";
 import { dueJobs, recordRun } from "./jobs.js";
-import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, graphAppConfigured } from "./graph.js";
+import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, graphAppConfigured } from "./graph.js";
 import { XLSX_TOOLS, executeXlsxTool } from "./xlsx-tools.js";
 
 const TICK_MS = Number(process.env.SIMBA_SCHEDULER_TICK_MS || 60_000);
@@ -94,20 +94,37 @@ async function tick(client, model) {
     const jobs = await dueJobs(Date.now());
     for (const job of jobs) {
       const ranAtMs = Date.now();
+      let status = "error", result = "Okänt fel";
       try {
-        const { status, result } = await runJob(client, model, job);
-        await recordRun(job.id, { status, result, ranAtMs });
+        ({ status, result } = await runJob(client, model, job));
         console.log(`[Simba] job ${job.id} (${job.name}) -> ${status}`);
       } catch (e) {
         console.error(`[Simba] job ${job.id} failed:`, e?.message || e);
-        await recordRun(job.id, { status: "error", result: (e?.message || "Okänt fel").slice(0, 400), ranAtMs });
+        result = (e?.message || "Okänt fel").slice(0, 400);
       }
+      await recordRun(job.id, { status, result, ranAtMs });
+      await notify(job, status, result).catch((e) => console.error(`[Simba] notify failed for ${job.id}:`, e?.message || e));
     }
   } catch (e) {
     console.error("[Simba] scheduler tick failed:", e?.message || e);
   } finally {
     running = false;
   }
+}
+
+// Email the job's owner a short summary of the run (best effort, opt-in per job).
+async function notify(job, status, result) {
+  const t = job.target || {};
+  if (!t.notify || !t.email) return;
+  const [tid, oid] = String(job.userKey || "").split(":");
+  if (!tid || !oid) return;
+  const token = await appOnlyGraphToken(tid);
+  const ok = status === "ok";
+  const subject = `Simba: ${job.name} ${ok ? "klart" : "misslyckades"}`;
+  const esc = (s) => String(s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const html = `<p>Ditt schemalagda jobb <b>${esc(job.name)}</b> mot <b>${esc(t.fileName)}</b> ${ok ? "kördes klart" : "misslyckades"}.</p>` +
+    `<p>${esc(result)}</p><hr><p style="color:#888;font-size:12px">Skickat automatiskt av Simba AI.</p>`;
+  await sendMailAsUser(token, oid, t.email, subject, html);
 }
 
 export const schedulerEnabled = process.env.SIMBA_SCHEDULER === "1" && graphAppConfigured;

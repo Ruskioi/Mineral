@@ -501,6 +501,8 @@ body.has-chat .chat-watermark svg { opacity: 0.035; }
 .send-btn:active { transform: scale(0.9); }
 .send-btn:disabled { opacity: 0.45; cursor: default; }
 .send-btn.sent { animation: pop 0.3s var(--ease); }
+.send-btn.stop { background: var(--danger); font-size: 13px; }
+.send-btn.stop:hover { background: var(--danger); filter: brightness(0.94); }
 
 /* Attach button + attachment chip */
 .attach-btn {
@@ -823,6 +825,29 @@ body.desktop .welcome p { font-size: 15px; }
 }
 .conv-item:hover { background: var(--bg-soft); border-color: var(--border-strong); }
 .conv-item.active { border-color: var(--accent); color: var(--accent-strong); font-weight: 600; }
+
+/* Conversation rows with hover actions (rename / delete) */
+.conv-row { display: flex; align-items: center; gap: 2px; border-radius: 9px; }
+.conv-row .conv-item { flex: 1; min-width: 0; }
+.conv-row.active .conv-item { border-color: var(--accent); color: var(--accent-strong); font-weight: 600; }
+.conv-acts { display: flex; gap: 1px; flex: none; opacity: 0; transition: opacity var(--speed); }
+.conv-row:hover .conv-acts, .conv-row:focus-within .conv-acts { opacity: 1; }
+.conv-act {
+  border: none; background: transparent; color: var(--ink-faint); cursor: pointer;
+  width: 26px; height: 26px; border-radius: 7px; font-size: 12px; display: grid; place-items: center;
+  transition: background var(--speed), color var(--speed);
+}
+.conv-act:hover { background: var(--bg-soft); color: var(--ink); }
+/* Sidebar list uses borderless items; reuse the bordered look for rows there */
+.sb-list .conv-row .conv-item { border: 0; background: transparent; }
+.sb-search {
+  width: 100%; box-sizing: border-box; margin-top: 2px;
+  border: 1px solid var(--border-strong); border-radius: 9px; padding: 7px 10px;
+  font: inherit; font-size: 12.5px; color: var(--ink); background: var(--bg);
+}
+.sb-search:focus { outline: none; border-color: var(--accent); }
+.btn.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn.danger:hover { filter: brightness(0.94); }
 
 /* Scheduled-jobs manager (in settings) */
 .sched-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; margin: 2px 0 4px; }

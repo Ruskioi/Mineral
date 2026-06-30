@@ -158,3 +158,16 @@ export async function deleteConversation(userKey, id) {
   if (pool) await pool.query("DELETE FROM simba_conversations WHERE user_key = $1 AND id = $2", [userKey, id]);
   else convMem.get(userKey)?.delete(id);
 }
+
+// Rename without touching the stored messages.
+export async function renameConversation(userKey, id, title) {
+  await ensureReady();
+  const t = String(title || "").slice(0, 200);
+  if (pool) {
+    await pool.query("UPDATE simba_conversations SET title = $3, updated_at = now() WHERE user_key = $1 AND id = $2", [userKey, id, t]);
+  } else {
+    const c = convMem.get(userKey)?.get(id);
+    if (c) { c.title = t; c.updated_at = new Date().toISOString(); }
+  }
+  return { id, title: t };
+}

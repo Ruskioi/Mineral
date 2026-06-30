@@ -17,7 +17,7 @@ import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
-import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation } from "./store.js";
+import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo } from "./graph.js";
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
@@ -97,8 +97,9 @@ re-runs your instruction on a schedule, so write a complete, self-contained prom
 (it can't see this chat). First find the file with list_files to get its id, then
 confirm the schedule and the target file with the user before calling schedule_task.
 Use list_schedules to show what's set up and how the last run went, and cancel_schedule
-to remove one. Note: a scheduled run edits the file directly and cannot recalc formulas
-until a person opens it, so have the job write concrete values where it needs them.
+to remove one. By default the user is emailed a short summary after each run (set
+notify:false to turn that off). Note: a scheduled run edits the file directly and cannot
+recalc formulas until a person opens it, so have the job write concrete values where it needs them.
 
 Editing:
 - write_range / set_formula / set_formulas — write values or formulas.
@@ -276,6 +277,7 @@ const TOOLS = [
       weekday: { type: "integer", description: "For weekly: 0=Sunday … 6=Saturday." },
       monthday: { type: "integer", description: "For monthly: day of month 1-31." },
       on_date: { type: "string", description: "For once: YYYY-MM-DD." },
+      notify: { type: "boolean", description: "Email the user a summary after each run (default true)." },
     }, required: ["prompt", "file_id"] } },
 
   { name: "list_schedules", description: "List the user's scheduled jobs (name, schedule, target file, next run, last result). Use when they ask what's scheduled or how a job went.",
@@ -608,8 +610,13 @@ app.put("/api/conversations/:id", async (req, res) => {
   if (!user) return;
   if (req.body?.messages != null && !Array.isArray(req.body.messages))
     return res.status(400).json({ error: "'messages' must be an array." });
-  try { res.json(await saveConversation(user.key, req.params.id, req.body?.title || "", req.body?.messages || [])); }
-  catch (err) { console.error("[Simba] conv save failed:", err?.message || err); res.status(502).json({ error: "Could not save conversation." }); }
+  try {
+    // Title-only update (rename) when no messages are sent — must not wipe history.
+    if (req.body?.messages === undefined && typeof req.body?.title === "string") {
+      return res.json(await renameConversation(user.key, req.params.id, req.body.title));
+    }
+    res.json(await saveConversation(user.key, req.params.id, req.body?.title || "", req.body?.messages || []));
+  } catch (err) { console.error("[Simba] conv save failed:", err?.message || err); res.status(502).json({ error: "Could not save conversation." }); }
 });
 
 app.delete("/api/conversations/:id", async (req, res) => {
@@ -748,6 +755,20 @@ function ipRateLimited(ip) {
   return false;
 }
 
+// Optional per-user daily turn cap (org cost guard). Off unless SIMBA_USER_DAILY
+// is set. Keyed to the Microsoft identity; in-memory (per instance), resets daily.
+const USER_DAILY = Number(process.env.SIMBA_USER_DAILY || 0);
+const userQuota = new Map(); // userKey -> { day, n }
+function quotaExceeded(userKey) {
+  if (!USER_DAILY || !userKey) return false;
+  const day = new Date().toISOString().slice(0, 10);
+  const q = userQuota.get(userKey);
+  if (!q || q.day !== day) { userQuota.set(userKey, { day, n: 1 }); if (userQuota.size > 20000) { /* crude cap */ } return false; }
+  if (q.n >= USER_DAILY) return true;
+  q.n++;
+  return false;
+}
+
 function validateMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0)
     return "Request body must include a non-empty 'messages' array.";
@@ -783,6 +804,17 @@ app.post("/api/chat", async (req, res) => {
   if (inflight >= MAX_CONCURRENT) {
     res.set("Retry-After", "5");
     return res.status(429).json({ error: "Too many requests in flight. Please retry shortly." });
+  }
+
+  // Optional per-user daily cap (only when configured + a valid token is sent).
+  if (USER_DAILY && ssoConfigured && bearer(req)) {
+    try {
+      const u = await verifyToken(bearer(req));
+      if (quotaExceeded(u.key)) {
+        res.set("Retry-After", "3600");
+        return res.status(429).json({ error: "Du har nått din dagliga gräns för Simba. Försök igen imorgon." });
+      }
+    } catch { /* invalid token → fall back to IP limits */ }
   }
 
   inflight++;
@@ -1014,7 +1046,7 @@ app.get("/api/jobs", async (req, res) => {
 app.post("/api/jobs", async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
-  const { name, prompt, schedule, itemId } = req.body || {};
+  const { name, prompt, schedule, itemId, notify } = req.body || {};
   if (!itemId) return res.status(400).json({ error: "Välj en målfil för schemat." });
   if (!graphConfigured) return res.status(501).json({ error: "Molnfiler (Graph) krävs för scheman." });
   try {
@@ -1022,7 +1054,7 @@ app.post("/api/jobs", async (req, res) => {
     const gt = await oboGraphToken(bearer(req));
     const info = await itemDriveInfo(gt, String(itemId));
     if (!info.driveId) return res.status(400).json({ error: "Kunde inte fastställa filens enhet (driveId)." });
-    const job = await createJob(user.key, { name, prompt, schedule, target: { itemId: info.id, driveId: info.driveId, fileName: info.name } });
+    const job = await createJob(user.key, { name, prompt, schedule, target: { itemId: info.id, driveId: info.driveId, fileName: info.name, notify: notify !== false, email: user.email } });
     res.json({ job });
   } catch (err) {
     console.error("[Simba] job create failed:", err?.message || err);

@@ -56,6 +56,8 @@ const DESKTOP_TOOLS = new Set(["remember", "web_lookup", "run_code", "list_files
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
+let stopRequested = false;   // set by the Stop button to bail out of the agent loop
+let activeController = null;  // AbortController for the in-flight /api/chat request
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
 
 /* Per-user memory: short durable notes kept in localStorage and sent with each
@@ -236,7 +238,7 @@ function boot(isExcel) {
   const wm = document.getElementById("chat-watermark"); // faint grey mascot behind the chat
   if (wm) wm.innerHTML = MASCOT_IMG;
 
-  els.send.addEventListener("click", onSend);
+  els.send.addEventListener("click", () => { if (busy) stopGeneration(); else onSend(); });
   els.prompt.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); }
   });
@@ -697,7 +699,7 @@ const tools = {
 
   /* ---------------- scheduled jobs (server-side agent) ---------------- */
 
-  async schedule_task({ name, prompt, file_id, freq, time, weekday, monthday, on_date }) {
+  async schedule_task({ name, prompt, file_id, freq, time, weekday, monthday, on_date, notify }) {
     const token = await getSsoToken(false);
     if (!token) return { error: "Logga in med Microsoft för att schemalägga (Inställningar → Logga in)." };
     if (!String(prompt || "").trim()) return { error: "Ange vad schemat ska göra." };
@@ -709,7 +711,7 @@ const tools = {
     try {
       const r = await fetch(`${API_BASE}/api/jobs`, {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: name || "Schema", prompt, schedule, itemId: file_id }),
+        body: JSON.stringify({ name: name || "Schema", prompt, schedule, itemId: file_id, notify: notify !== false }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) return { error: j.error || "Kunde inte skapa schemat." };
@@ -1444,15 +1446,19 @@ async function onSend() {
   if (activeAgent) renderAgentRun(activeAgent); // show the specialist sub-agent picking up the task
 
   autoApproveTurn = false; // each new request starts asking again
+  stopRequested = false;   // fresh turn
   setBusy(true);
   renderTyping();
   try {
     await runAgentLoop();
   } catch (err) {
-    toast(err.message || "Något gick fel i kommunikationen med Simba.", "error", 4000);
+    if (!stopRequested) toast(err.message || "Något gick fel i kommunikationen med Simba.", "error", 4000);
   } finally {
     clearTyping();
     setBusy(false);
+    activeController = null;
+    if (stopRequested) toast("Stoppade", "info", 1500);
+    stopRequested = false;
     pruneHeavyHistory();
     saveConversation();
   }
@@ -1540,6 +1546,7 @@ function toolResultContent(result) {
 async function runAgentLoop() {
   let group = null; // collapsible activity card for this turn's tool steps
   for (let i = 0; i < 12; i++) {
+    if (stopRequested) { finalizeToolGroup(group); return; } // user pressed Stop between turns
     let live = null; // the streaming reply bubble for this iteration
     const onDelta = (chunk) => {
       if (!chunk) return;
@@ -1552,8 +1559,9 @@ async function runAgentLoop() {
     try {
       reply = await callBackend(messages, onDelta);
     } catch (e) {
-      if (live) live.wrap.remove();     // drop the half-streamed bubble
-      finalizeToolGroup(group);         // stop the running shimmer on error
+      if (live) { if (live.text.trim()) finishStream(live, live.text.trim()); else live.wrap.remove(); }
+      finalizeToolGroup(group);         // stop the running shimmer on error/stop
+      if (stopRequested) return;        // clean user-stop: keep whatever streamed, no error
       throw e;
     }
     if (!reply || !Array.isArray(reply.content)) {
@@ -1595,12 +1603,16 @@ async function runAgentLoop() {
 
 async function callBackend(history, onDelta) {
   const ctrl = new AbortController();
+  activeController = ctrl; // so the Stop button can abort this request
   const timer = setTimeout(() => ctrl.abort(), 180000);
+  const headers = { "Content-Type": "application/json", Accept: "text/event-stream" };
+  const tok = await getSsoToken(false); // lets the server attribute per-user quota (optional)
+  if (tok) headers.Authorization = `Bearer ${tok}`;
   let res;
   try {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers,
       body: JSON.stringify({ messages: history, speed, memory: memoryList(), surface: IS_EXCEL ? "excel" : "desktop" }),
       signal: ctrl.signal,
     });
@@ -1794,6 +1806,36 @@ function confirmPlan(title) {
     card.querySelector('[data-act="cancel"]').onclick = () => finish(false);
     document.addEventListener("keydown", onKey);
     setTimeout(() => card.querySelector('[data-act="apply"]').focus(), 30);
+  });
+}
+
+// Modal-based prompt/confirm (native window.prompt/confirm are blocked inside
+// the Office task pane, so we roll our own that work on every surface).
+function uiPrompt(message, value = "") {
+  return new Promise((resolve) => {
+    openModal(
+      `<h3>${escapeHtml(message)}</h3>
+       <input id="ui-prompt-input" class="files-q" type="text" value="${escapeHtml(value)}" />
+       <div class="modal-actions"><button class="btn" data-act="no">Avbryt</button><button class="btn primary" data-act="yes">Spara</button></div>`,
+      { onClose: () => resolve(null) }
+    );
+    const input = els.modalCard.querySelector("#ui-prompt-input");
+    input.focus(); input.select();
+    const done = () => { const v = input.value.trim(); closeModalSilently(); resolve(v || null); };
+    els.modalCard.querySelector('[data-act="no"]').onclick = () => { closeModalSilently(); resolve(null); };
+    els.modalCard.querySelector('[data-act="yes"]').onclick = done;
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); done(); } });
+  });
+}
+function uiConfirm(message, { danger } = {}) {
+  return new Promise((resolve) => {
+    openModal(
+      `<h3>Bekräfta</h3><p class="sub">${escapeHtml(message)}</p>
+       <div class="modal-actions"><button class="btn" data-act="no">Avbryt</button><button class="btn ${danger ? "danger" : "primary"}" data-act="yes">${danger ? "Ta bort" : "OK"}</button></div>`,
+      { onClose: () => resolve(false) }
+    );
+    els.modalCard.querySelector('[data-act="no"]').onclick = () => { closeModalSilently(); resolve(false); };
+    els.modalCard.querySelector('[data-act="yes"]').onclick = () => { closeModalSilently(); resolve(true); };
   });
 }
 
@@ -2636,8 +2678,19 @@ function syncEditModeButtons() {
 
 function setBusy(state) {
   busy = state;
-  els.send.disabled = state;
+  // While working, the send button becomes a Stop button (never disabled).
+  els.send.disabled = false;
+  els.send.classList.toggle("stop", state);
+  els.send.title = state ? "Stoppa" : "Skicka";
+  els.send.setAttribute("aria-label", state ? "Stoppa" : "Skicka");
+  els.send.innerHTML = state ? "◼" : "➤";
   els.prompt.disabled = state;
+}
+
+// User-initiated stop: abort the in-flight request and let the loop bail cleanly.
+function stopGeneration() {
+  stopRequested = true;
+  try { activeController?.abort(); } catch { /* ignore */ }
 }
 
 function autoGrow() {
@@ -2747,9 +2800,46 @@ function renderConvInto(el, list, limit, afterPick) {
   if (list === null) { el.innerHTML = '<div class="hint" style="padding:6px 4px">Kunde inte hämta chattar.</div>'; return; }
   if (!list.length) { el.innerHTML = '<div class="hint" style="padding:6px 4px">Inga sparade chattar än.</div>'; return; }
   el.innerHTML = list.slice(0, limit).map((c) =>
-    `<button class="conv-item${c.id === conversationId ? " active" : ""}" data-id="${escapeHtml(c.id)}">${escapeHtml(c.title || "Namnlös chatt")}</button>`).join("");
-  el.querySelectorAll(".conv-item").forEach((b) =>
-    b.addEventListener("click", async () => { await openConversation(b.dataset.id); afterPick?.(); }));
+    `<div class="conv-row${c.id === conversationId ? " active" : ""}" data-id="${escapeHtml(c.id)}">
+       <button class="conv-item" data-id="${escapeHtml(c.id)}" title="${escapeHtml(c.title || "Namnlös chatt")}">${escapeHtml(c.title || "Namnlös chatt")}</button>
+       <div class="conv-acts">
+         <button class="conv-act" data-act="rename" title="Byt namn" aria-label="Byt namn">✎</button>
+         <button class="conv-act" data-act="del" title="Ta bort" aria-label="Ta bort">🗑</button>
+       </div>
+     </div>`).join("");
+  el.querySelectorAll(".conv-row").forEach((row) => {
+    const id = row.dataset.id;
+    const title = list.find((c) => c.id === id)?.title || "";
+    row.querySelector(".conv-item").addEventListener("click", async () => { await openConversation(id); afterPick?.(); });
+    row.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); convRename(id, title); });
+    row.querySelector('[data-act="del"]').addEventListener("click", (e) => { e.stopPropagation(); convDelete(id); });
+  });
+}
+
+async function convRename(id, currentTitle) {
+  const name = await uiPrompt("Byt namn på chatten", currentTitle || "");
+  if (name == null) return;
+  const token = await getSsoToken(false);
+  if (!token) return;
+  await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(id)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ title: name }), // no messages → title-only rename
+  }).catch(() => {});
+  refreshSidebar();
+  if (els.modalCard?.querySelector("#conv-list")) populateConvList();
+  toast("Chatten döptes om", "success", 1500);
+}
+
+async function convDelete(id) {
+  const ok = await uiConfirm("Ta bort den här chatten? Det går inte att ångra.", { danger: true });
+  if (!ok) return;
+  const token = await getSsoToken(false);
+  if (!token) return;
+  await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+  if (id === conversationId) resetChat(); // we deleted the open one
+  refreshSidebar();
+  if (els.modalCard?.querySelector("#conv-list")) populateConvList();
+  toast("Chatten togs bort", "success", 1500);
 }
 
 async function populateConvList() {
@@ -2805,7 +2895,7 @@ async function populateSchedules() {
       <div class="sched-item" data-id="${escapeHtml(j.id)}" data-enabled="${j.enabled ? 1 : 0}">
         <div class="sched-main">
           <div class="sched-name">${j.enabled ? "" : "⏸ "}${escapeHtml(j.name || "Schema")}</div>
-          <div class="sched-meta">${escapeHtml(scheduleSummary(j.schedule))}${j.target?.fileName ? ` · ${escapeHtml(j.target.fileName)}` : ""}${j.nextRun ? ` · nästa ${escapeHtml(nextRunText(j.nextRun))}` : ""}</div>
+          <div class="sched-meta">${escapeHtml(scheduleSummary(j.schedule))}${j.target?.fileName ? ` · ${escapeHtml(j.target.fileName)}` : ""}${j.target?.notify ? " · 📧" : ""}${j.nextRun ? ` · nästa ${escapeHtml(nextRunText(j.nextRun))}` : ""}</div>
           ${j.lastStatus ? `<div class="sched-meta">Senast: ${escapeHtml(j.lastStatus)}${j.lastResult ? ` – ${escapeHtml(String(j.lastResult).slice(0, 90))}` : ""}</div>` : ""}
         </div>
         <div class="sched-acts">
@@ -2984,11 +3074,25 @@ async function pickCloudFile(file) {
 }
 
 // The standalone app's persistent sidebar list.
+let sidebarConvs = []; // cached for client-side search
 async function refreshSidebar() {
   const el = document.getElementById("sb-list");
   if (!el) return;
   if (!signedIn) { el.innerHTML = '<div class="hint" style="padding:6px 4px">Logga in för att spara och synka chattar.</div>'; return; }
-  renderConvInto(el, await fetchConvList(), 40, null);
+  sidebarConvs = (await fetchConvList()) || [];
+  const search = document.getElementById("sb-search");
+  if (search && !search._wired) {
+    search._wired = true;
+    search.addEventListener("input", renderSidebarList);
+  }
+  renderSidebarList();
+}
+function renderSidebarList() {
+  const el = document.getElementById("sb-list");
+  if (!el) return;
+  const q = (document.getElementById("sb-search")?.value || "").trim().toLowerCase();
+  const list = q ? sidebarConvs.filter((c) => (c.title || "").toLowerCase().includes(q)) : sidebarConvs;
+  renderConvInto(el, list, 40, null);
 }
 
 // Rebuild the visible chat from a stored message list (skips tool plumbing).

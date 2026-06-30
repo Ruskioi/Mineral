@@ -106,6 +106,24 @@ export async function downloadDriveItem(graphToken, driveId, itemId, maxBytes = 
   return { name: meta.name, size: meta.size ?? buffer.length, buffer };
 }
 
+/** Send an email as a user (app-only). Needs the application Graph permission
+ *  Mail.Send (admin consent). Used to notify a user when their scheduled job ran. */
+export async function sendMailAsUser(graphToken, senderOid, toEmail, subject, html) {
+  const r = await fetch(`${GRAPH}/users/${encodeURIComponent(senderOid)}/sendMail`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${graphToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: { subject, body: { contentType: "HTML", content: html }, toRecipients: [{ emailAddress: { address: toEmail } }] },
+      saveToSentItems: false,
+    }),
+  });
+  if (!r.ok) {
+    const detail = (await r.text().catch(() => "")).slice(0, 300);
+    throw Object.assign(new Error(`sendMail failed (${r.status}). ${detail}`), { status: r.status });
+  }
+  return true;
+}
+
 /** Overwrite a drive item's content by drive+item id (app-only). */
 export async function uploadDriveItem(graphToken, driveId, itemId, buffer) {
   const r = await fetch(`${GRAPH}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`, {

@@ -134,6 +134,8 @@ function sanitizeTarget(t) {
     itemId: String(t?.itemId || "").slice(0, 400),
     driveId: String(t?.driveId || "").slice(0, 400),
     fileName: String(t?.fileName || "").slice(0, 300),
+    notify: t?.notify !== false,                       // email a summary after each run (default on)
+    email: String(t?.email || "").slice(0, 200),       // recipient (the creator), captured at creation
   };
 }
 

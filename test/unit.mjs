@@ -317,6 +317,22 @@ check("scheduled server-side agent is wired", () => {
   assert(pkg.dependencies.exceljs, "missing dependency: exceljs");
 });
 
+check("Tier 1 features (stop, conv management, job email, user quota)", () => {
+  // Stop generation
+  assert(/function stopGeneration/.test(taskpane) && /activeController\?\.abort/.test(taskpane), "stop-generation missing");
+  assert(/stopRequested/.test(taskpane), "stop flag missing in the agent loop");
+  // Conversation management
+  assert(/function convRename/.test(taskpane) && /function convDelete/.test(taskpane), "conversation rename/delete missing");
+  assert(/function uiPrompt/.test(taskpane) && /function uiConfirm/.test(taskpane), "modal prompt/confirm missing (native ones break in Office)");
+  assert(/renameConversation/.test(read("server/store.js")), "store rename missing");
+  assert(/id="sb-search"/.test(read("src/taskpane/taskpane.html")), "conversation search missing");
+  // Scheduled-job email notifications
+  assert(/export async function sendMailAsUser/.test(read("server/graph.js")), "Graph sendMail missing");
+  assert(/async function notify\(/.test(read("server/scheduler.js")), "scheduler email notify missing");
+  // Per-user quota
+  assert(/SIMBA_USER_DAILY/.test(server) && /function quotaExceeded/.test(server), "per-user quota missing");
+});
+
 check("fail-safes are present (rate limit, validation, error handler, gating)", () => {
   assert(/rateLimited/.test(server), "missing rate limiter");
   assert(/validateMessages/.test(server), "missing message validation");
