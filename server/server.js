@@ -19,7 +19,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
 import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation } from "./store.js";
 import { randomUUID } from "node:crypto";
-import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, MAIL_SCOPE } from "./graph.js";
+import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, listAttachments, getAttachment, MAIL_SCOPE } from "./graph.js";
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
 import { startScheduler, schedulerEnabled } from "./scheduler.js";
 import { chooseModel, lastUserText } from "./router.js";
@@ -1229,6 +1229,26 @@ app.get("/api/mail/:id", async (req, res) => {
     console.error("[Simba] /api/mail/:id error:", err?.message || err);
     res.status(err.status || 502).json({ error: "Kunde inte öppna meddelandet." });
   }
+});
+
+app.get("/api/mail/:id/attachments", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!graphConfigured) return res.status(501).json({ error: "E-post (Graph) är inte aktiverat." });
+  try {
+    const gt = await oboGraphToken(bearer(req), MAIL_SCOPE);
+    res.json({ attachments: await listAttachments(gt, req.params.id) });
+  } catch (err) { console.error("[Simba] mail attachments error:", err?.message || err); res.status(err.status || 502).json({ error: "Kunde inte hämta bilagor." }); }
+});
+
+app.get("/api/mail/:id/attachments/:aid", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!graphConfigured) return res.status(501).json({ error: "E-post (Graph) är inte aktiverat." });
+  try {
+    const gt = await oboGraphToken(bearer(req), MAIL_SCOPE);
+    res.json(await getAttachment(gt, req.params.id, req.params.aid));
+  } catch (err) { console.error("[Simba] mail attachment error:", err?.message || err); res.status(err.status || 502).json({ error: "Kunde inte ladda ner bilagan." }); }
 });
 
 app.post("/api/mail/send", async (req, res) => {

@@ -116,6 +116,29 @@ export async function sendMail(graphToken, { to, cc, subject, body, replyToId })
   return true;
 }
 
+/** List a message's file attachments (name/type/size). */
+export async function listAttachments(graphToken, messageId) {
+  const r = await fetch(`${GRAPH}/me/messages/${encodeURIComponent(messageId)}/attachments?$select=id,name,contentType,size,isInline`, {
+    headers: { Authorization: `Bearer ${graphToken}` },
+  });
+  if (!r.ok) throw Object.assign(new Error("Attachment listing failed."), { status: r.status });
+  const j = await r.json();
+  return (j.value || [])
+    .filter((a) => a["@odata.type"]?.includes("fileAttachment") && !a.isInline)
+    .map((a) => ({ id: a.id, name: a.name, type: a.contentType, size: a.size }));
+}
+
+/** Download one attachment's bytes (base64). */
+export async function getAttachment(graphToken, messageId, attachmentId, maxBytes = 12 * 1024 * 1024) {
+  const r = await fetch(`${GRAPH}/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`, {
+    headers: { Authorization: `Bearer ${graphToken}` },
+  });
+  if (!r.ok) throw Object.assign(new Error("Attachment download failed."), { status: r.status });
+  const a = await r.json();
+  if (typeof a.size === "number" && a.size > maxBytes) throw Object.assign(new Error("Attachment too large."), { status: 413 });
+  return { name: a.name, type: a.contentType, data: a.contentBytes || "" };
+}
+
 /* ---- App-only (client-credentials) access for unattended scheduled jobs ---
  * A scheduled job runs when the user is offline, so we can't use their token.
  * Instead the app authenticates as ITSELF (per the file's tenant) and edits the

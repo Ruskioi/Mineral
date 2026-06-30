@@ -13,6 +13,7 @@
     "start:prod": "npm run build && node server/server.js",
     "manifest": "node scripts/make-manifest.mjs",
     "manifest:prod": "node scripts/make-manifest.mjs --new-id --out manifest.prod.xml",
+    "manifest:outlook": "node scripts/make-manifest.mjs --outlook --new-id --out manifest.outlook.prod.xml",
     "sideload": "office-addin-debugging start manifest.xml",
     "validate": "office-addin-manifest validate manifest.xml",
     "test": "node test/unit.mjs",

@@ -21,6 +21,7 @@ Du behöver vara **Global Administrator** (eller Application Administrator).
 Under **Authentication → Single-page application → Add URI**, lägg till:
 - `https://mineral-qd8c.onrender.com/` (webb/PWA)
 - `https://mineral-qd8c.onrender.com/dialog.html` (om dialog-fallback används)
+- (om ni kör Outlook-tillägget) samma host fungerar — `/taskpane.html` används av båda.
 
 Lämna *Access tokens* och *ID tokens* som de är (SPA använder PKCE).
 
@@ -70,6 +71,21 @@ Klicka sedan **Grant admin consent for <din org>**.
 Då genererar jag `manifest.prod.xml` (med SSO-blocket ifyllt) och env-blocket.
 Hemligheten (`AAD_CLIENT_SECRET`) lägger **du** in i Render-dashboarden — den ska
 aldrig i repot.
+
+## Installera Simba i Outlook (valfritt)
+
+Simba kan köras som ett **Outlook-tillägg** (utöver Excel) — då bor assistenten i
+Outlook och kan läsa/sammanfatta mejl, skriva utkast och nå kunskapsbanken direkt.
+
+1. **Generera Outlook-manifestet** (samma host + samma client-id som ovan):
+   ```
+   npm run manifest -- --outlook --base https://DIN_HOST --aad <CLIENT_ID> --new-id --out manifest.outlook.prod.xml
+   ```
+2. **Distribuera:** M365 admin center → **Inställningar → Integrerade appar → Ladda upp anpassad app** → ladda upp `manifest.outlook.prod.xml` → tilldela användare/grupp. (Excel- och Outlook-tilläggen är två separata manifest mot samma host — ladda upp båda.)
+3. I Outlook dyker en **"Öppna Simba"-knapp** upp i menyfliken när man läser eller skriver ett mejl. Inloggning och allt annat delas med övriga ytor.
+
+> Behörighet: Outlook-manifestet begär `ReadItem`. Själva mejl-läsning/skick sker
+> via Graph (`Mail.Read`/`Mail.Send`) som du redan gett medgivande till i steg 5.
 
 ## Verifiera när allt är på plats
 - Servern: env `AAD_CLIENT_ID`, `AAD_TENANT`, ev. `AAD_CLIENT_SECRET`, `DATABASE_URL`.

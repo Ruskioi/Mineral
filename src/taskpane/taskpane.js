@@ -3248,6 +3248,7 @@ function renderAgentRun(agent) {
 let vaultCanWrite = false;
 let vaultView = "list";   // "list" | "map"
 let vaultEntries = [];    // cached for the map view + filtering
+let mailFolder = "inbox"; // inbox | sentitems | drafts | archive
 async function openVault() {
   const token = await getSsoToken(false);
   if (!token) {
@@ -3499,13 +3500,24 @@ async function openMail() {
        <div><h3 style="margin:0">E-post</h3><p class="sub" style="margin:2px 0 0">Din Outlook-inkorg — läs, sök, analysera och svara.</p></div>
        <button class="btn primary" id="mail-new" style="padding:7px 12px">＋ Nytt</button>
      </div>
-     <input id="mail-q" class="files-q" type="search" placeholder="Sök i mejlen…" autocomplete="off" />
+     <div class="mail-controls">
+       <select id="mail-folder" class="mail-folder">
+         <option value="inbox">📥 Inkorg</option>
+         <option value="sentitems">📤 Skickat</option>
+         <option value="drafts">📝 Utkast</option>
+         <option value="archive">🗄 Arkiv</option>
+       </select>
+       <input id="mail-q" class="files-q" type="search" placeholder="Sök i mejlen…" autocomplete="off" style="margin:0;flex:1" />
+     </div>
      <div id="mail-list" class="mail-list"><div class="hint" style="padding:6px 2px">Hämtar inkorgen…</div></div>
      <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
   );
   els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
   els.modalCard.querySelector("#mail-new").onclick = () => mailCompose(null);
   const qEl = els.modalCard.querySelector("#mail-q");
+  const folderEl = els.modalCard.querySelector("#mail-folder");
+  folderEl.value = mailFolder;
+  folderEl.onchange = () => { mailFolder = folderEl.value; qEl.value = ""; loadMail(""); };
   let deb;
   qEl.addEventListener("input", () => { clearTimeout(deb); deb = setTimeout(() => loadMail(qEl.value.trim()), 350); });
   loadMail("");
@@ -3515,7 +3527,8 @@ async function loadMail(query) {
   const listEl = els.modalCard.querySelector("#mail-list");
   if (!listEl) return;
   listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Söker…</div>';
-  const res = await tools.list_emails({ query, limit: 25 });
+  // Search is mailbox-wide in Graph; folder applies only when not searching.
+  const res = await tools.list_emails(query ? { query, limit: 25 } : { folder: mailFolder, limit: 25 });
   if (res.error) { listEl.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(res.error)}</div>`; return; }
   const msgs = res.messages || [];
   if (!msgs.length) { listEl.innerHTML = '<div class="hint" style="padding:6px 2px">Inga mejl hittades.</div>'; return; }
@@ -3540,13 +3553,15 @@ async function openMailRead(meta) {
     `<div class="artifact-head"><h3 style="margin:0;font-size:16px">${escapeHtml(m.subject || "(inget ämne)")}</h3><button class="btn" data-act="back">Tillbaka</button></div>
      <div class="hint" style="padding:2px 0"><b>Från:</b> ${escapeHtml(m.fromName || m.from || "")}${m.from ? ` &lt;${escapeHtml(m.from)}&gt;` : ""} · ${escapeHtml(mailDate(m.received))}</div>
      ${m.to?.length ? `<div class="hint" style="padding:2px 0"><b>Till:</b> ${escapeHtml(m.to.join(", "))}</div>` : ""}
-     <div class="bubble" style="max-height:46vh;overflow:auto;white-space:pre-wrap;margin-top:8px">${escapeHtml(m.body || "")}</div>
+     <div id="mail-att" class="mail-att"></div>
+     <div class="bubble" style="max-height:44vh;overflow:auto;white-space:pre-wrap;margin-top:8px">${escapeHtml(m.body || "")}</div>
      <div class="modal-actions">
        <button class="btn" id="mail-analyze">Analysera med Simba</button>
        <button class="btn primary" id="mail-reply">Svara</button>
      </div>`
   );
   els.modalCard.querySelector('[data-act="back"]').onclick = () => openMail();
+  if (meta.hasAttachments) loadMailAttachments(m.id);
   els.modalCard.querySelector("#mail-reply").onclick = () => mailCompose({ replyToId: m.id, to: m.from, subject: `SV: ${m.subject || ""}` });
   els.modalCard.querySelector("#mail-analyze").onclick = () => {
     // Stage the email as context and let the user ask Simba about it.
@@ -3558,6 +3573,32 @@ async function openMailRead(meta) {
     els.prompt.value = "Sammanfatta det här mejlet och föreslå ett svar.";
     els.prompt.focus(); autoGrow();
   };
+}
+
+async function loadMailAttachments(messageId) {
+  const el = els.modalCard.querySelector("#mail-att");
+  if (!el) return;
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/mail/${encodeURIComponent(messageId)}/attachments`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    const atts = (j.attachments || []);
+    if (!r.ok || !atts.length) return;
+    el.innerHTML = `<div class="hint" style="padding:2px 0">Bilagor</div>` + atts.map((a, i) =>
+      `<span class="att-pill" data-i="${i}"><span>${fileIcon(a.name)}</span><span class="att-name">${escapeHtml(a.name)}</span><span class="att-size">${fileSizeText(a.size)}</span><button class="att-dl" title="Ladda ner / öppna">⬇</button></span>`).join("");
+    el.querySelectorAll(".att-pill").forEach((p) => p.querySelector(".att-dl").addEventListener("click", () => downloadMailAttachment(messageId, atts[+p.dataset.i])));
+  } catch { /* ignore */ }
+}
+
+async function downloadMailAttachment(messageId, att) {
+  toast(`Hämtar ${att.name}…`, "info", 1200);
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/mail/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(att.id)}`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.data) { toast(j.error || "Kunde inte hämta bilagan.", "error", 3000); return; }
+    saveBase64(j.data, j.name || att.name, j.type || att.type);
+  } catch { toast("Kunde inte nå e-posttjänsten.", "error", 3000); }
 }
 
 function mailCompose(opts) {

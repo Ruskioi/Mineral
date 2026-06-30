@@ -362,9 +362,23 @@ check("Outlook mail (read/send/analyze) is wired", () => {
   for (const t of ["list_emails", "read_email", "send_email"]) assert(new RegExp(`name: "${t}"`).test(server), `${t} tool schema missing`);
   assert(/function confirmSend/.test(taskpane), "send-email confirmation preview missing");
   assert(/"list_emails", "read_email", "send_email"/.test(taskpane), "mail tools must work in desktop mode");
-  // Visual mail panel
+  // Visual mail panel + folders + attachments
   assert(/id="mail"/.test(read("src/taskpane/taskpane.html")), "mail button missing from the header");
   assert(/function openMail/.test(taskpane) && /function openMailRead/.test(taskpane) && /function mailCompose/.test(taskpane), "mail panel UI missing");
+  assert(/id="mail-folder"/.test(taskpane) && /sentitems/.test(taskpane), "mail folder selector missing");
+  assert(/function loadMailAttachments/.test(taskpane), "mail attachment UI missing");
+  assert(/export async function listAttachments/.test(read("server/graph.js")) && /app\.get\("\/api\/mail\/:id\/attachments"/.test(server), "attachment backend missing");
+});
+
+check("Simba is installable as an Outlook add-in", () => {
+  const t = read("manifest.outlook.template.xml");
+  assert(/xsi:type="MailApp"/.test(t) && /<Host Name="Mailbox"/.test(t), "Outlook manifest must target Mailbox");
+  assert(/MessageReadCommandSurface/.test(t) && /ShowTaskpane/.test(t), "Outlook task pane button missing");
+  assert(/\{\{AAD_CLIENT_ID\}\}/.test(t) && /SSO:BEGIN/.test(t), "Outlook manifest must support the SSO block");
+  const mk = read("scripts/make-manifest.mjs");
+  assert(/--outlook|flag\("outlook"\)/.test(mk) && /manifest\.outlook\.template\.xml/.test(mk), "make-manifest must support --outlook");
+  const pkg = JSON.parse(read("package.json"));
+  assert(pkg.scripts["manifest:outlook"], "manifest:outlook script missing");
 });
 
 check("company knowledge vault (Simba's shared mind) is wired", () => {

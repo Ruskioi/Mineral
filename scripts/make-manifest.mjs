@@ -35,7 +35,8 @@ const flag = (name) => process.argv.includes(`--${name}`);
 
 const base = (arg("base", process.env.SIMBA_BASE_URL) || DEV_BASE).replace(/\/+$/, "");
 const id = flag("new-id") ? randomUUID() : arg("id", process.env.SIMBA_ADDIN_ID) || DEV_ID;
-const out = arg("out", "manifest.xml");
+const outlook = flag("outlook"); // produce the Outlook (Mailbox) manifest instead of Excel
+const out = arg("out", outlook ? "manifest.outlook.xml" : "manifest.xml");
 const aad = arg("aad", process.env.SIMBA_AAD_CLIENT_ID); // Azure AD app (client) id — enables SSO
 
 if (!/^https:\/\//.test(base)) {
@@ -43,7 +44,7 @@ if (!/^https:\/\//.test(base)) {
   process.exit(1);
 }
 
-const template = readFileSync(resolve(root, "manifest.template.xml"), "utf8");
+const template = readFileSync(resolve(root, outlook ? "manifest.outlook.template.xml" : "manifest.template.xml"), "utf8");
 let xml = template.replaceAll("{{BASE_URL}}", base).replaceAll("{{ADDIN_ID}}", id);
 
 // The SSO <WebApplicationInfo> block is filled in only when an Azure AD client id
@@ -60,4 +61,4 @@ if (aad) {
 }
 
 writeFileSync(resolve(root, out), xml);
-console.log(`[make-manifest] wrote ${out}\n  base: ${base}\n  id:   ${id}\n  sso:  ${aad ? `enabled (${aad})` : "disabled"}`);
+console.log(`[make-manifest] wrote ${out}\n  host: ${outlook ? "Outlook (Mailbox)" : "Excel (Workbook)"}\n  base: ${base}\n  id:   ${id}\n  sso:  ${aad ? `enabled (${aad})` : "disabled"}`);
