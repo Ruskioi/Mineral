@@ -26,7 +26,7 @@ import { appOnlyGraphToken, sendMailAsUser } from "./graph.js";
 import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, listRuns, listApprovals, getApproval, decideApproval, logRun } from "./orgagents.js";
 import { chooseModel, lastUserText } from "./router.js";
 import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
-import { listConnectors, createConnector, updateConnector, deleteConnector, queryConnector, testConnector } from "./connectors.js";
+import { listConnectors, createConnector, updateConnector, deleteConnector, queryConnector, testConnector, writeConnector } from "./connectors.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -1334,6 +1334,19 @@ app.post("/api/agents-approvals/:id/decide", async (req, res) => {
       const html = `<pre style="white-space:pre-wrap;font-family:system-ui">${String(p.body || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`;
       await sendMailAsUser(token, p.mailbox, p.to, p.subject, html);
       await logRun(orgOf(user), ap.agent_id, { status: "sent", summary: `Godkänt av ${user.email || user.name} – skickade till ${p.to}` });
+    } else if (approve && ap.kind === "connector_write") {
+      // Post the approved bodies into the linked data source (e.g. reported hours → NEXT).
+      const p = ap.payload || {};
+      let okN = 0, failN = 0; const errs = [];
+      for (const body of (p.bodies || [])) {
+        try { await writeConnector(orgOf(user), p.connectorId, p.endpointKey, body); okN++; }
+        catch (e) { failN++; if (errs.length < 3) errs.push(e.message || String(e)); }
+      }
+      await logRun(orgOf(user), ap.agent_id, {
+        status: failN ? "partial" : "posted",
+        summary: `Godkänt av ${user.email || user.name} – ${okN} post(er) skrivna till ${p.connectorName || "datakällan"}${failN ? `, ${failN} misslyckades (${errs.join("; ")})` : ""}`,
+      });
+      if (failN && !okN) return res.status(502).json({ error: `Kunde inte skriva till datakällan: ${errs.join("; ")}` });
     } else if (!approve) {
       await logRun(orgOf(user), ap.agent_id, { status: "rejected", summary: `Avvisat av ${user.email || user.name}` });
     }

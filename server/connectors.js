@@ -6,10 +6,13 @@
  * (kept SERVER-SIDE, never sent to the browser), and a whitelist of read-only
  * endpoints. Simba can then call those endpoints and report on companies,
  * invoicing, projects, etc. Security model:
- *   - org-scoped (per Microsoft tenant); writes are admin-gated upstream.
+ *   - org-scoped (per Microsoft tenant).
  *   - HTTPS only; only whitelisted endpoint paths (the host is fixed by config,
  *     so the model can't be tricked into calling arbitrary URLs / SSRF).
- *   - GET only; responses size-capped; secrets never leave the server.
+ *   - Reads (GET) are open in-org. WRITES (POST/PUT, e.g. posting reported hours
+ *     into a project system) go ONLY through the org-agent approval flow — a
+ *     human approves the exact bodies; there is no model tool that writes.
+ *   - Responses size-capped; secrets never leave the server.
  */
 import pg from "pg";
 import { randomUUID } from "node:crypto";
@@ -60,6 +63,10 @@ function sanitizeEndpoints(list) {
     label: clean(e.label || e.key, 80),
     path: clean(e.path, 300),       // relative path appended to base_url
     description: clean(e.description, 200),
+    // GET = read (default). POST/PUT = write; body_template is a JSON string with
+    // {{placeholders}} the caller fills in (e.g. {"hours":{{hours}},"employee":"{{person}}"}).
+    method: /^(GET|POST|PUT)$/i.test(e.method) ? String(e.method).toUpperCase() : "GET",
+    body_template: clean(e.body_template, 4000),
   })).filter((e) => e.path);
 }
 function sanitizeHeaders(h) {
@@ -76,7 +83,7 @@ function publicConnector(c) {
   return {
     id: c.id, name: c.name, base_url: c.base_url,
     headerNames: Object.keys(c.headers || {}),
-    endpoints: (c.endpoints || []).map((e) => ({ key: e.key, label: e.label, path: e.path, description: e.description })),
+    endpoints: (c.endpoints || []).map((e) => ({ key: e.key, label: e.label, path: e.path, description: e.description, method: e.method || "GET", body_template: e.body_template || "" })),
     updated_at: c.updated_at,
   };
 }
@@ -176,6 +183,7 @@ export async function queryConnector(orgKey, source, endpointKey, params) {
   if (!c) throw Object.assign(new Error("Okänd datakälla."), { status: 404 });
   const ep = (c.endpoints || []).find((e) => e.key === endpointKey) || (c.endpoints || []).find((e) => (e.label || "").toLowerCase() === String(endpointKey || "").toLowerCase());
   if (!ep) throw Object.assign(new Error("Okänd endpoint för den datakällan."), { status: 404 });
+  if ((ep.method || "GET").toUpperCase() !== "GET") throw Object.assign(new Error("Den endpointen är en skriv-endpoint och kan inte läsas."), { status: 400 });
   const r = await rawGet(c.base_url, ep.path, c.headers, params);
   if (!r.ok) throw Object.assign(new Error(`Datakällan svarade ${r.status}.`), { status: 502 });
   return { source: c.name, endpoint: ep.label || ep.key, data: r.data };
@@ -192,4 +200,76 @@ export async function testConnector(orgKey, { id, base_url, headers, path, param
   }
   const r = await rawGet(base, path, mergedHeaders, params, { previewBytes: 4000 });
   return { ok: r.ok, status: r.status, preview: typeof r.data === "string" ? r.data.slice(0, 4000) : r.data };
+}
+
+/* ---- Writing (POST/PUT) — approval-gated, never model-triggered ----------
+ * Writes go through the org-agent approval flow: an agent builds the concrete
+ * bodies, a human approves, and only then are they sent here. There is no model
+ * tool that writes, by design.
+ */
+
+// Fill a JSON string template's {{placeholders}} from `values` and parse it.
+// String fields must be quoted in the template ("{{person}}"); numeric fields
+// left bare ({{hours}}). Values are JSON-string-escaped so names with quotes are
+// safe. Throws if the resulting JSON is malformed (surfaced to the admin).
+export function renderTemplate(tpl, values) {
+  const filled = String(tpl || "{}").replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => {
+    const v = values && values[k] != null ? values[k] : "";
+    return String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r/g, "").replace(/\n/g, "\\n");
+  });
+  try { return JSON.parse(filled); }
+  catch { throw Object.assign(new Error("Ogiltig JSON-mall efter ifyllnad — kontrollera mallen och fälten."), { status: 400 }); }
+}
+
+// Hardened POST/PUT: HTTPS-only, host fixed by config (no SSRF), size-capped, timed out.
+async function rawSend(baseUrl, path, headers, method, body) {
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  if (!/^https:\/\//i.test(base)) throw Object.assign(new Error("Endast HTTPS tillåts."), { status: 400 });
+  const url = new URL(base + "/" + String(path || "").replace(/^\/+/, ""));
+  if (url.protocol !== "https:") throw Object.assign(new Error("Endast HTTPS tillåts."), { status: 400 });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      method, signal: ctrl.signal,
+      headers: { Accept: "application/json", "Content-Type": "application/json", ...(headers || {}) },
+      body: JSON.stringify(body ?? {}),
+    });
+    const text = (await r.text()).slice(0, MAX_RESP_BYTES);
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    return { ok: r.ok, status: r.status, data };
+  } catch (e) {
+    if (e.name === "AbortError") throw Object.assign(new Error("Datakällan svarade för långsamt."), { status: 504 });
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+
+// Look up a connector's WRITE endpoint (POST/PUT). Secrets stay server-side.
+function findWriteEndpoint(c, endpointKey) {
+  const ep = (c.endpoints || []).find((e) => e.key === endpointKey) || (c.endpoints || []).find((e) => (e.label || "").toLowerCase() === String(endpointKey || "").toLowerCase());
+  if (!ep) throw Object.assign(new Error("Okänd endpoint för den datakällan."), { status: 404 });
+  if ((ep.method || "GET").toUpperCase() === "GET") throw Object.assign(new Error("Endpointen är läs-bar (GET), inte en skriv-endpoint."), { status: 400 });
+  return ep;
+}
+
+// Build the concrete request bodies for a batch of value-rows, WITHOUT sending —
+// so an agent can put exactly-what-will-be-posted into an approval for review.
+export async function buildWriteRequests(orgKey, connectorId, endpointKey, valuesList) {
+  const c = (await listRaw(orgKey)).find((x) => x.id === connectorId);
+  if (!c) throw Object.assign(new Error("Okänd datakälla."), { status: 404 });
+  const ep = findWriteEndpoint(c, endpointKey);
+  const bodies = (valuesList || []).map((v) => renderTemplate(ep.body_template || "{}", v));
+  return { connectorId, endpointKey, connectorName: c.name, endpointLabel: ep.label || ep.key, method: ep.method, path: ep.path, bodies };
+}
+
+// Execute one write against a connector's write endpoint (called from the approval
+// decision handler, after a human approves). Fresh secret headers are re-read here.
+export async function writeConnector(orgKey, source, endpointKey, body) {
+  const all = await listRaw(orgKey);
+  const c = all.find((x) => x.id === source) || all.find((x) => (x.name || "").toLowerCase() === String(source || "").toLowerCase());
+  if (!c) throw Object.assign(new Error("Okänd datakälla."), { status: 404 });
+  const ep = findWriteEndpoint(c, endpointKey);
+  const r = await rawSend(c.base_url, ep.path, c.headers, ep.method, body);
+  if (!r.ok) throw Object.assign(new Error(`Datakällan svarade ${r.status}.`), { status: 502 });
+  return { source: c.name, endpoint: ep.label || ep.key, status: r.status, data: r.data };
 }

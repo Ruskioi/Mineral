@@ -3410,13 +3410,23 @@ async function renderOrgAgents() {
 
     const approvalsHtml = approvals.length ? `
       <div class="oa-section"><div class="oa-h">⏳ Väntar på godkännande</div>
-      ${approvals.map((ap) => `
+      ${approvals.map((ap) => {
+        const p = ap.payload || {};
+        const isWrite = ap.kind === "connector_write";
+        const title = isWrite ? `Registrera ${(p.rows || []).length} tidsposter i ${p.connectorName || "datakälla"}` : (p.subject || ap.kind);
+        const meta = isWrite ? `${escapeHtml(p.endpointLabel || "")} · ${escapeHtml(p.method || "POST")} · period ${escapeHtml(p.period || "")}` : `Till: ${escapeHtml(p.to || "")}`;
+        const preview = isWrite
+          ? escapeHtml((p.rows || []).map((r) => `${r.person}: ${r.hours} h`).join("\n").slice(0, 1200)) + "\n\n— Skickas som —\n" + escapeHtml(JSON.stringify(p.bodies || [], null, 2).slice(0, 900))
+          : escapeHtml(String(p.body || "").slice(0, 1200));
+        const approveLabel = isWrite ? "Godkänn & registrera" : "Godkänn & skicka";
+        return `
         <div class="oa-appr" data-id="${escapeHtml(ap.id)}">
-          <div class="oa-appr-main"><b>${escapeHtml(ap.payload?.subject || ap.kind)}</b>
-          <div class="sched-meta">Till: ${escapeHtml(ap.payload?.to || "")}</div>
-          <pre class="oa-preview">${escapeHtml(String(ap.payload?.body || "").slice(0, 1200))}</pre></div>
-          ${canDecide ? `<div class="oa-appr-acts"><button class="btn danger" data-act="reject">Avvisa</button><button class="btn primary" data-act="approve">Godkänn & skicka</button></div>` : '<div class="hint">Endast administratörer kan godkänna.</div>'}
-        </div>`).join("")}</div>` : "";
+          <div class="oa-appr-main"><b>${escapeHtml(title)}</b>
+          <div class="sched-meta">${meta}</div>
+          <pre class="oa-preview">${preview}</pre></div>
+          ${canDecide ? `<div class="oa-appr-acts"><button class="btn danger" data-act="reject">Avvisa</button><button class="btn primary" data-act="approve">${approveLabel}</button></div>` : '<div class="hint">Endast administratörer kan godkänna.</div>'}
+        </div>`;
+      }).join("")}</div>` : "";
 
     const agentsHtml = `
       <div class="oa-section"><div class="oa-h" style="display:flex;justify-content:space-between;align-items:center">
@@ -3528,8 +3538,18 @@ function agentCreateForm(type = "time_reconciler") {
        ${scheduleField}
        <div><label class="vault-l">Godkännande krävs</label><select id="oa-appr" class="mail-folder" style="width:100%"><option value="1">Ja – granska före utskick</option><option value="0">Nej – skicka direkt</option></select></div>
      </div>
+     ${t === "time_reconciler" ? `
+     <div class="dc-section" style="margin-top:12px">
+       <div class="dc-section-h"><span>🔌 Registrera timmarna i ett system (valfritt)</span></div>
+       <div class="hint" style="margin:0 0 6px">Välj en datakälla med en skriv-endpoint (POST/PUT), t.ex. NEXT. Timmarna postas dit — men först efter att någon godkänt raderna. Lämna tomt för att bara maila sammanställningen.</div>
+       <div class="dc-grid">
+         <div><label class="vault-l">Datakälla</label><select id="oa-post-conn" class="mail-folder" style="width:100%"><option value="">— Ingen (maila istället) —</option></select></div>
+         <div><label class="vault-l">Skriv-endpoint</label><select id="oa-post-ep" class="mail-folder" style="width:100%"><option value="">—</option></select></div>
+       </div>
+     </div>` : ""}
      <div class="modal-actions"><button class="btn" data-act="back">Tillbaka</button><button class="btn primary" data-act="save">Skapa agent</button></div>`
   );
+  if (t === "time_reconciler") wireAgentPostSource();
   // Switching type re-renders the form with that type's fields/labels.
   els.modalCard.querySelector("#oa-type").onchange = (e) => agentCreateForm(e.target.value);
   els.modalCard.querySelector('[data-act="back"]').onclick = () => openAgents();
@@ -3544,6 +3564,9 @@ function agentCreateForm(type = "time_reconciler") {
       config.intervalMinutes = Math.min(1440, Math.max(5, parseInt(els.modalCard.querySelector("#oa-interval").value, 10) || 30));
     } else {
       config.runDay = Math.min(31, Math.max(1, parseInt(els.modalCard.querySelector("#oa-day").value, 10) || 25));
+      const connId = els.modalCard.querySelector("#oa-post-conn")?.value || "";
+      const epKey = els.modalCard.querySelector("#oa-post-ep")?.value || "";
+      if (connId && epKey) config.post = { connectorId: connId, endpointKey: epKey };
     }
     const token = await getSsoToken(false);
     const body = { name, type: t, config };
@@ -3551,6 +3574,32 @@ function agentCreateForm(type = "time_reconciler") {
     if (r && r.ok) { toast("Agent skapad", "success", 1800); openAgents(); setTimeout(() => els.modalCard.querySelector('[data-v="org"]')?.click(), 50); }
     else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte skapa.", "error", 3000); }
   };
+}
+
+// Populate the "post hours into a data source" selectors from the org's connectors,
+// offering only those that have a write (POST/PUT) endpoint.
+async function wireAgentPostSource() {
+  const connSel = els.modalCard.querySelector("#oa-post-conn");
+  const epSel = els.modalCard.querySelector("#oa-post-ep");
+  if (!connSel || !epSel) return;
+  let connectors = [];
+  try {
+    const token = await getSsoToken(false);
+    const j = await fetch(`${API_BASE}/api/connectors`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()).catch(() => ({}));
+    connectors = (j.connectors || []).map((c) => ({ ...c, writeEps: (c.endpoints || []).filter((e) => (e.method || "GET").toUpperCase() !== "GET") })).filter((c) => c.writeEps.length);
+  } catch { /* leave empty */ }
+  if (!connectors.length) {
+    connSel.innerHTML = '<option value="">— Inga datakällor med skriv-endpoint —</option>';
+    return;
+  }
+  connSel.innerHTML = '<option value="">— Ingen (maila istället) —</option>' +
+    connectors.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join("");
+  const fillEps = () => {
+    const c = connectors.find((x) => x.id === connSel.value);
+    epSel.innerHTML = c ? c.writeEps.map((e) => `<option value="${escapeHtml(e.key)}">${escapeHtml(e.label || e.key)} (${escapeHtml(e.method)})</option>`).join("") : '<option value="">—</option>';
+  };
+  connSel.onchange = fillEps;
+  fillEps();
 }
 
 function setActiveAgent(agent) {
@@ -3923,7 +3972,7 @@ function connectorEdit(c) {
        </div>
 
        <div class="dc-section">
-         <div class="dc-section-h"><span>🔗 Endpoints (det Simba får hämta)</span><button class="btn dc-add" id="dc-add-ep" type="button">＋ Endpoint</button></div>
+         <div class="dc-section-h"><span>🔗 Endpoints (läsa med GET, skriva med POST/PUT)</span><button class="btn dc-add" id="dc-add-ep" type="button">＋ Endpoint</button></div>
          <div id="dc-endpoints"></div>
        </div>
      </div>
@@ -3955,14 +4004,34 @@ function connectorEdit(c) {
   const addEndpoint = (ep = {}) => {
     const card = document.createElement("div");
     card.className = "dc-ep";
+    const method = (ep.method || "GET").toUpperCase();
+    const isWrite = method !== "GET";
     card.innerHTML = `
-      <div class="dc-grid">
+      <div class="dc-grid dc-grid-3">
+        <div><label class="vault-l">Metod</label>
+          <select class="mail-folder dc-ep-method" style="width:100%">
+            <option value="GET"${method === "GET" ? " selected" : ""}>GET (läs)</option>
+            <option value="POST"${method === "POST" ? " selected" : ""}>POST (skriv)</option>
+            <option value="PUT"${method === "PUT" ? " selected" : ""}>PUT (skriv)</option>
+          </select></div>
         <div><label class="vault-l">Etikett</label><input class="files-q dc-ep-label" type="text" value="${escapeHtml(ep.label || ep.key || "")}" placeholder="Obetalda fakturor" /></div>
         <div><label class="vault-l">Sökväg</label><input class="files-q dc-ep-path" type="text" value="${escapeHtml(ep.path || "")}" placeholder="invoices?filter=unpaid" /></div>
       </div>
-      <label class="vault-l">Beskrivning</label><input class="files-q dc-ep-desc" type="text" value="${escapeHtml(ep.description || "")}" placeholder="Vad endpointen returnerar (hjälper Simba välja rätt)" />
-      <div class="dc-ep-foot"><button class="btn dc-test" type="button">Testa ▸</button><button class="conv-act dc-del" type="button" title="Ta bort endpoint">🗑</button></div>
+      <label class="vault-l">Beskrivning</label><input class="files-q dc-ep-desc" type="text" value="${escapeHtml(ep.description || "")}" placeholder="Vad endpointen returnerar/gör (hjälper Simba välja rätt)" />
+      <div class="dc-ep-body" ${isWrite ? "" : "hidden"}>
+        <label class="vault-l">JSON-mall för skrivning <span class="hint">— platshållare: {{person}}, {{email}}, {{hours}}, {{period}}, {{date}}</span></label>
+        <textarea class="files-q dc-ep-body-tpl" rows="3" placeholder='{"employee":"{{email}}","hours":{{hours}},"date":"{{date}}"}'>${escapeHtml(ep.body_template || "")}</textarea>
+      </div>
+      <div class="dc-ep-foot"><button class="btn dc-test" type="button" ${isWrite ? "hidden" : ""}>Testa ▸</button><button class="conv-act dc-del" type="button" title="Ta bort endpoint">🗑</button></div>
       <pre class="dc-test-out" hidden></pre>`;
+    const methodSel = card.querySelector(".dc-ep-method");
+    const bodyBox = card.querySelector(".dc-ep-body");
+    const testBtn = card.querySelector(".dc-test");
+    methodSel.onchange = () => {
+      const write = methodSel.value !== "GET";
+      bodyBox.hidden = !write;          // body template only for writes
+      testBtn.hidden = write;           // live-test is GET-only (never fire a real write while building)
+    };
     card.querySelector(".dc-del").onclick = () => card.remove();
     card.querySelector(".dc-test").onclick = async () => {
       const out = card.querySelector(".dc-test-out");
@@ -4013,6 +4082,8 @@ function connectorEdit(c) {
       label: card.querySelector(".dc-ep-label").value.trim(),
       path: card.querySelector(".dc-ep-path").value.trim(),
       description: card.querySelector(".dc-ep-desc").value.trim(),
+      method: card.querySelector(".dc-ep-method").value,
+      body_template: card.querySelector(".dc-ep-body-tpl").value.trim(),
     })).filter((x) => x.path);
     const body = { name, base_url, endpoints };
     const headers = collectHeaders();

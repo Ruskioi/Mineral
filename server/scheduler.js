@@ -14,6 +14,7 @@ import ExcelJS from "exceljs";
 import { dueJobs, recordRun, claimJob } from "./jobs.js";
 import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, listMailboxMessages, getMailboxAttachments, graphAppConfigured } from "./graph.js";
 import { allEnabledAgents, setAgentState, logRun, createApproval } from "./orgagents.js";
+import { buildWriteRequests } from "./connectors.js";
 import { XLSX_TOOLS, executeXlsxTool } from "./xlsx-tools.js";
 
 const TICK_MS = Number(process.env.SIMBA_SCHEDULER_TICK_MS || 60_000);
@@ -153,17 +154,42 @@ async function runTimeReconciler(client, model, agent) {
   const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
   const sinceIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 
+  const dateStr = now.toISOString().slice(0, 10);
+
   const token = await appOnlyGraphToken(tid);
   const msgs = await listMailboxMessages(token, cfg.mailbox, sinceIso);
   const submissions = msgs.map((m) => `Från: ${m.fromName || m.from} <${m.from}> (${m.received})\n${m.body}`).join("\n\n---\n\n").slice(0, 40000);
 
-  const sys = "Du är en tidsavstämmare. Sammanställ de inrapporterade timmarna till en tydlig tabell (Person | Timmar) plus en total, på svenska. Lyft fram oklarheter och vilka som inte rapporterat om det går att avgöra. Skriv ett kort, proffsigt mejl med sammanställningen. Hitta ALDRIG på siffror.";
+  const sys = "Du är en tidsavstämmare. Läs de inrapporterade timmarna och svara ENBART med ett JSON-objekt: " +
+    '{"summary":"<en kort, proffsig svensk sammanställning: tabell Person | Timmar, total, samt oklarheter/vilka som inte rapporterat>","rows":[{"person":"<namn>","email":"<avsändarens e-post>","hours":<antal timmar som tal>}]}. ' +
+    "Hitta ALDRIG på siffror; utelämna en person ur rows om timmar saknas.";
   const content = `Period: ${period}. Mejl inkomna till ${cfg.mailbox}:\n\n${submissions || "(inga mejl inkomna denna period)"}`;
   const resp = await client.messages.create({ model, max_tokens: 3000, system: sys, messages: [{ role: "user", content }] });
-  const bodyText = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim() || "Inga timmar inrapporterade denna period.";
+  const rawText = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+  const parsed = parseJsonObject(rawText) || {};
+  const bodyText = (parsed.summary && String(parsed.summary).trim()) || rawText || "Inga timmar inrapporterade denna period.";
+  const rows = Array.isArray(parsed.rows) ? parsed.rows.filter((r) => r && r.person && Number.isFinite(Number(r.hours))) : [];
   const subject = `Tidsammanställning ${period}`;
 
-  const run = await logRun(tid, agent.id, { status: "compiled", summary: `Sammanställde ${msgs.length} inrapporteringar för ${period}`, detail: { count: msgs.length, period } });
+  const run = await logRun(tid, agent.id, { status: "compiled", summary: `Sammanställde ${msgs.length} inrapporteringar för ${period}`, detail: { count: msgs.length, period, rows } });
+
+  // If a data source is linked (e.g. NEXT), post the hours there via an approval —
+  // writes into a system of record ALWAYS require a human to approve the exact rows.
+  const post = cfg.post || {};
+  if (post.connectorId && post.endpointKey && rows.length) {
+    try {
+      const values = rows.map((r) => ({ person: r.person, email: r.email || "", hours: Number(r.hours), period, date: dateStr }));
+      const built = await buildWriteRequests(tid, post.connectorId, post.endpointKey, values);
+      await createApproval(tid, agent.id, run.id, "connector_write", {
+        connectorId: built.connectorId, endpointKey: built.endpointKey, connectorName: built.connectorName,
+        endpointLabel: built.endpointLabel, method: built.method, period, rows, bodies: built.bodies,
+      });
+      return { status: "awaiting_approval", summary: `Väntar på godkännande – registrera ${rows.length} tidsposter i ${built.connectorName}`, period };
+    } catch (e) {
+      // Fall back to the email summary if the mapping/template is misconfigured.
+      await logRun(tid, agent.id, { status: "error", summary: `Kunde inte förbereda skrivning: ${(e?.message || e).toString().slice(0, 200)}` });
+    }
+  }
 
   if (cfg.requireApproval !== false) {
     await createApproval(tid, agent.id, run.id, "send_email", { to: cfg.recipient, subject, body: bodyText, mailbox: cfg.mailbox });

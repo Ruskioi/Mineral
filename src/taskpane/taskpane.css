@@ -1010,7 +1010,10 @@ body.desktop .welcome p { font-size: 15px; }
 /* Connector builder (datakällor) */
 .dc-build { max-height: 64vh; overflow-y: auto; padding-right: 4px; }
 .dc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-@media (max-width: 560px) { .dc-grid { grid-template-columns: 1fr; } }
+.dc-grid-3 { grid-template-columns: 0.7fr 1fr 1fr; }
+@media (max-width: 560px) { .dc-grid, .dc-grid-3 { grid-template-columns: 1fr; } }
+.dc-ep-body { margin-top: 8px; }
+.dc-ep-body-tpl { font-family: var(--mono, monospace); font-size: 12px; width: 100%; box-sizing: border-box; resize: vertical; }
 .dc-section { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .dc-section-h { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
 .dc-add { padding: 5px 10px; font-size: 12px; }

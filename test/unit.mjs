@@ -57,6 +57,11 @@ const _connList = await _conn.listConnectors("t-conn");
 const _connListJson = JSON.stringify(_connList);
 const _connHeaderNames = _connList[0]?.headerNames || [];
 const _connHttpsRejected = await _conn.createConnector("t-conn", { name: "bad", base_url: "http://x.com", endpoints: [] }).then(() => false).catch((e) => e.status === 400);
+// Write path: a POST endpoint with a JSON template renders concrete bodies.
+const _connW = await _conn.createConnector("t-connw", { name: "NEXT", base_url: "https://api.next.example", headers: { Authorization: "Bearer s" }, endpoints: [{ label: "Skapa tidpost", path: "v1/time", method: "POST", body_template: '{"employee":"{{email}}","hours":{{hours}},"date":"{{date}}"}' }] });
+const _connWepMethod = _connW.endpoints[0]?.method;
+const _connBuilt = await _conn.buildWriteRequests("t-connw", _connW.id, _connW.endpoints[0].key, [{ email: "a@x.se", hours: 8, date: "2026-07-01" }]);
+const _connWriteRejectsGet = await _conn.writeConnector("t-conn", "Fortnox", "fakturor", { x: 1 }).then(() => false).catch((e) => e.status === 400);
 // Org agents: run-log + approval round-trip.
 const _oa = await import("../server/orgagents.js");
 const _ag = await _oa.createAgent("t-oa", { name: "TR", type: "time_reconciler", config: { mailbox: "t@x.se", recipient: "e@x.se" } });
@@ -428,6 +433,25 @@ check("finance/business connectors bridge is wired & safe", () => {
   // store behavior prepared below
   assert(_connHeaderNames.includes("Access-Token") && !_connListJson.includes("topsecret"), "connector list must expose header names but never secret values");
   assert(_connHttpsRejected === true, "non-HTTPS base URL must be rejected");
+});
+
+check("connector WRITES (post hours into e.g. NEXT) are wired & approval-gated", () => {
+  const conn = read("server/connectors.js");
+  const sch = read("server/scheduler.js");
+  assert(/export async function writeConnector/.test(conn) && /export function renderTemplate/.test(conn) && /export async function buildWriteRequests/.test(conn), "write executor/template/builder missing");
+  assert(/async function rawSend/.test(conn) && /Endast HTTPS/.test(conn), "hardened POST/PUT sender missing");
+  // time reconciler posts structured rows via an approval, never auto-writing
+  assert(/buildWriteRequests/.test(sch) && /connector_write/.test(sch) && /cfg\.post/.test(sch), "time reconciler must build a connector_write approval");
+  // approval decision actually performs the write
+  assert(/ap\.kind === "connector_write"/.test(server) && /writeConnector\(orgOf\(user\)/.test(server), "approval handler must execute the write");
+  // client: write endpoint editor + agent link + approval preview
+  assert(/dc-ep-method/.test(taskpane) && /dc-ep-body-tpl/.test(taskpane), "connector builder write-endpoint UI missing");
+  assert(/oa-post-conn/.test(taskpane) && /function wireAgentPostSource/.test(taskpane), "agent → data source link UI missing");
+  assert(/connector_write/.test(taskpane), "approval preview must handle connector_write");
+  // store behavior prepared above
+  assert(_connWepMethod === "POST", "write endpoint must persist its method");
+  assert(_connBuilt.bodies?.[0]?.hours === 8 && _connBuilt.bodies[0].employee === "a@x.se", "template must render concrete request bodies");
+  assert(_connWriteRejectsGet === true, "writing to a GET (read) endpoint must be rejected");
 });
 
 check("shared workspace syncs context across surfaces", () => {
