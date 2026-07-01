@@ -144,14 +144,19 @@
         <button id="send" class="send-btn" title="Skicka" aria-label="Skicka">➤</button>
       </div>
       <div class="composer-foot">
-        <button id="model-pill" class="mpick" type="button" aria-haspopup="menu" aria-expanded="false" title="Välj modell">
-          <span id="model-pill-label" class="mpick-label">Auto</span>
-          <svg class="mpick-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <button id="mode-pill" class="mpick" type="button" aria-haspopup="menu" aria-expanded="false" title="Redigeringsläge – hur Simba får ändra arket">
-          <span id="mode-pill-label" class="mpick-label">Fråga</span>
-          <svg class="mpick-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
+        <div class="cf-left">
+          <button id="mode-pill" class="cmode" type="button" aria-haspopup="menu" aria-expanded="false" title="Redigeringsläge – hur Simba får ändra arket">
+            <span id="mode-pill-label">Fråga</span>
+          </button>
+        </div>
+        <div class="cf-right">
+          <button id="model-pill" class="mtext" type="button" aria-haspopup="menu" aria-expanded="false" title="Välj modell">
+            <span id="model-pill-label">Auto</span>
+          </button>
+          <button id="speed-pill" class="mtext" type="button" aria-haspopup="menu" aria-expanded="false" title="Svarsnivå">
+            <span id="speed-pill-label">Balanserad</span>
+          </button>
+        </div>
       </div>
     </footer>
   </div>

@@ -84,6 +84,11 @@ const EDIT_MODES = [
   { key: "ask", label: "Fråga", icon: "✎", desc: "Fråga före varje ändring" },
   { key: "off", label: "Av", icon: "🔒", desc: "Redigera aldrig arket" },
 ];
+const SPEED_CHOICES = [
+  { key: "fast", label: "Snabb", desc: "Snabbast – kortare tänkande" },
+  { key: "balanced", label: "Balanserad", desc: "Bra balans mellan fart och kvalitet" },
+  { key: "thorough", label: "Noggrann", desc: "Mest noggrann – tar längre tid" },
+];
 // Map a real Claude model id to its on-brand display name.
 function prettyModel(id) {
   const s = String(id || "").toLowerCase();
@@ -261,6 +266,7 @@ function boot(isExcel) {
   els.contextPill = document.getElementById("context-pill");
   els.modelPill = document.getElementById("model-pill");
   els.modePill = document.getElementById("mode-pill");
+  els.speedPill = document.getElementById("speed-pill");
   els.overlay = document.getElementById("modal-overlay");
   els.modalCard = document.getElementById("modal-card");
   els.toasts = document.getElementById("toast-container");
@@ -297,6 +303,11 @@ function boot(isExcel) {
   els.modePill?.addEventListener("click", () => {
     openPillMenu(els.modePill, EDIT_MODES, editMode, (key) => {
       editMode = key; store.set("simba.editMode", key); syncPills();
+    });
+  });
+  els.speedPill?.addEventListener("click", () => {
+    openPillMenu(els.speedPill, SPEED_CHOICES, speed, (key) => {
+      speed = key; store.set("simba.speed", key); syncPills();
     });
   });
 
@@ -3046,6 +3057,9 @@ function syncPills() {
   const e = EDIT_MODES.find((x) => x.key === editMode) || EDIT_MODES[1];
   const modeLabel = document.getElementById("mode-pill-label");
   if (modeLabel) modeLabel.textContent = e.label;
+  const s = SPEED_CHOICES.find((x) => x.key === speed) || SPEED_CHOICES[1];
+  const speedLabel = document.getElementById("speed-pill-label");
+  if (speedLabel) speedLabel.textContent = s.label;
 }
 
 const CHECK_SVG = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
