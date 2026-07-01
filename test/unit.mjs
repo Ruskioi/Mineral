@@ -270,6 +270,18 @@ check("model router sends simple turns to Haiku, work to Opus", () => {
   assert(/chooseModel\(messages, speed/.test(server), "runModel must use the router");
 });
 
+check("in-chat model picker (Auto / Pluto / Simba) is wired", () => {
+  // server: honor a forced model preference
+  assert(/function pickModel/.test(server) && /pref === "pluto"/.test(server) && /pref === "simba"/.test(server), "server pickModel must map pluto/simba");
+  assert(/runModel\(req\.body\.messages/.test(server) && /req\.body\.model\)/.test(server), "chat handler must pass the model preference to runModel");
+  // client: Claude-style pills + naming + request
+  assert(/MODEL_CHOICES/.test(taskpane) && /"pluto"/.test(taskpane) && /"simba"/.test(taskpane), "model choices missing");
+  assert(/function prettyModel/.test(taskpane) && /return "Simba"/.test(taskpane) && /return "Pluto"/.test(taskpane), "haiku→Simba / opus→Pluto naming missing");
+  assert(/function openPillMenu/.test(taskpane) && /id="model-pill"/.test(read("src/taskpane/taskpane.html")), "model pill UI missing");
+  assert(/model: modelPref/.test(taskpane), "chat request must send the chosen model");
+  assert(/\.pill-menu/.test(read("src/taskpane/taskpane.css")), "pill dropdown styling missing");
+});
+
 check("PWA (installable web app) is wired", () => {
   const mani = JSON.parse(read("web/site.webmanifest"));
   assert(mani.name && mani.start_url === "/" && mani.display === "standalone", "webmanifest missing name/start_url/standalone");

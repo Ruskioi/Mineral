@@ -70,6 +70,28 @@ let subagentDepth = 0;       // guards delegate_task against runaway recursion
 let stopRequested = false;   // set by the Stop button to bail out of the agent loop
 let activeController = null;  // AbortController for the in-flight /api/chat request
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
+let modelPref = store.get("simba.model", "auto"); // auto | pluto | simba
+
+// Friendly, on-brand model names shown throughout the UI. "Pluto" = the powerful
+// Opus model; "Simba" = the fast Haiku model. Auto lets the server route per turn.
+const MODEL_CHOICES = [
+  { key: "auto", label: "Auto", icon: "✦", desc: "Väljer bästa modellen automatiskt" },
+  { key: "pluto", label: "Pluto", icon: "🪐", desc: "Mest kapabel – djup analys, kod och verktyg" },
+  { key: "simba", label: "Simba", icon: "🦁", desc: "Snabb – vardagsfrågor och korta svar" },
+];
+const EDIT_MODES = [
+  { key: "auto", label: "Auto", icon: "⚡", desc: "Tillämpa ändringar automatiskt" },
+  { key: "ask", label: "Fråga", icon: "✎", desc: "Fråga före varje ändring" },
+  { key: "off", label: "Av", icon: "🔒", desc: "Redigera aldrig arket" },
+];
+// Map a real Claude model id to its on-brand display name.
+function prettyModel(id) {
+  const s = String(id || "").toLowerCase();
+  if (s.includes("haiku")) return "Simba";
+  if (s.includes("opus")) return "Pluto";
+  if (s.includes("sonnet")) return "Nova";
+  return id || "Auto";
+}
 
 /* Per-user memory: short durable notes kept in localStorage and sent with each
  * request so Simba personalizes across chats. Stays on this device. */
@@ -237,14 +259,15 @@ function boot(isExcel) {
   els.fileInput = document.getElementById("file-input");
   els.attachChip = document.getElementById("attach-chip");
   els.contextPill = document.getElementById("context-pill");
-  els.editMode = document.getElementById("edit-mode");
+  els.modelPill = document.getElementById("model-pill");
+  els.modePill = document.getElementById("mode-pill");
   els.overlay = document.getElementById("modal-overlay");
   els.modalCard = document.getElementById("modal-card");
   els.toasts = document.getElementById("toast-container");
   els.askDock = document.getElementById("ask-dock");
 
   applyTheme(store.get("simba.theme", "auto"));
-  syncEditModeButtons();
+  syncPills();
   document.querySelector(".brand-mark").innerHTML = MASCOT_IMG;
   const wm = document.getElementById("chat-watermark"); // faint grey mascot behind the chat
   if (wm) wm.innerHTML = MASCOT_IMG;
@@ -265,12 +288,16 @@ function boot(isExcel) {
   els.navBackdrop?.addEventListener("click", () => toggleNav(false));
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
 
-  els.editMode.addEventListener("click", (e) => {
-    const btn = e.target.closest(".seg-btn");
-    if (!btn) return;
-    editMode = btn.dataset.mode;
-    store.set("simba.editMode", editMode);
-    syncEditModeButtons();
+  // Claude-style pill pickers: model (Auto / Pluto / Simba) and edit-mode.
+  els.modelPill?.addEventListener("click", () => {
+    openPillMenu(els.modelPill, MODEL_CHOICES, modelPref, (key) => {
+      modelPref = key; store.set("simba.model", key); syncPills();
+    });
+  });
+  els.modePill?.addEventListener("click", () => {
+    openPillMenu(els.modePill, EDIT_MODES, editMode, (key) => {
+      editMode = key; store.set("simba.editMode", key); syncPills();
+    });
   });
 
   // Copy buttons inside rendered code blocks (event delegation).
@@ -1847,7 +1874,7 @@ async function callBackend(history, onDelta) {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ messages: history, speed, memory: memoryList(), surface: IS_EXCEL ? "excel" : (IS_OUTLOOK ? "outlook" : "desktop") }),
+      body: JSON.stringify({ messages: history, speed, model: modelPref, memory: memoryList(), surface: IS_EXCEL ? "excel" : (IS_OUTLOOK ? "outlook" : "desktop") }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -2159,8 +2186,8 @@ function openSettings() {
          </div>
        </div>
        <div class="setting-row">
-         <div><div class="label">Modell</div><div class="hint">Drivs av Claude · enkla frågor körs snabbare automatiskt</div></div>
-         <div class="setting-meta">${escapeHtml(modelName)}</div>
+         <div><div class="label">Modell</div><div class="hint">Pluto (kraftfull) och Simba (snabb), drivs av Claude · byt i chatten eller låt Auto välja</div></div>
+         <div class="setting-meta">${escapeHtml(prettyModel(modelName))}</div>
        </div>
      </div>
 
@@ -3010,9 +3037,48 @@ function applyTheme(theme) {
   else document.documentElement.setAttribute("data-theme", theme);
 }
 
-function syncEditModeButtons() {
-  els.editMode.querySelectorAll(".seg-btn")
-    .forEach((b) => b.classList.toggle("active", b.dataset.mode === editMode));
+// Reflect the current model/edit-mode selection on the composer pills.
+function syncPills() {
+  const m = MODEL_CHOICES.find((c) => c.key === modelPref) || MODEL_CHOICES[0];
+  const modelLabel = document.getElementById("model-pill-label");
+  if (modelLabel) modelLabel.textContent = m.label;
+  if (els.modelPill) { els.modelPill.querySelector(".pill-ic").textContent = m.icon; els.modelPill.classList.toggle("on", modelPref !== "auto"); }
+  const e = EDIT_MODES.find((x) => x.key === editMode) || EDIT_MODES[1];
+  const modeLabel = document.getElementById("mode-pill-label");
+  if (modeLabel) modeLabel.textContent = e.label;
+  if (els.modePill) els.modePill.querySelector(".pill-ic").textContent = e.icon;
+}
+
+// A Claude-style dropdown menu anchored above a composer pill. Lists items with
+// icon + label + description and a check on the current selection.
+function openPillMenu(anchor, items, currentKey, onPick) {
+  document.querySelector(".pill-menu")?.remove(); // only one open at a time
+  anchor.setAttribute("aria-expanded", "true");
+  const menu = document.createElement("div");
+  menu.className = "pill-menu";
+  menu.setAttribute("role", "menu");
+  menu.innerHTML = items.map((it) =>
+    `<button class="pill-opt${it.key === currentKey ? " sel" : ""}" role="menuitem" data-key="${it.key}">
+       <span class="pill-opt-ic">${it.icon}</span>
+       <span class="pill-opt-main"><span class="pill-opt-label">${escapeHtml(it.label)}</span><span class="pill-opt-desc">${escapeHtml(it.desc || "")}</span></span>
+       <span class="pill-opt-check">${it.key === currentKey ? "✓" : ""}</span>
+     </button>`).join("");
+  document.body.appendChild(menu);
+  // Position: left-aligned to the anchor, opening upward (composer sits at the bottom).
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${r.top - menu.offsetHeight - 8}px`;
+  const close = () => {
+    menu.remove();
+    anchor.setAttribute("aria-expanded", "false");
+    document.removeEventListener("mousedown", onDoc, true);
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onDoc = (ev) => { if (!menu.contains(ev.target) && ev.target !== anchor) close(); };
+  const onKey = (ev) => { if (ev.key === "Escape") { ev.preventDefault(); close(); } };
+  menu.querySelectorAll(".pill-opt").forEach((b) =>
+    b.addEventListener("click", () => { const k = b.dataset.key; close(); onPick(k); }));
+  setTimeout(() => { document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey, true); }, 0);
 }
 
 function setBusy(state) {
@@ -3353,7 +3419,7 @@ async function populateProfile() {
        ${cap ? `<div class="pf-progress"><div class="pf-progress-fill" style="width:${pct}%"></div></div>` : ""}
        <div class="pf-chart-h">Senaste 7 dagarna</div>
        <div class="pf-chart">${bars}</div>
-       <div class="hint" style="margin-top:10px">Modell: ${escapeHtml(j.model || modelName)}. Kostnaden är en uppskattning från Claudes listpriser (in/ut-tokens och cache) — Simba fakturerar inget själv.</div>`;
+       <div class="hint" style="margin-top:10px">Modell: ${escapeHtml(prettyModel(j.model || modelName))}. Kostnaden är en uppskattning från Claudes listpriser (in/ut-tokens och cache) — Simba fakturerar inget själv.</div>`;
   } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå användningsdata.</div>'; }
 }
 

@@ -144,12 +144,12 @@
         <button id="send" class="send-btn" title="Skicka" aria-label="Skicka">➤</button>
       </div>
       <div class="composer-foot">
-        <span class="foot-label">Redigering</span>
-        <div class="seg" id="edit-mode" role="group" aria-label="Läge för arkredigering">
-          <button class="seg-btn" data-mode="auto" title="Tillämpa ändringar automatiskt">Auto</button>
-          <button class="seg-btn active" data-mode="ask" title="Fråga före varje ändring">Fråga</button>
-          <button class="seg-btn" data-mode="off" title="Redigera aldrig arket">Av</button>
-        </div>
+        <button id="model-pill" class="pill" type="button" aria-haspopup="menu" aria-expanded="false" title="Välj modell">
+          <span class="pill-ic" aria-hidden="true">✦</span><span id="model-pill-label" class="pill-label">Auto</span><span class="pill-caret" aria-hidden="true">▾</span>
+        </button>
+        <button id="mode-pill" class="pill" type="button" aria-haspopup="menu" aria-expanded="false" title="Redigeringsläge – hur Simba får ändra arket">
+          <span class="pill-ic" aria-hidden="true">✎</span><span id="mode-pill-label" class="pill-label">Fråga</span><span class="pill-caret" aria-hidden="true">▾</span>
+        </button>
       </div>
     </footer>
   </div>

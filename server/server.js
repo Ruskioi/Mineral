@@ -880,9 +880,17 @@ async function withRetry(fn, label = "") {
   }
 }
 
-async function runModel(messages, speed, memory, surface, onText, vault, workspace) {
+// Map the client's model preference to a concrete model. "pluto" = the strong
+// Opus model, "simba" = the fast Haiku model; anything else routes automatically.
+function pickModel(pref, messages, speed) {
+  if (pref === "pluto" || pref === "strong") return MODEL;
+  if (pref === "simba" || pref === "simple") return MODEL_SIMPLE;
+  return chooseModel(messages, speed, { strong: MODEL, simple: MODEL_SIMPLE, on: ROUTER_ON });
+}
+
+async function runModel(messages, speed, memory, surface, onText, vault, workspace, modelPref) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
-  const model = chooseModel(messages, speed, { strong: MODEL, simple: MODEL_SIMPLE, on: ROUTER_ON });
+  const model = pickModel(modelPref, messages, speed);
   const base = {
     model,
     max_tokens: 32000,
@@ -1029,7 +1037,7 @@ app.post("/api/chat", async (req, res) => {
   res.flushHeaders?.();
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
-    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText, workspaceText);
+    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText, workspaceText, req.body.model);
     send("final", {
       content: final.content,
       stop_reason: final.stop_reason,
