@@ -15,6 +15,7 @@ import { dueJobs, recordRun, claimJob } from "./jobs.js";
 import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, listMailboxMessages, getMailboxAttachments, graphAppConfigured } from "./graph.js";
 import { allEnabledAgents, setAgentState, logRun, createApproval } from "./orgagents.js";
 import { buildWriteRequests } from "./connectors.js";
+import { tickIngest } from "./ingest.js";
 import { XLSX_TOOLS, executeXlsxTool } from "./xlsx-tools.js";
 
 const TICK_MS = Number(process.env.SIMBA_SCHEDULER_TICK_MS || 60_000);
@@ -117,6 +118,7 @@ async function tick(client, model) {
     // overlap guard: a slow agent pass must not race the next interval's pass,
     // or the same period could be compiled/emailed twice.
     await tickAgents(client, model);
+    await tickIngest(client); // vault auto-ingest (SharePoint/OneDrive folders)
   } catch (e) {
     console.error("[Simba] scheduler tick failed:", e?.message || e);
   } finally {
@@ -145,8 +147,68 @@ const esc = (s) => String(s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<"
 export async function runOrgAgent(client, model, agent) {
   if (agent.type === "time_reconciler") return runTimeReconciler(client, model, agent);
   if (agent.type === "supplier_invoice") return runSupplierInvoice(client, model, agent);
+  if (agent.type === "inbox_triage") return runInboxTriage(client, model, agent);
   return { status: "skipped", summary: "Okänd agenttyp." };
 }
+
+/* ---- Inbox-triage agent ---------------------------------------------------
+ * Every morning: read the user's inbox since the last digest, have the model
+ * sort it (needs action / FYI / noise) and DRAFT replies for the mails that
+ * need one. The digest is mailed to the user; each drafted reply lands in the
+ * approval queue — a human reads, tweaks nothing or rejects, and approval
+ * sends it. Nothing is ever sent without a person clicking approve.
+ */
+async function runInboxTriage(client, model, agent) {
+  const tid = agent.org_key;
+  const cfg = agent.config || {};
+  if (!cfg.mailbox) return { status: "error", summary: "Saknar postlåda (användarens e-post)." };
+  const recipient = cfg.recipient || cfg.mailbox;
+  const state = agent.state || {};
+  const sinceIso = state.lastDigest || new Date(Date.now() - 24 * 3600_000).toISOString();
+
+  const token = await appOnlyGraphToken(tid);
+  const msgs = (await listMailboxMessages(token, cfg.mailbox, sinceIso)).slice(0, 40);
+  if (!msgs.length) {
+    await logRun(tid, agent.id, { status: "checked", summary: "Inga nya mejl sedan förra genomgången." });
+    return { status: "checked", summary: "Inga nya mejl." };
+  }
+
+  const inbox = msgs.map((m, i) =>
+    `#${i} Från: ${m.fromName || m.from} <${m.from}>\nÄmne: ${m.subject}\nMottaget: ${m.received}\n${String(m.body || "").slice(0, 1500)}`
+  ).join("\n\n---\n\n").slice(0, 60000);
+
+  const sys = "Du är en inkorgs-assistent. Gå igenom mejlen och svara ENBART med ett JSON-objekt: " +
+    '{"digest":"<kort svensk sammanfattning i prioritetsordning: vad som KRÄVER åtgärd (med varför), vad som är bra att känna till, vad som kan ignoreras>",' +
+    '"replies":[{"index":<mejlets #>,"to":"<avsändarens e-post>","subject":"<Re: ...>","body":"<komplett utkast på svenska, proffsig ton, redo att skickas>"}]}. ' +
+    "Utkast ENDAST för mejl som tydligt väntar på svar från mottagaren (frågor, förfrågningar, bokningar) — max 5. Hitta aldrig på fakta; skriv [KOMPLETTERA] där uppgift saknas.";
+  const resp = await client.messages.create({ model, max_tokens: 4000, system: sys, messages: [{ role: "user", content: `Inkorg för ${cfg.mailbox}:\n\n${inbox}` }] });
+  const parsed = parseJsonObject(resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")) || {};
+  const digest = String(parsed.digest || "").trim() || "Inget att rapportera.";
+  const replies = (Array.isArray(parsed.replies) ? parsed.replies : []).filter((r) => r && r.to && r.body).slice(0, 5);
+
+  const run = await logRun(tid, agent.id, { status: "compiled", summary: `Gick igenom ${msgs.length} mejl, ${replies.length} svarsutkast`, detail: { count: msgs.length, drafts: replies.length } });
+
+  // Drafted replies always go through the approval queue.
+  for (const r of replies) {
+    await createApproval(tid, agent.id, run.id, "send_email", {
+      to: String(r.to).slice(0, 200), subject: String(r.subject || "Re:").slice(0, 255),
+      body: String(r.body).slice(0, 8000), mailbox: cfg.mailbox,
+    });
+  }
+  // The digest goes straight to the user (it's their own summary, not an action).
+  const digestBody = `${digest}${replies.length ? `\n\n— ${replies.length} svarsutkast väntar på ditt godkännande i Simba (Agenter → Organisation).` : ""}`;
+  await sendMailAsUser(token, cfg.mailbox, recipient, `Din inkorg – sammanfattning ${new Date().toLocaleDateString("sv-SE")}`,
+    `<pre style="white-space:pre-wrap;font-family:system-ui">${esc(digestBody)}</pre>`);
+  await logRun(tid, agent.id, { status: "sent", summary: `Skickade digest till ${recipient}${replies.length ? ` + ${replies.length} utkast till godkännande` : ""}` });
+  await setAgentState(tid, agent.id, { lastDigest: new Date().toISOString() });
+  return { status: "sent", summary: `Digest skickad, ${replies.length} utkast väntar på godkännande` };
+}
+
+// Local (Swedish) clock for agent scheduling — a 07:00 digest means 07:00 in
+// Stockholm regardless of the server's timezone.
+const AGENT_TZ = process.env.SIMBA_TZ || "Europe/Stockholm";
+const tzDayFmt = new Intl.DateTimeFormat("en-CA", { timeZone: AGENT_TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+const tzHourFmt = new Intl.DateTimeFormat("en-GB", { timeZone: AGENT_TZ, hour: "2-digit", hourCycle: "h23" });
 
 async function runTimeReconciler(client, model, agent) {
   const tid = agent.org_key;
@@ -323,6 +385,16 @@ async function tickAgents(client, model) {
         if (Date.now() - last < everyMs) continue; // not due yet
         const res = await runOrgAgent(client, model, a); // persists its own cursor
         await setAgentState(a.org_key, a.id, { lastResult: res.status });
+        console.log(`[Simba] agent ${a.id} (${a.name}) -> ${res.status}`);
+      } else if (a.type === "inbox_triage") {
+        // Daily, on/after cfg.hour local time (default 07), once per local day.
+        const now = new Date();
+        const day = tzDayFmt.format(now);
+        const hour = Number(tzHourFmt.format(now)) % 24;
+        if (hour < Number(cfg.hour ?? 7)) continue;
+        if ((a.state || {}).lastDay === day) continue;
+        const res = await runOrgAgent(client, model, a);
+        await setAgentState(a.org_key, a.id, { lastDay: day, lastResult: res.status });
         console.log(`[Simba] agent ${a.id} (${a.name}) -> ${res.status}`);
       }
     } catch (e) {

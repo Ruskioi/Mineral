@@ -26,8 +26,11 @@ import { startScheduler, schedulerEnabled, runOrgAgent } from "./scheduler.js";
 import { appOnlyGraphToken, sendMailAsUser } from "./graph.js";
 import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, listRuns, listApprovals, getApproval, decideApproval, logRun } from "./orgagents.js";
 import { chooseModel, lastUserText } from "./router.js";
-import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
+import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, retrieveWithSources, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
 import { listConnectors, createConnector, updateConnector, deleteConnector, queryConnector, testConnector, writeConnector } from "./connectors.js";
+import { listSources, createSource, deleteSource, syncSourceById } from "./ingest.js";
+import { teamsConfigured, verifyBotToken, sendActivity, cleanTeamsText, conversationHistory, rememberTurn, TEAMS_SYSTEM } from "./teamsbot.js";
+import { listTemplates, createTemplate, deleteTemplate } from "./templates.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -472,6 +475,23 @@ const TOOLS = [
       title: { type: "string", description: "A one-line summary of what you'll do." },
       steps: { type: "array", description: "The ordered steps you intend to take, each a short sentence.", items: { type: "string" } },
     }, required: ["title", "steps"] } },
+
+  { name: "update_plan", description: "While executing a plan you proposed with propose_plan, check off finished steps (1-based indexes) and optionally mark the step you're on. Keeps the user informed during long builds. Call it as you complete each step or two.",
+    input_schema: { type: "object", properties: {
+      done_steps: { type: "array", description: "1-based indexes of steps now completed.", items: { type: "integer" } },
+      current_step: { type: "integer", description: "1-based index of the step you're working on now." },
+      note: { type: "string", description: "Optional one-line progress note shown under the plan." },
+    } } },
+
+  { name: "show_chart", description: "Render a chart directly in the chat (bar, line or pie) to visualize numbers you've computed — sums per month, category splits, trends. Use REAL values you calculated (from the sheet, run_code or analyze_data); never invent data. Prefer a chart over a wall of numbers when comparing more than ~4 values.",
+    input_schema: { type: "object", properties: {
+      title: { type: "string", description: "Short chart title." },
+      type: { type: "string", enum: ["bar", "line", "pie"], description: "Chart form: bar = compare categories, line = trend over time, pie = share of a whole (max ~6 slices)." },
+      labels: { type: "array", description: "X-axis / slice labels.", items: { type: "string" } },
+      series: { type: "array", description: "One or more data series aligned with labels (pie uses the first).", items: { type: "object", properties: {
+        name: { type: "string" }, values: { type: "array", items: { type: "number" } },
+      }, required: ["values"] } },
+    }, required: ["type", "labels", "series"] } },
 
   { name: "delegate_task", description: "Hand a single, self-contained sub-task to a focused subagent that works on its own (with the same tools) and returns a short result. Use to break a big job into independent parts (e.g. 'build the summary sheet', 'create the regional charts') so each runs with clean focus. Don't delegate trivial one-step actions; do them yourself.",
     input_schema: { type: "object", properties: {
@@ -1075,15 +1095,16 @@ app.post("/api/chat", async (req, res) => {
     res.set("Retry-After", "3600");
     return res.status(429).json({ error: "Du har nått din dagliga gräns för Simba. Försök igen imorgon." });
   }
-  let vaultText = "", workspaceText = "";
+  let vaultText = "", workspaceText = "", vaultSources = [];
   if (user) {
     // Run both context lookups concurrently — they're independent stores.
-    [vaultText, workspaceText] = await Promise.all([
-      retrieveForContext(orgOf(user), lastUserText(req.body.messages))
-        .catch((e) => { console.error("[Simba] vault retrieve failed:", e?.message || e); return ""; }),
+    const [vaultHit, ws] = await Promise.all([
+      retrieveWithSources(orgOf(user), lastUserText(req.body.messages))
+        .catch((e) => { console.error("[Simba] vault retrieve failed:", e?.message || e); return { text: "", sources: [] }; }),
       workspaceContext(user.key)
         .catch((e) => { console.error("[Simba] workspace retrieve failed:", e?.message || e); return ""; }),
     ]);
+    vaultText = vaultHit.text; vaultSources = vaultHit.sources; workspaceText = ws;
   }
 
   inflight++;
@@ -1105,6 +1126,7 @@ app.post("/api/chat", async (req, res) => {
       stop_reason: final.stop_reason,
       usage: final.usage,
       model: final.model,
+      sources: vaultSources, // vault entries the context was grounded in (citations)
     });
     // Record token usage + estimated spend for the signed-in user's profile view.
     if (user && final.usage) recordUsage(user.key, final.model, final.usage).catch(() => {});
@@ -1473,6 +1495,100 @@ app.post("/api/agents-approvals/:id/decide", async (req, res) => {
 // ---- Finance / business-system connectors (bridge to economy systems) ----
 // Config (base URL + secret headers + whitelisted endpoints) is admin-gated;
 // reading data is allowed in-org. Secrets stay server-side.
+// ---- Microsoft Teams bot -------------------------------------------------
+// Bot Framework messaging endpoint. Same brain as the other surfaces: the
+// Teams user's aadObjectId+tenantId map to the identical "tid:oid" user key,
+// so memory and the org vault ground the answers here too.
+app.post("/api/teams/messages", async (req, res) => {
+  if (!teamsConfigured) return res.status(501).json({ error: "Teams-boten är inte konfigurerad." });
+  try { await verifyBotToken(req.headers.authorization); }
+  catch { return res.status(401).json({ error: "Ogiltig bot-token." }); }
+  const activity = req.body || {};
+  res.status(200).end(); // ack immediately; the reply is posted asynchronously
+
+  if (activity.type !== "message" || !activity.serviceUrl || !activity.conversation?.id) return;
+  const text = cleanTeamsText(activity.text);
+  if (!text) return;
+  try {
+    const tid = activity.conversation.tenantId || activity.channelData?.tenant?.id || "";
+    const oid = activity.from?.aadObjectId || "";
+    const userKey = tid && oid ? `${tid}:${oid}` : "";
+    const convId = activity.conversation.id;
+
+    const [memoryNotes, vaultHit] = await Promise.all([
+      userKey ? getMemory(userKey).catch(() => []) : [],
+      tid ? retrieveWithSources(tid, text).catch(() => ({ text: "", sources: [] })) : { text: "", sources: [] },
+    ]);
+    const system = [
+      { type: "text", text: TEAMS_SYSTEM, cache_control: { type: "ephemeral" } },
+      ...(memoryNotes.length ? [{ type: "text", text: `[Vad du minns om användaren]\n${memoryNotes.map((n) => `- ${n}`).join("\n")}` }] : []),
+      ...(vaultHit.text ? [{ type: "text", text: `[Företagets kunskapsbank]\n${vaultHit.text}` }] : []),
+    ];
+    const history = conversationHistory(convId);
+    const messages = [...history, { role: "user", content: text }];
+    const model = pickModel(null, messages, "balanced"); // auto-route (Pluto/Simba)
+    const resp = await withRetry(() => client.messages.create({ model, max_tokens: 2000, system, messages }), "teams");
+    const answer = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim() || "Jag har inget bra svar just nu.";
+    rememberTurn(convId, text, answer);
+    if (userKey && resp.usage) recordUsage(userKey, resp.model, resp.usage).catch(() => {});
+    await sendActivity(activity.serviceUrl, convId, { type: "message", text: answer, textFormat: "markdown" });
+  } catch (e) {
+    console.error("[Simba] teams reply failed:", e?.message || e);
+    sendActivity(activity.serviceUrl, activity.conversation.id, { type: "message", text: "Något gick fel — försök igen om en stund." }).catch(() => {});
+  }
+});
+
+// ---- Org-shared prompt templates ------------------------------------------
+app.get("/api/templates", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ templates: await listTemplates(orgOf(user)) }); }
+  catch (err) { console.error("[Simba] templates list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta mallar." }); }
+});
+app.post("/api/templates", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ template: await createTemplate(orgOf(user), { name: req.body?.name, prompt: req.body?.prompt, createdBy: user.email || user.name }) }); }
+  catch (err) { res.status(err.status || 502).json({ error: err.message || "Kunde inte spara mallen." }); }
+});
+app.delete("/api/templates/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await deleteTemplate(orgOf(user), req.params.id); res.json({ ok: true }); }
+  catch (err) { res.status(502).json({ error: "Kunde inte ta bort mallen." }); }
+});
+
+// ---- Vault auto-ingest sources (SharePoint/OneDrive folder sync) ----------
+// Admins connect folders; everyone benefits from the synced knowledge.
+app.get("/api/ingest-sources", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ sources: await listSources(orgOf(user)), canManage: canWriteVault(user) }); }
+  catch (err) { console.error("[Simba] ingest list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta källor." }); }
+});
+app.post("/api/ingest-sources", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan koppla källor." });
+  if (!req.body?.url) return res.status(400).json({ error: "Ange en delningslänk till en mapp." });
+  try { res.json({ source: await createSource(orgOf(user), { url: req.body.url, name: req.body.name, createdBy: user.email || user.name }) }); }
+  catch (err) { console.error("[Simba] ingest create failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte koppla källan." }); }
+});
+app.post("/api/ingest-sources/:id/sync", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan synka." });
+  try { res.json({ result: await syncSourceById(orgOf(user), req.params.id, client) }); }
+  catch (err) { console.error("[Simba] ingest sync failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Synken misslyckades." }); }
+});
+app.delete("/api/ingest-sources/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan ta bort källor." });
+  try { await deleteSource(orgOf(user), req.params.id); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] ingest delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort källan." }); }
+});
+
 app.get("/api/connectors", async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
@@ -1635,6 +1751,17 @@ app.post("/api/vault", async (req, res) => {
     const entry = await createEntry(orgOf(user), { topic, title, content, tags, file, author: user.email || user.name || "" });
     res.json({ entry });
   } catch (err) { console.error("[Simba] vault create failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte spara posten." }); }
+});
+
+// Single entry — used by the citation chips under grounded answers.
+app.get("/api/vault/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const entry = await getEntry(orgOf(user), req.params.id);
+    if (!entry) return res.status(404).json({ error: "Posten hittades inte." });
+    res.json({ entry });
+  } catch (err) { console.error("[Simba] vault get failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta posten." }); }
 });
 
 // Read an entry's attached file (text/CSV → text, image → base64, pdf → base64).

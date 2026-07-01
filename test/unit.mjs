@@ -62,6 +62,17 @@ const _connW = await _conn.createConnector("t-connw", { name: "NEXT", base_url: 
 const _connWepMethod = _connW.endpoints[0]?.method;
 const _connBuilt = await _conn.buildWriteRequests("t-connw", _connW.id, _connW.endpoints[0].key, [{ email: "a@x.se", hours: 8, date: "2026-07-01" }]);
 const _connWriteRejectsGet = await _conn.writeConnector("t-conn", "Fortnox", "fakturor", { x: 1 }).then(() => false).catch((e) => e.status === 400);
+// Ingest: docx extraction round-trip through the minimal zip reader.
+import { execSync as _exec } from "node:child_process";
+import * as _fs from "node:fs";
+_fs.mkdirSync("/tmp/simba-test/word", { recursive: true });
+_fs.writeFileSync("/tmp/simba-test/word/document.xml", "<w:document><w:p><w:r><w:t>Hej ingest.</w:t></w:r></w:p></w:document>");
+_exec("cd /tmp/simba-test && rm -f t.docx && zip -q -r t.docx word");
+const { extractText: _extractText } = await import("../server/ingest.js");
+const _ingestDocx = await _extractText("t.docx", _fs.readFileSync("/tmp/simba-test/t.docx"), null);
+// Citations: retrieval must report which entries it used ("Pris" created above).
+const { retrieveWithSources: _rws } = await import("../server/vault.js");
+const _ctxSources = (await _rws("t-test", "vad kostar produkten")).sources;
 // Usage accounting: estimated cost + round-trip.
 const _usage = await import("../server/usage.js");
 const _usdOpus = _usage.estimateCost("claude-opus-4-8", { input_tokens: 1_000_000, output_tokens: 0 }).cost;
@@ -244,7 +255,7 @@ check("agent patterns (plan + delegate subagents) are wired", () => {
   assert(/function confirmPlan/.test(taskpane) && /function renderPlan/.test(taskpane), "client plan approval UI missing");
   assert(/subagentDepth/.test(taskpane), "subagent recursion guard missing");
   assert(/function toolResultContent/.test(taskpane), "shared tool-result builder missing (used by the subagent loop)");
-  assert(/propose_plan", "delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
+  assert(/"propose_plan"/.test(taskpane) && /"delegate_task"/.test(taskpane), "plan/delegate must work in desktop mode (DESKTOP_TOOLS)");
 });
 
 check("merge_cells preserves the title; read turns run in parallel", () => {
@@ -482,6 +493,59 @@ check("audit hardening: perf + race + timezone fixes stay in place", () => {
   assert(/const snapMessages = messages/.test(taskpane), "saveConversation must snapshot at schedule time");
 });
 
+check("vault auto-ingest (SharePoint/OneDrive folders) is wired", () => {
+  const ing = read("server/ingest.js");
+  assert(/export async function syncSource/.test(ing) && /export async function createSource/.test(ing) && /export async function tickIngest/.test(ing), "ingest engine missing");
+  assert(/export function zlibSync/.test(read("server/zipmini.js")), "zip reader (docx/pptx) missing");
+  assert(/docx/.test(ing) && /pptx/.test(ing) && /xlsx/.test(ing) && /pdf/.test(ing), "extraction must handle Office formats + pdf");
+  assert(/export async function upsertExternal/.test(read("server/vault.js")) && /ext_id/.test(read("server/vault.js")), "vault external-entry tracking missing");
+  assert(/resolveShareUrl/.test(read("server/graph.js")) && /listFolderChildren/.test(read("server/graph.js")), "graph folder helpers missing");
+  assert(/app\.get\("\/api\/ingest-sources"/.test(server) && /app\.post\("\/api\/ingest-sources\/:id\/sync"/.test(server), "ingest endpoints missing");
+  assert(/tickIngest\(client\)/.test(read("server/scheduler.js")), "ingest must run on the scheduler tick");
+  assert(/function renderIngestSources/.test(taskpane) && /data-v="sources"/.test(taskpane), "ingest admin UI (Källor tab) missing");
+  assert(_ingestDocx === "Hej ingest.", "docx extraction should round-trip");
+});
+
+check("citations (answer sources) are wired", () => {
+  assert(/export async function retrieveWithSources/.test(read("server/vault.js")), "retrieveWithSources missing");
+  assert(/sources: vaultSources/.test(server), "final SSE event must carry the sources");
+  assert(/app\.get\("\/api\/vault\/:id"/.test(server), "single-entry endpoint (chip click) missing");
+  assert(/function renderSourceChips/.test(taskpane) && /Baserat på kunskapsbanken/.test(taskpane), "source chips missing");
+  assert(/\.src-chip/.test(read("src/taskpane/taskpane.css")), "citation styling missing");
+  assert(Array.isArray(_ctxSources) && _ctxSources.length === 1 && _ctxSources[0].title === "Pris", "retrieval must report its sources");
+});
+
+check("inbox-triage agent is wired", () => {
+  const sch = read("server/scheduler.js");
+  assert(/function runInboxTriage/.test(sch) && /agent\.type === "inbox_triage"/.test(sch), "inbox agent executor missing");
+  assert(/createApproval\(tid, agent\.id, run\.id, "send_email"/.test(sch), "drafted replies must go through the approval queue");
+  assert(/inbox_triage/.test(taskpane) && /Inkorgsassistent/.test(taskpane), "inbox agent not offered in the create form");
+});
+
+check("Teams bot is wired", () => {
+  const tb = read("server/teamsbot.js");
+  assert(/export async function verifyBotToken/.test(tb) && /api\.botframework\.com/.test(tb), "bot token verification missing");
+  assert(/export async function sendActivity/.test(tb), "bot reply sender missing");
+  assert(/app\.post\("\/api\/teams\/messages"/.test(server) && /verifyBotToken/.test(server), "Teams endpoint missing/unverified");
+  assert(/retrieveWithSources\(tid/.test(server) && /getMemory\(userKey\)/.test(server), "Teams answers must use the shared brain (vault + memory)");
+  assert(read("docs/teams-manifest.template.json").includes("REPLACE_WITH_TEAMS_APP_ID"), "Teams manifest template missing");
+});
+
+check("second-tier features (charts, plan cards, templates, search, voice, changelog)", () => {
+  // Inline charts + live plan cards (client tools with server schemas — parity test covers the pairing)
+  assert(/name: "show_chart"/.test(server) && /function chartSVG/.test(taskpane) && /function renderChartCard/.test(taskpane), "inline charts missing");
+  assert(/name: "update_plan"/.test(server) && /plan-step/.test(taskpane) && /\.plan-card/.test(read("src/taskpane/taskpane.css")), "live plan cards missing");
+  // Org templates
+  assert(/export async function createTemplate/.test(read("server/templates.js")) && /app\.get\("\/api\/templates"/.test(server), "templates store/endpoints missing");
+  assert(/function openTemplates/.test(taskpane) && /label: "Mallar"/.test(taskpane), "templates UI missing");
+  // Global search in ⌘K
+  assert(/globalSearch/.test(taskpane) && /group: "Kunskapsbank"/.test(taskpane) && /group: "E-post"/.test(taskpane), "global search missing");
+  // Voice input
+  assert(/function wireVoiceInput/.test(taskpane) && /webkitSpeechRecognition/.test(taskpane) && /id="mic"/.test(read("src/taskpane/taskpane.html")), "voice input missing");
+  // Change log with stepwise revert
+  assert(/function openChangeLog/.test(taskpane) && /Ångra hit/.test(taskpane) && /currentToolName/.test(taskpane), "sheet change log missing");
+});
+
 check("profile view: usage + estimated spend is wired", () => {
   const usg = read("server/usage.js");
   assert(/export function estimateCost/.test(usg) && /export async function recordUsage/.test(usg) && /export async function getUsage/.test(usg), "usage store API missing");
@@ -573,7 +637,7 @@ check("company knowledge vault (Simba's shared mind) is wired", () => {
   // backend: schemas, endpoints, retrieval injection
   assert(/name: "search_vault"/.test(server) && /name: "save_to_vault"/.test(server), "vault tools missing");
   assert(/app\.get\("\/api\/vault"/.test(server) && /app\.post\("\/api\/vault"/.test(server) && /app\.delete\("\/api\/vault\/:id"/.test(server), "vault endpoints missing");
-  assert(/retrieveForContext\(orgOf\(user\)/.test(server), "chat must inject the org vault context");
+  assert(/retrieveWithSources\(orgOf\(user\)/.test(server), "chat must inject the org vault context (with sources for citations)");
   assert(/Företagets kunskapsbank/.test(server), "system prompt must describe the vault");
   // client UI + tools
   assert(/function openVault/.test(taskpane) && /function vaultEdit/.test(taskpane), "vault UI missing");

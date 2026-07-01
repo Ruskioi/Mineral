@@ -1006,6 +1006,45 @@ body.desktop .welcome p { font-size: 15px; }
 .pf-bar-x { font-size: 10px; color: var(--ink-faint); }
 @media (max-width: 460px) { .pf-cards { grid-template-columns: 1fr; } }
 
+/* Mic (voice input) — pulsing accent while recording */
+#mic.rec { background: var(--accent-tint); border-color: var(--accent); animation: micPulse 1.2s ease-in-out infinite; }
+@keyframes micPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(217, 119, 87, 0.35); } 50% { box-shadow: 0 0 0 7px rgba(217, 119, 87, 0); } }
+
+/* ⌘K global-search group headers */
+.cmd-group { font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); padding: 10px 10px 4px; }
+
+/* ---- Live plan card (propose_plan / update_plan) ---- */
+.plan-card { border: 1px solid var(--border); border-radius: 14px; background: var(--bg-soft); padding: 12px 14px; }
+.plan-head { font-weight: 600; font-size: 13.5px; margin-bottom: 8px; }
+.plan-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.plan-step { display: flex; align-items: flex-start; gap: 9px; font-size: 13px; color: var(--ink-soft); }
+.plan-check { flex: none; width: 17px; height: 17px; display: grid; place-items: center; font-size: 11px; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--ink-faint); background: var(--surface); margin-top: 1px; }
+.plan-step.current { color: var(--ink); font-weight: 500; }
+.plan-step.current .plan-check { border-color: var(--accent); color: var(--accent); }
+.plan-step.done { color: var(--ink); }
+.plan-step.done .plan-check { background: var(--accent); border-color: var(--accent); color: #fff; }
+.plan-step.done .plan-txt { text-decoration: line-through; text-decoration-color: var(--ink-faint); text-decoration-thickness: 1px; }
+.plan-note { margin-top: 9px; font-size: 12px; color: var(--ink-soft); border-top: 1px dashed var(--border); padding-top: 8px; }
+
+/* ---- Inline charts (show_chart) ---- */
+.chart-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 12px 12px 8px; }
+.chart-title { font-weight: 600; font-size: 13.5px; margin: 0 2px 8px; }
+.chart-card svg { width: 100%; height: auto; display: block; }
+
+/* ---- Citations (vault sources under a grounded answer) ---- */
+.src-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.src-chips-l { font-size: 11px; color: var(--ink-faint); margin-right: 2px; }
+.src-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--border); background: var(--bg-soft);
+  color: var(--ink-soft); border-radius: 999px; padding: 3px 10px;
+  font-size: 11.5px; font-weight: 500; cursor: pointer; max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background var(--speed), border-color var(--speed), color var(--speed);
+}
+.src-chip:hover { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-strong); }
+.src-view { max-height: 55vh; overflow-y: auto; font-size: 13.5px; line-height: 1.55; padding: 2px; }
+
 /* ---- Home dashboard (welcome-screen activity stats, Claude-style) ---- */
 .home-stats { width: 100%; margin: 0 0 22px; }
 .hs-greet { font-family: var(--serif); font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin: 4px 2px 14px; display: flex; align-items: center; gap: 9px; }

@@ -63,7 +63,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -306,6 +306,7 @@ function boot(isExcel) {
   // stale open-drawer state so the dimming backdrop can't reappear on re-narrow.
   window.addEventListener("resize", () => { if (window.innerWidth > 700) toggleNav(false); });
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
+  wireVoiceInput();
 
   // Claude-style pill pickers: model (Auto / Pluto / Simba) and edit-mode.
   els.modelPill?.addEventListener("click", () => {
@@ -1430,6 +1431,41 @@ const tools = {
       : { approved: false, reason: "Användaren avböjde planen. Föreslå inte samma plan igen — fråga vad som ska ändras." };
   },
 
+  async update_plan({ done_steps, current_step, note }) {
+    if (!currentPlanEl || !currentPlanEl.isConnected) return { error: "Ingen plan visas. Använd propose_plan först." };
+    const steps = currentPlanEl.querySelectorAll(".plan-step");
+    for (const n of (Array.isArray(done_steps) ? done_steps : [])) {
+      const el = steps[Number(n) - 1];
+      if (el) { el.classList.add("done"); el.classList.remove("current"); el.querySelector(".plan-check").textContent = "✓"; }
+    }
+    if (current_step != null) {
+      const el = steps[Number(current_step) - 1];
+      if (el && !el.classList.contains("done")) {
+        steps.forEach((s) => { if (s !== el) s.classList.remove("current"); });
+        el.classList.add("current");
+        el.querySelector(".plan-check").textContent = "►";
+      }
+    }
+    if (note) {
+      const n = currentPlanEl.querySelector(".plan-note");
+      n.hidden = false;
+      n.textContent = String(note).slice(0, 300);
+    }
+    return { updated: true };
+  },
+
+  async show_chart({ title, type, labels, series }) {
+    const t = ["bar", "line", "pie"].includes(type) ? type : "bar";
+    const L = (Array.isArray(labels) ? labels : []).map((s) => String(s)).slice(0, 24);
+    const S = (Array.isArray(series) ? series : []).slice(0, 6).map((s) => ({
+      name: String(s?.name || ""),
+      values: (Array.isArray(s?.values) ? s.values : []).map(Number).filter((v) => Number.isFinite(v)).slice(0, 24),
+    })).filter((s) => s.values.length);
+    if (!L.length || !S.length) return { error: "Behöver labels och minst en serie med numeriska values." };
+    renderChartCard(title, t, L, S);
+    return { shown: true, note: "Diagrammet visas i chatten." };
+  },
+
   async delegate_task({ task, context }) {
     const goal = String(task || "").trim();
     if (!goal) return { error: "Ingen uppgift angavs." };
@@ -1462,9 +1498,11 @@ const tools = {
               result = { error: "Det här kräver Excel." };
             } else {
               const fn = tools[use.name];
+              currentToolName = use.name;
               result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
             }
           } catch (e) { result = { error: e.message || String(e) }; isError = true; }
+          finally { currentToolName = ""; }
           if (result && result.error) isError = true;
           results.push({ type: "tool_result", tool_use_id: use.id, content: toolResultContent(result), is_error: isError });
         }
@@ -1781,14 +1819,53 @@ const tools = {
 
 /* tool helpers */
 const MAX_READ_CELLS = 20000;
-const undoStack = []; // {address, formulas} snapshots taken before data edits
+// Snapshot stack doubles as the session CHANGE LOG: every entry knows when it
+// happened and which tool did it, and can be reverted in LIFO order.
+const undoStack = []; // {address, formulas, at, tool}
+let currentToolName = ""; // set by the agent loop around each tool execution
 function pushUndo(address, formulas) {
-  undoStack.push({ address, formulas });
+  undoStack.push({ address, formulas, at: Date.now(), tool: currentToolName || "ändring" });
   if (undoStack.length > 30) undoStack.shift();
   updateUndoButton();
 }
 function updateUndoButton() {
-  if (els.undo) els.undo.disabled = undoStack.length === 0;
+  if (els.undo) {
+    els.undo.disabled = undoStack.length === 0;
+    els.undo.title = undoStack.length
+      ? `Ångra Simbas senaste ändring (${undoStack.length} i loggen)` : "Inget att ångra";
+  }
+}
+
+// The session change log: what Simba changed, when, where — with stepwise revert.
+function openChangeLog() {
+  const items = undoStack.slice().reverse(); // newest first
+  openModal(
+    `<h3>Ändringslogg</h3>
+     <p class="sub">Det Simba ändrat i arket denna session. Ångra sker i ordning — "Ångra hit" tar tillbaka allt till och med den raden.</p>
+     <div class="files-list" id="cl-list" style="max-height:50vh">${
+       items.length ? items.map((s, i) => `
+        <div class="sched-item">
+          <div class="sched-main">
+            <div class="sched-name">${escapeHtml(s.address)}</div>
+            <div class="sched-meta">${escapeHtml(s.tool)} · ${new Date(s.at).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}</div>
+          </div>
+          <div class="sched-acts"><button class="btn oa-act" data-n="${i + 1}" style="padding:4px 9px">Ångra hit</button></div>
+        </div>`).join("") : '<div class="hint" style="padding:6px 2px">Inga ändringar loggade än.</div>'
+     }</div>
+     <div class="modal-actions"><button class="btn primary" data-act="close">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="close"]').onclick = closeModalSilently;
+  els.modalCard.querySelectorAll("[data-n]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const n = +b.dataset.n;
+      if (!(await uiConfirm(n === 1 ? "Ångra den senaste ändringen?" : `Ångra de ${n} senaste ändringarna (i ordning)?`))) { openChangeLog(); return; }
+      closeModalSilently();
+      for (let i = 0; i < n; i++) {
+        const r = await tools.revert_last_change().catch((e) => ({ error: e.message }));
+        if (r?.error || r?.reverted === false) { toast(r.error || "Kunde inte ångra fler steg.", "error", 3000); break; }
+      }
+      updateUndoButton();
+    }));
 }
 function is2DArray(v) { return Array.isArray(v) && v.length > 0 && v.every((r) => Array.isArray(r)); }
 function csvCell(c) { const s = c == null ? "" : String(c); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
@@ -1973,11 +2050,14 @@ async function runOneTool(use, group) {
     if (!toolAllowed(use.name)) {
       result = { error: "Det här kräver Excel. Öppna Simba inuti Excel för att läsa eller redigera arket." };
     } else {
+      currentToolName = use.name; // lets pushUndo tag the change-log entry
       result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
     }
   } catch (e) {
     result = { error: e.message || String(e) };
     isError = true;
+  } finally {
+    currentToolName = "";
   }
   if (result && result.error) isError = true;
   markStepDone(group, step, isError, toolResultHint(use.name, use.input, result));
@@ -2045,7 +2125,11 @@ async function runAgentLoop() {
       renderMessage("assistant", fullText);
     }
 
-    if (reply.stop_reason !== "tool_use") { finalizeToolGroup(group); return; }
+    if (reply.stop_reason !== "tool_use") {
+      finalizeToolGroup(group);
+      if (Array.isArray(reply.sources) && reply.sources.length) renderSourceChips(reply.sources);
+      return;
+    }
 
     const toolUses = reply.content.filter((b) => b.type === "tool_use");
     if (toolUses.length && !group) group = createToolGroup();
@@ -2237,9 +2321,109 @@ function confirmEdit(details) {
 
 // Render Simba's proposed plan as a tidy card in the chat so it stays visible
 // while (and after) the user decides whether to run it.
+// A live plan card: steps render with checkboxes the model ticks off via
+// update_plan while it works, so long builds show visible progress.
+let currentPlanEl = null;
 function renderPlan(title, steps) {
-  const md = `**📋 ${title || "Plan"}**\n\n` + steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
-  renderMessage("assistant", md);
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  const items = steps.map((s, i) =>
+    `<li class="plan-step" data-i="${i}"><span class="plan-check">○</span><span class="plan-txt">${escapeHtml(s)}</span></li>`).join("");
+  wrap.innerHTML =
+    `<div class="avatar">${currentAvatar()}</div>
+     <div class="body"><div class="plan-card">
+       <div class="plan-head">📋 ${escapeHtml(title || "Plan")}</div>
+       <ol class="plan-steps">${items}</ol>
+       <div class="plan-note" hidden></div>
+     </div></div>`;
+  els.messages.append(wrap);
+  currentPlanEl = wrap.querySelector(".plan-card");
+  scrollDown();
+}
+
+/* ---- Inline charts (show_chart tool) -------------------------------------
+ * Compact SVG renderer for bar/line/pie. Structural colors come from the app's
+ * CSS variables so charts read correctly in both light and dark themes; series
+ * use a muted categorical palette anchored on the brand accent. */
+const CHART_COLORS = ["#d97757", "#6f8fae", "#7d9c8f", "#c9a353", "#8a7dab", "#b56576"];
+function chartSVG(type, labels, series) {
+  const W = 520, H = 300, padL = 52, padR = 14, padT = 14, padB = 40;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const esc = escapeHtml;
+  const fmt = (v) => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + "M" : Math.abs(v) >= 1e4 ? (v / 1e3).toFixed(0) + "k" : (Math.round(v * 100) / 100).toLocaleString("sv-SE");
+
+  if (type === "pie") {
+    const vals = series[0].values.slice(0, labels.length);
+    const total = vals.reduce((a, b) => a + Math.max(0, b), 0) || 1;
+    const cx = 150, cy = 150, r = 105;
+    let angle = -Math.PI / 2;
+    const wedges = vals.map((v, i) => {
+      const frac = Math.max(0, v) / total;
+      const a2 = angle + frac * Math.PI * 2;
+      const large = frac > 0.5 ? 1 : 0;
+      const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
+      const x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2);
+      const d = frac >= 0.999
+        ? `M ${cx - r} ${cy} A ${r} ${r} 0 1 1 ${cx + r} ${cy} A ${r} ${r} 0 1 1 ${cx - r} ${cy}`
+        : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
+      angle = a2;
+      return `<path d="${d}" fill="${CHART_COLORS[i % CHART_COLORS.length]}" stroke="var(--surface)" stroke-width="1.5"><title>${esc(labels[i])}: ${fmt(v)} (${Math.round(frac * 100)}%)</title></path>`;
+    }).join("");
+    const legend = labels.slice(0, vals.length).map((l, i) =>
+      `<g transform="translate(300, ${40 + i * 24})"><rect width="12" height="12" rx="3" fill="${CHART_COLORS[i % CHART_COLORS.length]}"/><text x="18" y="10" font-size="12" fill="var(--ink-soft)">${esc(String(l).slice(0, 24))} · ${Math.round((Math.max(0, vals[i]) / total) * 100)}%</text></g>`).join("");
+    return `<svg viewBox="0 0 ${W} ${H}" role="img">${wedges}${legend}</svg>`;
+  }
+
+  const all = series.flatMap((s) => s.values);
+  const maxV = Math.max(...all, 0), minV = Math.min(...all, 0);
+  const span = (maxV - minV) || 1;
+  const y = (v) => padT + ih - ((v - minV) / span) * ih;
+  const grid = [0, 1, 2, 3, 4].map((i) => {
+    const v = minV + (span * i) / 4;
+    const yy = y(v);
+    return `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="var(--border)" stroke-width="1"/><text x="${padL - 6}" y="${yy + 4}" font-size="10.5" fill="var(--ink-faint)" text-anchor="end">${fmt(v)}</text>`;
+  }).join("");
+  const step = iw / labels.length;
+  const xLabels = labels.map((l, i) => {
+    if (labels.length > 12 && i % 2) return "";
+    return `<text x="${padL + step * (i + 0.5)}" y="${H - padB + 16}" font-size="10.5" fill="var(--ink-soft)" text-anchor="middle">${esc(String(l).slice(0, 10))}</text>`;
+  }).join("");
+  let marks = "";
+  if (type === "bar") {
+    const bw = Math.min(34, (step * 0.7) / series.length);
+    marks = series.map((s, si) => s.values.map((v, i) => {
+      const x = padL + step * (i + 0.5) - (bw * series.length) / 2 + si * bw;
+      const y0 = y(Math.max(0, v)), y1 = y(Math.min(0, v));
+      return `<rect x="${x}" y="${y0}" width="${Math.max(1, bw - 2)}" height="${Math.max(1, y1 - y0)}" rx="3" fill="${CHART_COLORS[si % CHART_COLORS.length]}"><title>${esc(labels[i])}${s.name ? ` – ${esc(s.name)}` : ""}: ${fmt(v)}</title></rect>`;
+    }).join("")).join("");
+  } else {
+    marks = series.map((s, si) => {
+      const pts = s.values.map((v, i) => `${padL + step * (i + 0.5)},${y(v)}`).join(" ");
+      const dots = s.values.map((v, i) =>
+        `<circle cx="${padL + step * (i + 0.5)}" cy="${y(v)}" r="3" fill="${CHART_COLORS[si % CHART_COLORS.length]}"><title>${esc(labels[i])}${s.name ? ` – ${esc(s.name)}` : ""}: ${fmt(v)}</title></circle>`).join("");
+      return `<polyline points="${pts}" fill="none" stroke="${CHART_COLORS[si % CHART_COLORS.length]}" stroke-width="2.2" stroke-linejoin="round"/>${dots}`;
+    }).join("");
+  }
+  const legend = series.length > 1 || series[0].name
+    ? `<g transform="translate(${padL}, ${H - 8})">${series.map((s, i) =>
+        `<g transform="translate(${i * 130}, 0)"><rect width="10" height="10" rx="3" y="-9" fill="${CHART_COLORS[i % CHART_COLORS.length]}"/><text x="15" font-size="11" fill="var(--ink-soft)">${esc(String(s.name || `Serie ${i + 1}`).slice(0, 18))}</text></g>`).join("")}</g>`
+    : "";
+  return `<svg viewBox="0 0 ${W} ${H}" role="img">${grid}${xLabels}${marks}${legend}</svg>`;
+}
+
+function renderChartCard(title, type, labels, series) {
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  wrap.innerHTML =
+    `<div class="avatar">${currentAvatar()}</div>
+     <div class="body"><div class="chart-card">
+       ${title ? `<div class="chart-title">${escapeHtml(title)}</div>` : ""}
+       ${chartSVG(type, labels, series)}
+     </div></div>`;
+  els.messages.append(wrap);
+  scrollDown();
 }
 
 /** Asks the user to approve a proposed plan; resolves true (run) / false (cancel). */
@@ -2619,6 +2803,40 @@ function finishStream(live, fullText) {
   scrollDown();
 }
 
+/* ---- Citations: which vault entries grounded this answer ----------------- */
+// Renders small source chips ("📚 Semesterpolicy") under the turn's final
+// assistant bubble. Clicking a chip opens the entry so users can verify.
+function renderSourceChips(sources) {
+  const bodies = els.messages.querySelectorAll(".msg.assistant .body");
+  const body = bodies[bodies.length - 1];
+  if (!body || body.querySelector(".src-chips")) return;
+  const wrap = document.createElement("div");
+  wrap.className = "src-chips";
+  wrap.innerHTML = `<span class="src-chips-l">Baserat på kunskapsbanken:</span>` +
+    sources.slice(0, 6).map((s) =>
+      `<button class="src-chip" data-id="${escapeHtml(s.id)}" title="${escapeHtml(`[${s.topic}] ${s.title}`)}">📚 ${escapeHtml(s.title)}</button>`).join("");
+  wrap.querySelectorAll(".src-chip").forEach((b) => b.addEventListener("click", () => openVaultEntry(b.dataset.id)));
+  body.appendChild(wrap);
+}
+
+async function openVaultEntry(id) {
+  const token = await getSsoToken(false);
+  if (!token) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/vault/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) { toast("Kunde inte hämta källan.", "error", 2500); return; }
+    const { entry } = await r.json();
+    openModal(
+      `<h3>${escapeHtml(entry.title)}</h3>
+       <p class="sub">${escapeHtml(entry.topic)}${entry.author ? ` · ${escapeHtml(entry.author)}` : ""}</p>
+       <div class="src-view">${formatMarkdown(String(entry.content || "").slice(0, 8000))}</div>
+       <div class="modal-actions"><button class="btn" data-act="all">Öppna kunskapsbanken</button><button class="btn primary" data-act="close">Stäng</button></div>`
+    );
+    els.modalCard.querySelector('[data-act="close"]').onclick = closeModalSilently;
+    els.modalCard.querySelector('[data-act="all"]').onclick = () => { closeModalSilently(); openVault(); };
+  } catch { toast("Kunde inte hämta källan.", "error", 2500); }
+}
+
 function toolResultHint(name, input, result) {
   if (!result || result.error) return "";
   if (result.skipped) return "hoppades över";
@@ -2733,6 +2951,8 @@ function toolLabel(name, input) {
     add_sheet: "Lägger till ett blad",
     select_range: `Markerar ${input?.address || "ett område"}`,
     revert_last_change: "Ångrar senaste ändringen",
+    show_chart: "Ritar ett diagram",
+    update_plan: "Uppdaterar planen",
   };
   return labels[name] || name;
 }
@@ -3694,6 +3914,111 @@ async function populateProfile() {
 }
 
 // A clean tap-friendly menu (the ⋯ button) — same actions as the ⌘K palette.
+/* ---- Voice input (Web Speech API, Swedish) -------------------------------
+ * Shows the mic only where the browser supports speech recognition (Chromium-
+ * based hosts incl. the Office webview on Windows/desktop web). Tap to talk,
+ * tap again to stop; the transcript lands in the composer for review. */
+let _rec = null, _recActive = false;
+function wireVoiceInput() {
+  const btn = document.getElementById("mic");
+  if (!btn) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return; // unsupported host — button stays hidden
+  btn.hidden = false;
+  btn.addEventListener("click", () => {
+    if (_recActive) { _rec?.stop(); return; }
+    _rec = new SR();
+    _rec.lang = "sv-SE";
+    _rec.interimResults = true;
+    _rec.continuous = true;
+    const baseText = els.prompt.value ? els.prompt.value.replace(/\s+$/, "") + " " : "";
+    _rec.onresult = (e) => {
+      let text = "";
+      for (const res of e.results) text += res[0].transcript;
+      els.prompt.value = baseText + text.trim();
+      autoGrow();
+    };
+    _rec.onend = () => { _recActive = false; btn.classList.remove("rec"); els.prompt.focus(); };
+    _rec.onerror = () => { _recActive = false; btn.classList.remove("rec"); toast("Dikteringen avbröts.", "info", 2000); };
+    try { _rec.start(); _recActive = true; btn.classList.add("rec"); }
+    catch { toast("Kunde inte starta mikrofonen.", "error", 2500); }
+  });
+}
+
+/* ---- Org-shared prompt templates ----------------------------------------- */
+async function openTemplates() {
+  const token = await getSsoToken(false);
+  if (!token) { toast("Logga in med Microsoft för att använda mallar.", "info", 2500); return; }
+  openModal(
+    `<div class="vault-head">
+       <div><h3 style="margin:0">Mallar</h3><p class="sub" style="margin:2px 0 0">Återanvändbara flöden som hela organisationen delar.</p></div>
+       <button class="btn primary" id="tpl-new" style="padding:7px 12px;flex:none">＋ Ny mall</button>
+     </div>
+     <div id="tpl-list" class="files-list" style="max-height:55vh"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  els.modalCard.querySelector("#tpl-new").onclick = () => templateEdit();
+  loadTemplates();
+}
+async function loadTemplates() {
+  const el = els.modalCard.querySelector("#tpl-list");
+  if (!el) return;
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/templates`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { el.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta.")}</div>`; return; }
+    const tpls = j.templates || [];
+    if (!tpls.length) { el.innerHTML = '<div class="hint" style="padding:6px 2px">Inga mallar än. Skapa den första — t.ex. "Offert till kund" eller "Veckorapport".</div>'; return; }
+    el.innerHTML = tpls.map((t) => `
+      <div class="sched-item" data-id="${escapeHtml(t.id)}">
+        <div class="sched-main">
+          <div class="sched-name">📄 ${escapeHtml(t.name)}</div>
+          <div class="sched-meta">${escapeHtml(String(t.prompt).replace(/\s+/g, " ").slice(0, 90))}…</div>
+        </div>
+        <div class="sched-acts">
+          <button class="btn oa-act" data-act="use" style="padding:4px 10px">Använd</button>
+          <button class="msg-act" data-act="del" title="Ta bort">🗑</button>
+        </div>
+      </div>`).join("");
+    el.querySelectorAll(".sched-item").forEach((item) => {
+      const t = tpls.find((x) => x.id === item.dataset.id);
+      item.querySelector('[data-act="use"]').addEventListener("click", () => {
+        closeModalSilently();
+        els.prompt.value = t.prompt;
+        autoGrow();
+        els.prompt.focus(); // let the user fill in the blanks before sending
+      });
+      item.querySelector('[data-act="del"]').addEventListener("click", async () => {
+        if (!(await uiConfirm(`Ta bort mallen "${t.name}"?`, { danger: true }))) { openTemplates(); return; }
+        const tok = await getSsoToken(false);
+        await fetch(`${API_BASE}/api/templates/${encodeURIComponent(t.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${tok}` } }).catch(() => {});
+        openTemplates();
+      });
+    });
+  } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå mallarna.</div>'; }
+}
+function templateEdit() {
+  openModal(
+    `<h3>Ny mall</h3>
+     <label class="vault-l">Namn</label><input id="tpl-name" class="files-q" type="text" placeholder="t.ex. Offert till kund" />
+     <label class="vault-l">Prompt</label>
+     <textarea id="tpl-prompt" class="memory-text" rows="7" placeholder="Skriv flödet — använd [hakparenteser] för det som ska fyllas i per gång, t.ex: Skriv en offert till [kund] för [tjänst]…"></textarea>
+     <div class="modal-actions"><button class="btn" data-act="back">Tillbaka</button><button class="btn primary" data-act="save">Spara mall</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="back"]').onclick = () => openTemplates();
+  els.modalCard.querySelector('[data-act="save"]').onclick = async () => {
+    const name = els.modalCard.querySelector("#tpl-name").value.trim();
+    const prompt = els.modalCard.querySelector("#tpl-prompt").value.trim();
+    if (!name || !prompt) { toast("Fyll i både namn och prompt.", "error", 2500); return; }
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/templates`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ name, prompt }) }).catch(() => null);
+    if (r && r.ok) { toast("Mall sparad", "success", 1500); openTemplates(); }
+    else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte spara.", "error", 3000); }
+  };
+}
+
 // The feature nav shown in the sidebar (Claude-style rail / drawer).
 function buildSidebarNav() {
   const nav = document.getElementById("sb-nav");
@@ -3704,6 +4029,7 @@ function buildSidebarNav() {
     { icon: "📧", label: "E-post", run: openMail },
     { icon: "☁", label: "Molnfiler", run: openFilesBrowser },
     { icon: "🔌", label: "Datakällor", run: openConnectors },
+    { icon: "📄", label: "Mallar", run: openTemplates },
   );
   nav.innerHTML = items.map((it, i) => `<button class="sb-nav-item" data-i="${i}"><span class="sb-nav-ic">${it.icon}</span>${escapeHtml(it.label)}</button>`).join("");
   nav.querySelectorAll(".sb-nav-item").forEach((b) => b.addEventListener("click", () => { closeNav(); items[+b.dataset.i].run(); }));
@@ -3724,6 +4050,8 @@ function commandList() {
   if (ssoServerConfigured) cmds.splice(3, 0, { icon: "📚", label: "Kunskapsbank", run: () => openVault() });
   if (ssoServerConfigured) cmds.splice(4, 0, { icon: "📧", label: "E-post", run: () => openMail() });
   if (ssoServerConfigured) cmds.splice(5, 0, { icon: "🔌", label: "Datakällor (ekonomisystem)", run: () => openConnectors() });
+  if (ssoServerConfigured) cmds.splice(5, 0, { icon: "📄", label: "Mallar", run: () => openTemplates() });
+  if (IS_EXCEL) cmds.push({ icon: "↺", label: "Ändringslogg (arket)", run: () => openChangeLog() });
   if (ssoServerConfigured) cmds.splice(5, 0, { icon: "☁", label: "Molnfiler", run: () => openFilesBrowser() });
   if (busy) cmds.unshift({ icon: "◼", label: "Stoppa Simba", run: () => stopGeneration() });
   return cmds;
@@ -3732,7 +4060,7 @@ function commandList() {
 function openCommandPalette() {
   const cmds = commandList();
   openModal(
-    `<input id="cmd-q" class="files-q" type="search" placeholder="Skriv ett kommando…" autocomplete="off" style="margin-top:0" />
+    `<input id="cmd-q" class="files-q" type="search" placeholder="Sök i allt — chattar, kunskapsbank, filer, mejl — eller skriv ett kommando…" autocomplete="off" style="margin-top:0" />
      <div id="cmd-list" class="files-list"></div>`
   );
   const qEl = els.modalCard.querySelector("#cmd-q");
@@ -3741,19 +4069,51 @@ function openCommandPalette() {
   let sel = 0; // keyboard-highlighted row (the styling always implied this worked)
   const render = () => {
     sel = Math.min(sel, Math.max(0, view.length - 1));
-    listEl.innerHTML = view.map((c, i) =>
-      `<button class="file-item${i === sel ? " active" : ""}" data-i="${i}"><span class="file-ic">${c.icon}</span><span class="file-main"><span class="file-name">${escapeHtml(c.label)}</span></span></button>`).join("")
-      || '<div class="hint" style="padding:6px 2px">Inget matchar.</div>';
+    let lastGroup = null;
+    listEl.innerHTML = view.map((c, i) => {
+      const head = c.group && c.group !== lastGroup ? `<div class="cmd-group">${escapeHtml(c.group)}</div>` : "";
+      lastGroup = c.group || lastGroup;
+      return head + `<button class="file-item${i === sel ? " active" : ""}" data-i="${i}"><span class="file-ic">${c.icon}</span><span class="file-main"><span class="file-name">${escapeHtml(c.label)}</span></span></button>`;
+    }).join("") || '<div class="hint" style="padding:6px 2px">Inget matchar.</div>';
     listEl.querySelectorAll(".file-item").forEach((b) =>
       b.addEventListener("click", () => { const c = view[+b.dataset.i]; closeModalSilently(); c?.run(); }));
     listEl.querySelector(".file-item.active")?.scrollIntoView({ block: "nearest" });
   };
   const run = (c) => { closeModalSilently(); c?.run(); };
+  // Global search: beyond commands, ⌘K also finds chats, vault entries, cloud
+  // files and mail — one box that reaches everything (debounced, stale-guarded).
+  let globalDeb, globalSeq = 0;
+  const globalSearch = async (q) => {
+    const seq = ++globalSeq;
+    const token = await getSsoToken(false);
+    if (!token) return;
+    const auth = { Authorization: `Bearer ${token}` };
+    const jfetch = (url) => fetch(url, { headers: auth }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const [vault, files, mail] = await Promise.all([
+      jfetch(`${API_BASE}/api/vault?q=${encodeURIComponent(q)}`),
+      jfetch(`${API_BASE}/api/files?q=${encodeURIComponent(q)}`),
+      jfetch(`${API_BASE}/api/mail?search=${encodeURIComponent(q)}`),
+    ]);
+    if (seq !== globalSeq || qEl.value.trim() !== q) return; // a newer query took over
+    const extra = [];
+    (sidebarConvs || []).filter((c) => (c.title || "").toLowerCase().includes(q.toLowerCase())).slice(0, 4)
+      .forEach((c) => extra.push({ icon: "💬", label: c.title || "Namnlös chatt", group: "Chattar", run: () => openConversation(c.id) }));
+    (vault?.entries || []).slice(0, 4)
+      .forEach((e) => extra.push({ icon: "📚", label: `${e.title} · ${e.topic}`, group: "Kunskapsbank", run: () => openVaultEntry(e.id) }));
+    (files?.files || []).slice(0, 4)
+      .forEach((f) => extra.push({ icon: "☁", label: f.name, group: "Molnfiler", run: () => pickCloudFile(f) }));
+    (mail?.messages || []).slice(0, 4)
+      .forEach((m) => extra.push({ icon: "📧", label: m.subject || "(inget ämne)", group: "E-post", run: () => openMailRead(m) }));
+    view = [...view.filter((v) => !v.group), ...extra];
+    render();
+  };
   qEl.addEventListener("input", () => {
-    const q = qEl.value.trim().toLowerCase();
-    view = q ? cmds.filter((c) => c.label.toLowerCase().includes(q)) : cmds;
+    const q = qEl.value.trim();
+    view = q ? cmds.filter((c) => c.label.toLowerCase().includes(q.toLowerCase())) : cmds;
     sel = 0;
     render();
+    clearTimeout(globalDeb);
+    if (q.length >= 3 && signedIn) globalDeb = setTimeout(() => globalSearch(q), 350);
   });
   qEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && view[sel]) { e.preventDefault(); run(view[sel]); }
@@ -3903,7 +4263,7 @@ async function renderOrgAgents() {
   } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte hämta agenter.</div>'; }
 }
 
-function agentTypeLabel(t) { return ({ time_reconciler: "Tidsavstämmare", supplier_invoice: "Leverantörsfakturor" }[t]) || t; }
+function agentTypeLabel(t) { return ({ time_reconciler: "Tidsavstämmare", supplier_invoice: "Leverantörsfakturor", inbox_triage: "Inkorgsassistent" }[t]) || t; }
 
 async function toggleAgentRuns(card, id) {
   const box = card.querySelector(".oa-runs");
@@ -3935,6 +4295,14 @@ const AGENT_TYPES = {
     mailboxPh: "faktura@dittforetag.se",
     recipientLabel: "Attestlistan mejlas till",
   },
+  inbox_triage: {
+    label: "Inkorgsassistent",
+    desc: "Varje morgon: går igenom din inkorg, mejlar dig en prioriterad sammanfattning och lägger färdiga svarsutkast i godkännandekön. Inget skickas utan att du godkänner.",
+    nameDefault: "Inkorgsassistent",
+    mailboxLabel: "Vems inkorg (din e-postadress)",
+    mailboxPh: "namn@dittforetag.se",
+    recipientLabel: "Sammanfattningen mejlas till (oftast samma adress)",
+  },
 };
 
 function agentCreateForm(type = "time_reconciler") {
@@ -3943,6 +4311,8 @@ function agentCreateForm(type = "time_reconciler") {
   const typeOpts = Object.entries(AGENT_TYPES).map(([k, v]) => `<option value="${k}"${k === t ? " selected" : ""}>${escapeHtml(v.label)}</option>`).join("");
   const scheduleField = t === "supplier_invoice"
     ? `<div><label class="vault-l">Kontrollintervall (minuter)</label><input id="oa-interval" class="files-q" type="number" min="5" max="1440" value="30" /></div>`
+    : t === "inbox_triage"
+    ? `<div><label class="vault-l">Klockslag (varje dag)</label><input id="oa-hour" class="files-q" type="number" min="0" max="23" value="7" /></div>`
     : `<div><label class="vault-l">Dag i månaden</label><input id="oa-day" class="files-q" type="number" min="1" max="31" value="25" /></div>`;
   openModal(
     `<h3>Ny agent</h3>
@@ -3980,6 +4350,8 @@ function agentCreateForm(type = "time_reconciler") {
     const config = { mailbox, recipient, requireApproval, tzOffset: new Date().getTimezoneOffset() };
     if (t === "supplier_invoice") {
       config.intervalMinutes = Math.min(1440, Math.max(5, parseInt(els.modalCard.querySelector("#oa-interval").value, 10) || 30));
+    } else if (t === "inbox_triage") {
+      config.hour = Math.min(23, Math.max(0, parseInt(els.modalCard.querySelector("#oa-hour").value, 10) || 7));
     } else {
       config.runDay = Math.min(31, Math.max(1, parseInt(els.modalCard.querySelector("#oa-day").value, 10) || 25));
       const connId = els.modalCard.querySelector("#oa-post-conn")?.value || "";
@@ -4081,6 +4453,7 @@ async function openVault() {
      <div class="tabs" id="vault-tabs" style="margin-bottom:10px">
        <button class="tab active" data-v="list">Lista</button>
        <button class="tab" data-v="map">Karta</button>
+       <button class="tab" data-v="sources">Källor</button>
      </div>
      <input id="vault-q" class="files-q" type="search" placeholder="Sök (semantiskt + nyckelord)…" autocomplete="off" />
      <div id="vault-list" class="vault-list"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
@@ -4097,10 +4470,70 @@ async function openVault() {
     if (!t) return;
     els.modalCard.querySelectorAll("#vault-tabs .tab").forEach((x) => x.classList.toggle("active", x === t));
     vaultView = t.dataset.v;
-    qEl.style.display = vaultView === "map" ? "none" : "";
-    if (vaultView === "map") renderVaultMap(); else loadVault(qEl.value.trim());
+    qEl.style.display = vaultView === "list" ? "" : "none";
+    if (vaultView === "map") renderVaultMap();
+    else if (vaultView === "sources") renderIngestSources();
+    else loadVault(qEl.value.trim());
   });
   loadVault("");
+}
+
+/* ---- Auto-ingest sources (synced SharePoint/OneDrive folders) ------------ */
+async function renderIngestSources() {
+  const el = els.modalCard.querySelector("#vault-list");
+  if (!el) return;
+  el.innerHTML = '<div class="hint" style="padding:6px 2px">Laddar källor…</div>';
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/ingest-sources`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { el.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta källor.")}</div>`; return; }
+    const sources = j.sources || [];
+    const canManage = !!j.canManage;
+    el.innerHTML =
+      `<div class="hint" style="padding:2px 2px 8px">Kopplade mappar synkas automatiskt in i kunskapsbanken (Word, PDF, Excel, PowerPoint, text). Simba svarar sedan utifrån innehållet — med källhänvisning.</div>` +
+      (canManage ? `
+      <div class="dc-grid" style="margin-bottom:10px">
+        <input id="ing-url" class="files-q" type="text" placeholder="Klistra in delningslänk till en SharePoint/OneDrive-mapp…" style="margin:0" />
+        <button class="btn primary" id="ing-add" style="padding:8px 12px">Koppla mapp</button>
+      </div>` : "") +
+      (sources.length ? sources.map((s) => `
+        <div class="sched-item" data-id="${escapeHtml(s.id)}">
+          <div class="sched-main">
+            <div class="sched-name">📁 ${escapeHtml(s.name)} <span class="vault-count">${s.files} filer</span></div>
+            <div class="sched-meta">${s.lastError ? `⚠ ${escapeHtml(s.lastError)}` : s.lastSync ? `Synkad ${escapeHtml(mailDate(s.lastSync))}` : "Inte synkad än"}</div>
+          </div>
+          ${canManage ? `<div class="sched-acts"><button class="btn oa-act" data-act="sync" style="padding:4px 9px">Synka nu</button><button class="msg-act" data-act="del" title="Koppla bort">🗑</button></div>` : ""}
+        </div>`).join("")
+        : '<div class="hint" style="padding:4px 2px">Inga kopplade mappar än.' + (canManage ? "" : " Be en administratör koppla en.") + "</div>");
+    el.querySelector("#ing-add")?.addEventListener("click", async () => {
+      const url = el.querySelector("#ing-url").value.trim();
+      if (!url) { toast("Klistra in en delningslänk först.", "error", 2500); return; }
+      toast("Kopplar mappen…", "info", 2000);
+      const t = await getSsoToken(false);
+      const rr = await fetch(`${API_BASE}/api/ingest-sources`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({ url }) }).catch(() => null);
+      const jj = rr ? await rr.json().catch(() => ({})) : {};
+      if (rr && rr.ok) { toast("Mappen är kopplad — synkar…", "success", 2000); renderIngestSources(); fetch(`${API_BASE}/api/ingest-sources/${encodeURIComponent(jj.source.id)}/sync`, { method: "POST", headers: { Authorization: `Bearer ${t}` } }).then(() => renderIngestSources()).catch(() => {}); }
+      else toast(jj.error || "Kunde inte koppla mappen.", "error", 4000);
+    });
+    el.querySelectorAll(".sched-item").forEach((item) => {
+      const id = item.dataset.id;
+      item.querySelector('[data-act="sync"]')?.addEventListener("click", async () => {
+        toast("Synkar…", "info", 1500);
+        const t = await getSsoToken(false);
+        const rr = await fetch(`${API_BASE}/api/ingest-sources/${encodeURIComponent(id)}/sync`, { method: "POST", headers: { Authorization: `Bearer ${t}` } }).catch(() => null);
+        const jj = rr ? await rr.json().catch(() => ({})) : {};
+        if (rr && rr.ok) { const s = jj.result || {}; toast(`Klart: +${s.added || 0} nya, ${s.updated || 0} uppdaterade`, "success", 3000); renderIngestSources(); }
+        else toast(jj.error || "Synken misslyckades.", "error", 4000);
+      });
+      item.querySelector('[data-act="del"]')?.addEventListener("click", async () => {
+        if (!(await uiConfirm("Koppla bort mappen? De synkade posterna tas bort ur kunskapsbanken.", { danger: true }))) { renderIngestSources(); return; }
+        const t = await getSsoToken(false);
+        await fetch(`${API_BASE}/api/ingest-sources/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${t}` } }).catch(() => {});
+        renderIngestSources();
+      });
+    });
+  } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå källorna.</div>'; }
 }
 
 async function loadVault(query) {

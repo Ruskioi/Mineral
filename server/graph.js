@@ -202,6 +202,42 @@ export async function downloadDriveItem(graphToken, driveId, itemId, maxBytes = 
   return { name: meta.name, size: meta.size ?? buffer.length, buffer };
 }
 
+/** List a folder's children (files + subfolders) by drive+item id (app-only).
+ *  Used by the vault auto-ingest to enumerate a synced SharePoint/OneDrive folder. */
+export async function listFolderChildren(graphToken, driveId, itemId) {
+  const out = [];
+  let path = `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/children` +
+    `?$select=id,name,size,file,folder,lastModifiedDateTime,parentReference&$top=200`;
+  for (let page = 0; page < 10 && path; page++) {
+    const r = await graphGet(path, graphToken);
+    if (!r.ok) throw Object.assign(new Error(`Folder listing failed (${r.status}).`), { status: r.status });
+    const j = await r.json();
+    for (const it of j.value || []) {
+      out.push({
+        id: it.id, name: it.name || "", size: it.size || 0,
+        isFolder: !!it.folder, modified: it.lastModifiedDateTime || "",
+        driveId: it.parentReference?.driveId || driveId,
+      });
+    }
+    path = j["@odata.nextLink"] ? j["@odata.nextLink"].replace(GRAPH, "") : null;
+  }
+  return out;
+}
+
+/** Resolve a SharePoint/OneDrive sharing URL to its drive item (app-only) —
+ *  the canonical way to turn a pasted folder link into { driveId, itemId }. */
+export async function resolveShareUrl(graphToken, url) {
+  const encoded = "u!" + Buffer.from(String(url), "utf8").toString("base64url");
+  const r = await graphGet(`/shares/${encoded}/driveItem?$select=id,name,folder,parentReference,webUrl`, graphToken);
+  if (!r.ok) throw Object.assign(new Error(`Kunde inte slå upp länken (${r.status}). Kontrollera att det är en delningslänk till en mapp.`), { status: r.status });
+  const j = await r.json();
+  return {
+    itemId: j.id, name: j.name || "Mapp",
+    driveId: j.parentReference?.driveId || "",
+    isFolder: !!j.folder, webUrl: j.webUrl || "",
+  };
+}
+
 /** Read recent messages from a specific mailbox (app-only). Needs the
  *  application Graph permission Mail.Read. Used by the time-reconciler agent to
  *  collect hours mailed to its dedicated address. */

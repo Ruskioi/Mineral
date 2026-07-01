@@ -93,6 +93,32 @@ Outlook och kan läsa/sammanfatta mejl, skriva utkast och nå kunskapsbanken dir
 > Behörighet: Outlook-manifestet begär `ReadItem`. Själva mejl-läsning/skick sker
 > via Graph (`Mail.Read`/`Mail.Send`) som du redan gett medgivande till i steg 5.
 
+## Simba i Microsoft Teams (valfritt)
+
+Simba kan även köras som en **Teams-bot** — samma minne och kunskapsbank som i
+Excel/Outlook/webben, direkt i chatten (personligt, i grupper och i kanaler).
+
+1. **Skapa en Azure Bot**: portal.azure.com → *Create a resource* → **Azure Bot**
+   → Multi Tenant. Under **Configuration**, sätt *Messaging endpoint* till
+   `https://DIN_HOST/api/teams/messages`. Kopiera **Microsoft App ID** och skapa
+   ett **client secret**.
+2. **Sätt env på servern**: `TEAMS_APP_ID=<app id>` och `TEAMS_APP_PASSWORD=<secret>`.
+3. **Aktivera Teams-kanalen** på boten (Channels → Microsoft Teams).
+4. **Bygg Teams-appen**: kopiera `docs/teams-manifest.template.json`, ersätt
+   `REPLACE_WITH_TEAMS_APP_ID`/`REPLACE_WITH_HOST`, lägg till två ikoner
+   (color.png 192×192, outline.png 32×32), zippa de tre filerna och ladda upp i
+   **Teams admin center → Teams-appar → Hantera appar → Ladda upp**.
+5. Chatta: `@Simba vad säger semesterpolicyn?` — svaren grundas i kunskapsbanken.
+
+## Automatisk kunskapsinläsning (SharePoint/OneDrive-mappar)
+
+Simbas kunskapsbank kan synka mappar automatiskt: administratören klistrar in en
+delningslänk (Kunskapsbank → **Källor**), och Simba läser in Word/PDF/Excel/
+PowerPoint/textfiler, håller dem uppdaterade och tar bort poster när filer
+försvinner. Kräver **applikations**-behörigheten **`Files.Read.All`** (admin-
+medgivande) utöver det som redan är uppsatt, samt att schemaläggaren är på
+(`SIMBA_SCHEDULER=1`).
+
 ## Verifiera när allt är på plats
 - Servern: env `AAD_CLIENT_ID`, `AAD_TENANT`, ev. `AAD_CLIENT_SECRET`, `DATABASE_URL`.
 - Ladda upp `manifest.prod.xml` i **M365 admin center → Integrerade appar** och tilldela.

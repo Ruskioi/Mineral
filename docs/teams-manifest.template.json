@@ -1,0 +1,30 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "REPLACE_WITH_TEAMS_APP_ID",
+  "packageName": "se.simba.ai",
+  "developer": {
+    "name": "Simba AI",
+    "websiteUrl": "https://REPLACE_WITH_HOST",
+    "privacyUrl": "https://REPLACE_WITH_HOST",
+    "termsOfUseUrl": "https://REPLACE_WITH_HOST"
+  },
+  "name": { "short": "Simba", "full": "Simba AI – företagets assistent" },
+  "description": {
+    "short": "Företagets AI-assistent, direkt i Teams.",
+    "full": "Chatta med Simba i Teams. Samma minne och kunskapsbank som i Excel, Outlook och webben — fråga om företaget, be om sammanfattningar eller bolla idéer."
+  },
+  "icons": { "color": "color.png", "outline": "outline.png" },
+  "accentColor": "#d97757",
+  "bots": [
+    {
+      "botId": "REPLACE_WITH_TEAMS_APP_ID",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["REPLACE_WITH_HOST"]
+}

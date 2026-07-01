@@ -47,7 +47,9 @@ async function init() {
   for (const col of [
     "file_name TEXT", "file_type TEXT", "file_data TEXT", "embedding JSONB",
     "chunks JSONB", // [{text, embedding}] — passage-level vectors for fine-grained retrieval
+    "ext_id TEXT",  // external origin (e.g. "<sourceId>:<driveItemId>") for auto-synced entries
   ]) await pool.query(`ALTER TABLE simba_vault ADD COLUMN IF NOT EXISTS ${col}`);
+  await pool.query("CREATE INDEX IF NOT EXISTS simba_vault_ext ON simba_vault (org_key, ext_id)");
 }
 
 function ensureReady() {
@@ -77,7 +79,10 @@ function searchableText(e) { return [e.title, e.title, e.topic, (e.tags || []).j
 // a knowledge base where reads vastly dominate.)
 const rawCache = new Map(); // orgKey -> { at, rows }
 const RAW_TTL_MS = 60_000;
-function invalidateOrg(orgKey) { rawCache.delete(orgKey); }
+function invalidateOrg(orgKey) {
+  rawCache.delete(orgKey);
+  for (const k of ctxCache.keys()) if (k.startsWith(`${orgKey} `)) ctxCache.delete(k); // retrieval memo too
+}
 async function listRaw(orgKey) {
   await ensureReady();
   const hit = rawCache.get(orgKey);
@@ -85,7 +90,7 @@ async function listRaw(orgKey) {
   let rows;
   if (pool) {
     const r = await pool.query(
-      "SELECT id, org_key, topic, title, content, tags, author, updated_at, file_name, file_type, embedding, chunks FROM simba_vault WHERE org_key = $1 ORDER BY topic, title LIMIT $2",
+      "SELECT id, org_key, topic, title, content, tags, author, updated_at, file_name, file_type, embedding, chunks, ext_id FROM simba_vault WHERE org_key = $1 ORDER BY topic, title LIMIT $2",
       [orgKey, MAX_ENTRIES]
     );
     rows = r.rows;
@@ -235,6 +240,34 @@ export async function deleteEntry(orgKey, id) {
   invalidateOrg(orgKey);
 }
 
+/* ---- Externally-synced entries (SharePoint/OneDrive auto-ingest) ---------
+ * Synced documents are ordinary vault entries carrying an ext_id
+ * ("<sourceId>:<driveItemId>") so re-syncs can update-in-place and removals
+ * can be mirrored. They get the same embeddings/chunking as manual entries.
+ */
+export async function upsertExternal(orgKey, extId, { topic, title, content, author }) {
+  await ensureReady();
+  const existing = (await listRaw(orgKey)).find((e) => e.ext_id === extId);
+  if (existing) {
+    return await updateEntry(orgKey, existing.id, { topic, title, content });
+  }
+  const entry = await createEntry(orgKey, { topic, title, content, tags: ["auto-synk"], author: author || "Auto-synk" });
+  if (pool) await pool.query("UPDATE simba_vault SET ext_id=$3 WHERE org_key=$1 AND id=$2", [orgKey, entry.id, extId]);
+  else { const e = mem.get(orgKey)?.get(entry.id); if (e) e.ext_id = extId; }
+  invalidateOrg(orgKey);
+  return entry;
+}
+export async function removeExternal(orgKey, extId) {
+  await ensureReady();
+  if (pool) await pool.query("DELETE FROM simba_vault WHERE org_key=$1 AND ext_id=$2", [orgKey, extId]);
+  else { const m = mem.get(orgKey); if (m) for (const [id, e] of m) if (e.ext_id === extId) m.delete(id); }
+  invalidateOrg(orgKey);
+}
+// All ext_ids for one source ("<sourceId>:" prefix) — the sync diffs against this.
+export async function listExternalIds(orgKey, sourcePrefix) {
+  return (await listRaw(orgKey)).filter((e) => e.ext_id && e.ext_id.startsWith(sourcePrefix)).map((e) => e.ext_id);
+}
+
 // A compact digest of the whole vault for analysis (titles + snippets).
 export async function digest(orgKey, maxChars = 18000) {
   const all = await listRaw(orgKey);
@@ -330,28 +363,35 @@ export async function searchVault(orgKey, query, limit = 8) {
 // round-trip re-runs retrieval for the SAME user text, which otherwise costs a
 // fresh Voyage embed + rerank network round-trip each time. Also keeps the
 // injected context byte-identical across loop iterations (prompt-cache friendly).
-const ctxCache = new Map(); // `${orgKey} ${text}` -> { at, out }
+const ctxCache = new Map(); // `${orgKey} ${text}` -> { at, out: {text, sources} }
 const CTX_TTL_MS = 60_000;
-export async function retrieveForContext(orgKey, text, maxChars = 4000) {
-  if (!orgKey) return "";
-  const key = `${orgKey} ${String(text || "").slice(0, 500)}`;
+// Full retrieval result: the context text AND which entries it came from, so
+// the client can render source citations under the answer.
+export async function retrieveWithSources(orgKey, text, maxChars = 4000) {
+  if (!orgKey) return { text: "", sources: [] };
+  const key = `${orgKey} ${String(text || "").slice(0, 500)}`;
   const hit = ctxCache.get(key);
   if (hit && Date.now() - hit.at < CTX_TTL_MS) return hit.out;
-  const out = await retrieveForContextUncached(orgKey, text, maxChars);
+  const out = await retrieveUncached(orgKey, text, maxChars);
   ctxCache.set(key, { at: Date.now(), out });
   if (ctxCache.size > 300) ctxCache.delete(ctxCache.keys().next().value);
   return out;
 }
-async function retrieveForContextUncached(orgKey, text, maxChars) {
+export async function retrieveForContext(orgKey, text, maxChars = 4000) {
+  return (await retrieveWithSources(orgKey, text, maxChars)).text;
+}
+async function retrieveUncached(orgKey, text, maxChars) {
   const hits = await searchRanked(orgKey, text, 10);
-  if (!hits.length) return "";
+  if (!hits.length) return { text: "", sources: [] };
   const parts = [];
+  const sources = [];
   let used = 0;
   for (const { e, snippet } of hits) {
     const block = `• [${e.topic}] ${e.title}: ${snippet}`.slice(0, 1400);
     if (used + block.length > maxChars) break;
     parts.push(block);
     used += block.length;
+    sources.push({ id: e.id, topic: e.topic, title: e.title });
   }
-  return parts.join("\n");
+  return { text: parts.join("\n"), sources };
 }
