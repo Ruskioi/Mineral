@@ -284,7 +284,7 @@ check("model router sends simple turns to Haiku, work to Opus", () => {
 check("in-chat model picker (Auto / Pluto / Simba) is wired", () => {
   // server: honor a forced model preference
   assert(/function pickModel/.test(server) && /pref === "pluto"/.test(server) && /pref === "simba"/.test(server), "server pickModel must map pluto/simba");
-  assert(/runModel\(req\.body\.messages/.test(server) && /req\.body\.model\)/.test(server), "chat handler must pass the model preference to runModel");
+  assert(/runModel\(req\.body\.messages/.test(server) && /req\.body\.model/.test(server), "chat handler must pass the model preference to runModel");
   // client: Claude-style pills + naming + request
   assert(/MODEL_CHOICES/.test(taskpane) && /"pluto"/.test(taskpane) && /"simba"/.test(taskpane), "model choices missing");
   assert(/function prettyModel/.test(taskpane) && /return "Simba"/.test(taskpane) && /return "Pluto"/.test(taskpane), "haiku→Simba / opus→Pluto naming missing");
@@ -471,7 +471,7 @@ check("audit hardening: perf + race + timezone fixes stay in place", () => {
     assert(!/new pg\.Pool/.test(read(`server/${f}.js`)), `${f}.js must use the shared pool`);
   }
   // Prompt cache: per-turn retrieval must ride in the messages, not the system prompt.
-  assert(/function injectContext/.test(server) && /injectContext\(messages, vault, workspace\)/.test(server), "context injection missing");
+  assert(/function injectContext/.test(server) && /injectContext\(messages, vault, workspace, ambient\)/.test(server), "context injection missing");
   assert(!/buildSystem\(memory, surface, vault/.test(server), "vault text must not re-enter the system prompt (kills the conversation cache)");
   // Atomic approvals: claim-before-act + reopen on failure.
   const oa = read("server/orgagents.js");
@@ -561,6 +561,36 @@ check("watchers (proactive bevakningar) are wired", () => {
   assert(/tickWatchers\(client, SIMPLE_MODEL\)/.test(read("server/scheduler.js")), "watchers must run from the scheduler tick");
   assert(/app\.get\("\/api\/watchers"/.test(server) && /app\.post\("\/api\/watchers"/.test(server) && /\/api\/watchers\/:id\/check/.test(server), "watcher endpoints missing");
   assert(/function openWatchers/.test(taskpane) && /label: "Bevakningar"/.test(taskpane), "watchers UI missing");
+});
+
+check("ambient context (recent-inbox weaving) is wired & cached", () => {
+  const amb = read("server/ambient.js");
+  assert(/export async function ambientContext/.test(amb) && /oboGraphToken/.test(amb), "ambient module must use the user's own delegated consent");
+  assert(/TTL/.test(amb) && /cache\.get\(userKey\)/.test(amb), "ambient snapshot must be cached (one Graph call per burst, cache-stable in tool loops)");
+  assert(/catch \{[^}]*\}/.test(amb) || /catch \{/.test(amb), "ambient must fail soft (no consent → empty, never an error)");
+  assert(/req\.body\.ambient === false \? "" : ambientContext\(bearer\(req\), user\.key\)/.test(server), "chat must fetch ambient context (opt-out honoured)");
+  assert(/Läget just nu/.test(server), "ambient text must be labelled in the injected context");
+  assert(/prefAmbient/.test(taskpane) && /ambient: prefAmbient\(\)/.test(taskpane) && /id="ambient-seg"/.test(taskpane), "client ambient toggle missing");
+});
+
+check("auto-memory (background fact extraction) is wired & guarded", () => {
+  const am = read("server/automemory.js");
+  assert(/export async function distillMemory/.test(am) && /setMemory/.test(am), "auto-memory extractor missing");
+  assert(/THROTTLE_MS/.test(am) && /isDuplicate/.test(am), "auto-memory must be throttled and dedupe near-duplicates");
+  assert(/distillMemory\(client, MODEL_SIMPLE/.test(server) && /req\.body\.autoMemory !== false/.test(server) && /stop_reason === "end_turn"/.test(server), "chat must run auto-memory in the background on completed turns (opt-out honoured)");
+  assert(/prefAutoMem/.test(taskpane) && /autoMemory: prefAutoMem\(\)/.test(taskpane) && /id="automem-seg"/.test(taskpane), "client auto-memory toggle missing");
+  assert(/function refreshMemoryFromServer/.test(taskpane) && /refreshMemoryFromServer\(\)/.test(taskpane), "client must re-pull memory after turns (or local pushes clobber learned notes)");
+});
+
+check("browser agent (computer use) is wired, flag-gated & bounded", () => {
+  const br = read("server/browser.js");
+  assert(/export async function runBrowserTask/.test(br) && /computer_20250124/.test(br) && /computer-use-2025-01-24/.test(br), "computer-use loop missing");
+  assert(/SIMBA_BROWSER === "1"/.test(br), "browser agent must be flag-gated (off by default)");
+  assert(/MAX_STEPS/.test(br) && /TASK_BUDGET_MS/.test(br), "browser tasks must be step- and time-bounded");
+  assert(/BLOCKED_URL/.test(br) && /FÖRBJUDET/.test(br), "URL scheme blocklist + no-credentials rule missing");
+  assert(/import\("playwright"\)/.test(br), "playwright must be a dynamic import (optional heavy dependency)");
+  assert(/app\.post\("\/api\/browser"/.test(server) && server.slice(server.indexOf('app.post("/api/browser"')).slice(0, 400).includes("enforceAuth"), "/api/browser endpoint must be auth-checked");
+  assert(/name: "browse_website"/.test(server) && /async browse_website\(/.test(taskpane), "browse_website tool must exist on both sides (parity)");
 });
 
 check("Uppdrag (goal+rubric missions) are wired", () => {

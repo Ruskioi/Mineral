@@ -63,13 +63,16 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "browse_website", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
 let stopRequested = false;   // set by the Stop button to bail out of the agent loop
 let activeController = null;  // AbortController for the in-flight /api/chat request
 let speed = store.get("simba.speed", "balanced"); // fast | balanced | thorough
+// Smart context + memory (Tier 2): both on by default, opt-out in settings.
+const prefAmbient = () => store.get("simba.ambient", "on") !== "off";   // weave recent inbox into context
+const prefAutoMem = () => store.get("simba.automem", "on") !== "off";   // learn durable facts automatically
 let modelPref = store.get("simba.model", "auto"); // auto | pluto | simba
 
 // Friendly, on-brand model names shown throughout the UI. "Pluto" = the powerful
@@ -195,6 +198,27 @@ function pushMemory() {
       });
     } catch { /* best effort */ }
   }, 600);
+}
+
+/* Auto-memory lives server-side (it extracts facts in the background after a
+ * turn). Pull the server's notes shortly after each turn and merge them in
+ * locally — without this, the next local push would overwrite what Simba just
+ * learned. Quiet merge: no push, no UI churn. */
+let memPullTimer = null;
+function refreshMemoryFromServer() {
+  if (!signedIn || !prefAutoMem()) return;
+  clearTimeout(memPullTimer);
+  memPullTimer = setTimeout(async () => {
+    const token = await getSsoToken(false);
+    if (!token) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/memory`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return;
+      const data = await r.json();
+      const serverNotes = Array.isArray(data.notes) ? data.notes : [];
+      store.set("simba.memory", JSON.stringify(mergeNotes(memoryList(), serverNotes)));
+    } catch { /* best effort */ }
+  }, 8000); // give the background extraction time to land
 }
 
 function memoryStatusText() {
@@ -932,6 +956,19 @@ const tools = {
       const j = await r.json();
       return { result: j.text };
     } catch { return { error: "Kunde inte nå söktjänsten." }; }
+  },
+
+  async browse_website({ task, url }) {
+    const token = await getSsoToken(false);
+    try {
+      const r = await fetch(`${API_BASE}/api/browser`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ task, url }),
+      });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Webbläsaragenten misslyckades." }; }
+      const j = await r.json();
+      return { result: j.result };
+    } catch { return { error: "Kunde inte nå webbläsaragenten." }; }
   },
 
   async create_document({ kind, instructions }) {
@@ -1996,6 +2033,7 @@ async function onSend() {
     stopRequested = false;
     pruneHeavyHistory();
     saveConversation();
+    refreshMemoryFromServer(); // pick up anything auto-memory learned this turn
   }
 }
 
@@ -2162,7 +2200,7 @@ async function callBackend(history, onDelta) {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ messages: history, speed, model: modelPref, memory: memoryList(), surface: IS_EXCEL ? "excel" : (IS_OUTLOOK ? "outlook" : "desktop") }),
+      body: JSON.stringify({ messages: history, speed, model: modelPref, memory: memoryList(), ambient: prefAmbient(), autoMemory: prefAutoMem(), surface: IS_EXCEL ? "excel" : (IS_OUTLOOK ? "outlook" : "desktop") }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -2587,6 +2625,13 @@ function openSettings() {
          <div><div class="label">Modell</div><div class="hint">Pluto (kraftfull) och Simba (snabb), drivs av Claude · byt i chatten eller låt Auto välja</div></div>
          <div class="setting-meta">${escapeHtml(prettyModel(modelName))}</div>
        </div>
+       <div class="setting-row">
+         <div><div class="label">Smart kontext</div><div class="hint">Väver in dina senaste inkorgsmejl i svaren när det är relevant (kräver inloggning)</div></div>
+         <div class="seg" id="ambient-seg">
+           <button class="seg-btn ${prefAmbient() ? "active" : ""}" data-v="on">På</button>
+           <button class="seg-btn ${prefAmbient() ? "" : "active"}" data-v="off">Av</button>
+         </div>
+       </div>
      </div>
 
      <div class="tab-panel" data-panel="memory" hidden>
@@ -2598,6 +2643,13 @@ function openSettings() {
          </div>
        </div>
        <textarea id="memory-text" class="memory-text" rows="6" placeholder="Inget sparat än. Be Simba att minnas något, eller skriv här – en rad per sak.">${escapeHtml(memoryList().join("\n"))}</textarea>
+       <div class="setting-row">
+         <div><div class="label">Automatiskt minne</div><div class="hint">Simba lär sig varaktiga fakta ur samtalen av sig själv (syns och redigeras här)</div></div>
+         <div class="seg" id="automem-seg">
+           <button class="seg-btn ${prefAutoMem() ? "active" : ""}" data-v="on">På</button>
+           <button class="seg-btn ${prefAutoMem() ? "" : "active"}" data-v="off">Av</button>
+         </div>
+       </div>
      </div>
 
      <div class="tab-panel" data-panel="chats" hidden>
@@ -2665,6 +2717,17 @@ function openSettings() {
     els.modalCard.querySelectorAll("#speed-seg .seg-btn")
       .forEach((x) => x.classList.toggle("active", x === b));
   });
+  // Smart context + auto-memory toggles (simple on/off segments).
+  for (const [segId, key] of [["#ambient-seg", "simba.ambient"], ["#automem-seg", "simba.automem"]]) {
+    const seg = els.modalCard.querySelector(segId);
+    if (!seg) continue;
+    seg.addEventListener("click", (e) => {
+      const b = e.target.closest(".seg-btn");
+      if (!b) return;
+      store.set(key, b.dataset.v);
+      seg.querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("active", x === b));
+    });
+  }
   const memoryTextEl = els.modalCard.querySelector("#memory-text");
   const saveMemoryFromText = () => {
     const list = memoryTextEl.value.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -2900,6 +2963,7 @@ function toolLabel(name, input) {
     capture_view: `Tittar på ${input?.address || "arket"}`,
     analyze_data: `Analyserar ${input?.address || "data"}`,
     web_lookup: `Söker på webben: "${input?.query || ""}"`,
+    browse_website: input?.url ? `Använder webbläsaren: ${input.url}` : "Använder webbläsaren",
     run_code: "Kör kod",
     create_document: `Skapar ${(input?.kind || "dokument").toUpperCase()}`,
     list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",

@@ -33,6 +33,9 @@ import { teamsConfigured, verifyBotToken, sendActivity, cleanTeamsText, conversa
 import { listTemplates, createTemplate, deleteTemplate } from "./templates.js";
 import { listWatchers, createWatcher, deleteWatcher, checkWatcher } from "./watchers.js";
 import { listMissions, getMission, createMission, cancelMission, runMission } from "./missions.js";
+import { ambientContext } from "./ambient.js";
+import { distillMemory } from "./automemory.js";
+import { runBrowserTask } from "./browser.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -316,6 +319,12 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       query: { type: "string", description: "The question to research, phrased clearly." },
     }, required: ["query"] } },
+
+  { name: "browse_website", description: "Utför en uppgift i en riktig webbläsare på servern (öppnar sidor, klickar, skriver, läser JS-tunga sidor) och rapporterar resultatet med källa. Använd bara när web_lookup inte räcker — t.ex. data bakom knappar/filter, interaktiva tabeller eller stegvisa flöden. Ingen inloggning eller betalning. Kan vara avstängd på servern — säg i så fall det till användaren.",
+    input_schema: { type: "object", properties: {
+      task: { type: "string", description: "Vad som ska göras/utläsas, konkret och avgränsat." },
+      url: { type: "string", description: "Startadress (https://…), om känd." },
+    }, required: ["task"] } },
 
   { name: "create_document", description: "Generate a polished file the user can download — a PowerPoint (pptx), Word (docx), Excel (xlsx) or PDF — from instructions. Use for requests like make a deck/report/memo from this. Give clear, detailed instructions (and include the data/figures to use). Returns the file for download; it is NOT written into the current sheet.",
     input_schema: { type: "object", properties: {
@@ -873,10 +882,11 @@ function buildSystem(memory, surface) {
  * re-processing cost + latency). Instead we append it to the LAST user-text
  * message: the prefix stays byte-stable, and within a tool loop the injection is
  * deterministic (same query → same retrieval), so cache hits survive the loop. */
-function injectContext(messages, vault, workspace) {
+function injectContext(messages, vault, workspace, ambient) {
   const v = String(vault || "").slice(0, 6000);
   const ws = String(workspace || "").slice(0, 3500);
-  if (!v && !ws) return messages;
+  const amb = String(ambient || "").slice(0, 1500);
+  if (!v && !ws && !amb) return messages;
   let idx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -888,6 +898,7 @@ function injectContext(messages, vault, workspace) {
   const parts = [];
   if (v) parts.push(`[Företagets kunskapsbank — delad mellan alla i organisationen. Behandla som auktoritativa fakta om företaget; grunda dina svar i detta och säg till om något saknas.]\n${v}`);
   if (ws) parts.push(`[Ditt delade arbetsutrymme — synkat mellan Excel, Outlook, webb och dator. Sådant användaren sparat och kan vilja använda här.]\n${ws}`);
+  if (amb) parts.push(`[Läget just nu — automatisk omvärldskontext. Använd när det är relevant ("mejlet från Anna"); nämn den inte annars.]\n${amb}`);
   const out = messages.slice();
   const m = { ...out[idx] };
   let content = m.content;
@@ -960,7 +971,7 @@ function pickModel(pref, messages, speed) {
   return chooseModel(messages, speed, { strong: MODEL, simple: MODEL_SIMPLE, on: ROUTER_ON });
 }
 
-async function runModel(messages, speed, memory, surface, onText, vault, workspace, modelPref) {
+async function runModel(messages, speed, memory, surface, onText, vault, workspace, modelPref, ambient) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
   const model = pickModel(modelPref, messages, speed);
   const base = {
@@ -970,7 +981,7 @@ async function runModel(messages, speed, memory, surface, onText, vault, workspa
     output_config: { effort: cfg.effort },
     system: buildSystem(memory, surface),
     tools: TOOLS,
-    messages: withConversationCache(injectContext(messages, vault, workspace)),
+    messages: withConversationCache(injectContext(messages, vault, workspace, ambient)),
   };
   // Base betas from optional MCP connectors; fast mode adds its own.
   const baseBetas = [];
@@ -1097,16 +1108,18 @@ app.post("/api/chat", async (req, res) => {
     res.set("Retry-After", "3600");
     return res.status(429).json({ error: "Du har nått din dagliga gräns för Simba. Försök igen imorgon." });
   }
-  let vaultText = "", workspaceText = "", vaultSources = [];
+  let vaultText = "", workspaceText = "", vaultSources = [], ambientText = "";
   if (user) {
-    // Run both context lookups concurrently — they're independent stores.
-    const [vaultHit, ws] = await Promise.all([
+    // Run the context lookups concurrently — they're independent stores.
+    const [vaultHit, ws, amb] = await Promise.all([
       retrieveWithSources(orgOf(user), lastUserText(req.body.messages))
         .catch((e) => { console.error("[Simba] vault retrieve failed:", e?.message || e); return { text: "", sources: [] }; }),
       workspaceContext(user.key)
         .catch((e) => { console.error("[Simba] workspace retrieve failed:", e?.message || e); return ""; }),
+      // Ambient context: a cached snapshot of the user's recent inbox (opt-out via settings).
+      req.body.ambient === false ? "" : ambientContext(bearer(req), user.key).catch(() => ""),
     ]);
-    vaultText = vaultHit.text; vaultSources = vaultHit.sources; workspaceText = ws;
+    vaultText = vaultHit.text; vaultSources = vaultHit.sources; workspaceText = ws; ambientText = amb;
   }
 
   inflight++;
@@ -1122,7 +1135,7 @@ app.post("/api/chat", async (req, res) => {
   res.flushHeaders?.();
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
-    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText, workspaceText, req.body.model);
+    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText, workspaceText, req.body.model, ambientText);
     send("final", {
       content: final.content,
       stop_reason: final.stop_reason,
@@ -1132,6 +1145,12 @@ app.post("/api/chat", async (req, res) => {
     });
     // Record token usage + estimated spend for the signed-in user's profile view.
     if (user && final.usage) recordUsage(user.key, final.model, final.usage).catch(() => {});
+    // Auto-memory: quietly learn durable facts from completed turns (opt-out via settings).
+    if (user && req.body.autoMemory !== false && final.stop_reason === "end_turn") {
+      const reply = (final.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      distillMemory(client, MODEL_SIMPLE, user.key, lastUserText(req.body.messages), reply)
+        .catch((e) => console.error("[Simba] auto-memory failed:", e?.message || e));
+    }
   } catch (err) {
     console.error("[Simba] /api/chat error:", err?.message || err); // detail stays server-side
     send("error", { error: "Simba kunde inte slutföra svaret. Försök igen." });
@@ -1233,6 +1252,23 @@ app.post("/api/document", async (req, res) => {
   } catch (err) {
     console.error("[Simba] /api/document error:", err?.message || err);
     res.status(err.status || 502).json({ error: "Kunde inte skapa dokumentet." });
+  }
+});
+
+// ---- Browser agent (computer use) -----------------------------------------
+// A real headless browser driven by the model — flag-gated (SIMBA_BROWSER=1 +
+// playwright installed) and always auth-checked: it's the most powerful tool.
+app.post("/api/browser", async (req, res) => {
+  if (!preflight(req, res)) return;
+  if (!(await enforceAuth(req, res))) return;
+  const task = String(req.body?.task || "").slice(0, 4000);
+  if (!task) return res.status(400).json({ error: "Missing 'task'." });
+  try {
+    const result = await runBrowserTask(client, MODEL, { task, url: String(req.body?.url || "").slice(0, 800) });
+    res.json({ result });
+  } catch (err) {
+    console.error("[Simba] /api/browser error:", err?.message || err);
+    res.status(err.status || 502).json({ error: err?.status ? err.message : "Webbläsaragenten misslyckades. Försök igen eller avgränsa uppgiften." });
   }
 });
 
