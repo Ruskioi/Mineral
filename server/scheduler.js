@@ -16,6 +16,10 @@ import { appOnlyGraphToken, downloadDriveItem, uploadDriveItem, sendMailAsUser, 
 import { allEnabledAgents, setAgentState, logRun, createApproval } from "./orgagents.js";
 import { buildWriteRequests } from "./connectors.js";
 import { tickIngest } from "./ingest.js";
+import { tickWatchers } from "./watchers.js";
+
+// Cheap model for watcher-condition judging (same default as the chat router).
+const SIMPLE_MODEL = process.env.SIMBA_MODEL_SIMPLE || "claude-haiku-4-5-20251001";
 import { XLSX_TOOLS, executeXlsxTool } from "./xlsx-tools.js";
 
 const TICK_MS = Number(process.env.SIMBA_SCHEDULER_TICK_MS || 60_000);
@@ -118,7 +122,8 @@ async function tick(client, model) {
     // overlap guard: a slow agent pass must not race the next interval's pass,
     // or the same period could be compiled/emailed twice.
     await tickAgents(client, model);
-    await tickIngest(client); // vault auto-ingest (SharePoint/OneDrive folders)
+    await tickIngest(client);                    // vault auto-ingest (SharePoint/OneDrive folders)
+    await tickWatchers(client, SIMPLE_MODEL);    // proactive watchers ("bevakningar")
   } catch (e) {
     console.error("[Simba] scheduler tick failed:", e?.message || e);
   } finally {

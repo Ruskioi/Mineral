@@ -546,6 +546,33 @@ check("second-tier features (charts, plan cards, templates, search, voice, chang
   assert(/function openChangeLog/.test(taskpane) && /Ångra hit/.test(taskpane) && /currentToolName/.test(taskpane), "sheet change log missing");
 });
 
+check("Djupresearch (multi-round cited research) is wired", () => {
+  assert(/app\.post\("\/api\/deepresearch"/.test(server) && /DEEPRESEARCH_SYSTEM/.test(server), "deepresearch endpoint missing");
+  assert(/pause_turn/.test(server.slice(server.indexOf('app.post("/api/deepresearch"'))), "deepresearch must resume on pause_turn (long server-tool runs)");
+  assert(/function openDeepResearch/.test(taskpane) && /function postSSE/.test(taskpane), "deepresearch UI / SSE helper missing");
+  assert(/label: "Djupresearch"/.test(taskpane), "Djupresearch must be reachable from nav/palette");
+});
+
+check("watchers (proactive bevakningar) are wired", () => {
+  const w = read("server/watchers.js");
+  assert(/export async function createWatcher/.test(w) && /export async function checkWatcher/.test(w) && /export async function tickWatchers/.test(w), "watcher store/checker/tick missing");
+  assert(/COOLDOWN_MS/.test(w) && /lastSignature/.test(w), "watcher alerts must be throttled (cooldown + same-finding dedup)");
+  assert(/judgeCondition/.test(w) && /triggered=false/.test(w), "NL condition judging (fail-closed) missing");
+  assert(/tickWatchers\(client, SIMPLE_MODEL\)/.test(read("server/scheduler.js")), "watchers must run from the scheduler tick");
+  assert(/app\.get\("\/api\/watchers"/.test(server) && /app\.post\("\/api\/watchers"/.test(server) && /\/api\/watchers\/:id\/check/.test(server), "watcher endpoints missing");
+  assert(/function openWatchers/.test(taskpane) && /label: "Bevakningar"/.test(taskpane), "watchers UI missing");
+});
+
+check("Uppdrag (goal+rubric missions) are wired", () => {
+  const ms = read("server/missions.js");
+  assert(/export async function createMission/.test(ms) && /export async function runMission/.test(ms) && /export async function cancelMission/.test(ms), "mission store/runner missing");
+  assert(/EVAL_SYSTEM/.test(ms) && /max_iter/.test(ms) && /feedback/.test(ms), "missions must iterate against a rubric with evaluator feedback");
+  assert(/stillWanted/.test(ms), "mission runner must honour mid-run cancellation");
+  assert(/done_partial/.test(ms), "missions must deliver best-effort when iterations run out");
+  assert(/app\.post\("\/api\/missions"/.test(server) && /runMission\(client, MODEL/.test(server) && /\/api\/missions\/:id\/cancel/.test(server), "mission endpoints / background start missing");
+  assert(/function openMissions/.test(taskpane) && /label: "Uppdrag"/.test(taskpane) && /MISSION_STATUS/.test(taskpane), "missions UI missing");
+});
+
 check("profile view: usage + estimated spend is wired", () => {
   const usg = read("server/usage.js");
   assert(/export function estimateCost/.test(usg) && /export async function recordUsage/.test(usg) && /export async function getUsage/.test(usg), "usage store API missing");

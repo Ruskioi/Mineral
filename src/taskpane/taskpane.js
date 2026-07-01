@@ -3914,6 +3914,345 @@ async function populateProfile() {
 }
 
 // A clean tap-friendly menu (the ⋯ button) — same actions as the ⌘K palette.
+/* ---- Djupresearch: a multi-round, cited research run ---------------------- */
+// Generic SSE POST helper (delta/final/error frames — same protocol as /api/chat).
+async function postSSE(path, payload, onDelta, timeoutMs = 600_000) {
+  const headers = { "Content-Type": "application/json" };
+  const tok = await getSsoToken(false);
+  if (tok) headers.Authorization = `Bearer ${tok}`;
+  const ctrl = new AbortController();
+  activeController = ctrl; // the Stop button aborts research runs too
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { method: "POST", headers, body: JSON.stringify(payload), signal: ctrl.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    throw new Error(e?.name === "AbortError" ? "Körningen avbröts." : "Kan inte nå servern.");
+  }
+  if (!res.ok) {
+    clearTimeout(timer);
+    let msg = `Serverfel (${res.status}).`;
+    try { const j = await res.json(); if (j?.error) msg = j.error; } catch { /* non-JSON */ }
+    throw new Error(msg);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "", final = null;
+  const frame = (raw) => {
+    const ev = parseSSE(raw);
+    if (!ev) return;
+    if (ev.event === "delta") { try { onDelta?.(JSON.parse(ev.data).text); } catch { /* ignore */ } }
+    else if (ev.event === "final") { try { final = JSON.parse(ev.data); } catch { /* ignore */ } }
+    else if (ev.event === "error") { let m = "Körningen misslyckades."; try { m = JSON.parse(ev.data).error || m; } catch { /* ignore */ } throw new Error(m); }
+  };
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) { frame(buf.slice(0, i)); buf = buf.slice(i + 2); }
+    }
+    buf += decoder.decode();
+    if (buf.trim()) frame(buf);
+  } finally { clearTimeout(timer); }
+  return final;
+}
+
+function openDeepResearch() {
+  openModal(
+    `<h3>🔬 Djupresearch</h3>
+     <p class="sub">Simba söker brett i flera omgångar, läser källorna och skriver en strukturerad rapport med källhänvisningar. Tar vanligen någon minut.</p>
+     <textarea id="dr-q" class="memory-text" rows="4" placeholder="Vad vill du ha grundligt utrett? T.ex. 'Jämför de största byggprojektsystemen på svenska marknaden 2026 — funktioner, priser, integrationer.'"></textarea>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Avbryt</button><button class="btn primary" data-act="run">Starta research</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  els.modalCard.querySelector('[data-act="run"]').onclick = () => {
+    const q = els.modalCard.querySelector("#dr-q").value.trim();
+    if (!q) { toast("Skriv en forskningsfråga först.", "error", 2500); return; }
+    closeModalSilently();
+    runDeepResearch(q);
+  };
+}
+
+async function runDeepResearch(question) {
+  if (busy) { toast("Vänta — Simba arbetar redan.", "info", 2000); return; }
+  clearWelcome();
+  renderMessage("user", `🔬 Djupresearch: ${question}`);
+  messages.push({ role: "user", content: `🔬 Djupresearch: ${question}` });
+  setBusy(true);
+  let live = null;
+  try {
+    const final = await postSSE("/api/deepresearch", { question }, (chunk) => {
+      if (!chunk) return;
+      if (!live) live = startStream();
+      appendStream(live, chunk);
+    });
+    const text = (final?.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
+    if (live) finishStream(live, text || live.text);
+    else if (text) renderMessage("assistant", text);
+    if (text) { messages.push({ role: "assistant", content: [{ type: "text", text }] }); saveConversation(); }
+    cheerMascot();
+  } catch (e) {
+    if (live) finishStream(live, live.text);
+    if (live?.text?.trim()) { messages.push({ role: "assistant", content: [{ type: "text", text: live.text.trim() }] }); saveConversation(); }
+    if (!stopRequested) renderMessage("assistant", `⚠️ ${e.message || "Researchen misslyckades."}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
+/* ---- Uppdrag (goal-driven long jobs) -------------------------------------- */
+let _missionPoll = null;
+function stopMissionPoll() { clearInterval(_missionPoll); _missionPoll = null; }
+async function openMissions() {
+  stopMissionPoll();
+  const token = await getSsoToken(false);
+  if (!token) { toast("Logga in med Microsoft för att använda uppdrag.", "info", 2500); return; }
+  openModal(
+    `<div class="vault-head">
+       <div><h3 style="margin:0">Uppdrag</h3><p class="sub" style="margin:2px 0 0">Ge Simba ett mål och en definition av klart — den arbetar i bakgrunden tills granskningen godkänner resultatet.</p></div>
+       <button class="btn primary" id="ms-new" style="padding:7px 12px;flex:none">＋ Nytt uppdrag</button>
+     </div>
+     <div id="ms-list" class="files-list" style="max-height:55vh"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`,
+    { onClose: stopMissionPoll }
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = () => { stopMissionPoll(); closeModalSilently(); };
+  els.modalCard.querySelector("#ms-new").onclick = missionCreateForm;
+  loadMissions();
+  _missionPoll = setInterval(() => { if (els.modalCard.querySelector("#ms-list")) loadMissions(true); else stopMissionPoll(); }, 5000);
+}
+const MISSION_STATUS = { queued: ["⏳", "Köad"], running: ["⚙️", "Arbetar"], done: ["✅", "Klart"], done_partial: ["🟡", "Klart (med reservation)"], error: ["⚠️", "Fel"], cancelled: ["✖", "Avbrutet"] };
+async function loadMissions(quiet) {
+  const el = els.modalCard.querySelector("#ms-list");
+  if (!el) return;
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/missions`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { if (!quiet) el.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta.")}</div>`; return; }
+    const ms = j.missions || [];
+    if (!ms.length) { el.innerHTML = '<div class="hint" style="padding:6px 2px">Inga uppdrag än. Prova: "Ta fram en konkurrentanalys av X — klar när tre konkurrenter är jämförda på pris, funktioner och marknad."</div>'; return; }
+    el.innerHTML = ms.map((m) => {
+      const [ic, label] = MISSION_STATUS[m.status] || ["•", m.status];
+      const last = (m.progress || [])[m.progress.length - 1];
+      return `<div class="sched-item" data-id="${escapeHtml(m.id)}">
+        <div class="sched-main">
+          <div class="sched-name">${ic} ${escapeHtml(String(m.goal).slice(0, 70))}${m.goal.length > 70 ? "…" : ""}</div>
+          <div class="sched-meta">${escapeHtml(label)} · iteration ${m.iterations}/${m.maxIter}${last ? ` · ${escapeHtml(String(last.text).slice(0, 60))}` : ""}</div>
+        </div>
+        <div class="sched-acts">
+          <button class="btn oa-act" data-act="open" style="padding:4px 9px">Öppna</button>
+          ${["queued", "running"].includes(m.status) ? '<button class="msg-act" data-act="stop" title="Avbryt">✖</button>' : ""}
+        </div>
+      </div>`;
+    }).join("");
+    el.querySelectorAll(".sched-item").forEach((item) => {
+      item.querySelector('[data-act="open"]').addEventListener("click", () => openMissionDetail(item.dataset.id));
+      item.querySelector('[data-act="stop"]')?.addEventListener("click", async () => {
+        const t = await getSsoToken(false);
+        await fetch(`${API_BASE}/api/missions/${encodeURIComponent(item.dataset.id)}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${t}` } }).catch(() => {});
+        loadMissions();
+      });
+    });
+  } catch { if (!quiet) el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå uppdragen.</div>'; }
+}
+function missionCreateForm() {
+  stopMissionPoll();
+  openModal(
+    `<h3>Nytt uppdrag</h3>
+     <label class="vault-l">Mål — vad ska Simba åstadkomma?</label>
+     <textarea id="ms-goal" class="memory-text" rows="4" placeholder="T.ex. 'Ta fram en marknadsöversikt för prefab-byggande i Norden med de fem största aktörerna.'"></textarea>
+     <label class="vault-l">Definition av klart — granskaren underkänner tills detta är uppfyllt</label>
+     <textarea id="ms-rubric" class="memory-text" rows="3" placeholder="T.ex. 'Minst 5 aktörer med omsättning och huvudsegment, minst 8 källor, en jämförelsetabell och tre slutsatser.'"></textarea>
+     <label class="vault-l">Max antal förbättringsvarv</label>
+     <select id="ms-iter" class="mail-folder" style="width:100%"><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option></select>
+     <div class="modal-actions"><button class="btn" data-act="back">Tillbaka</button><button class="btn primary" data-act="start">Starta uppdraget</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="back"]').onclick = () => openMissions();
+  els.modalCard.querySelector('[data-act="start"]').onclick = async () => {
+    const goal = els.modalCard.querySelector("#ms-goal").value.trim();
+    const rubric = els.modalCard.querySelector("#ms-rubric").value.trim();
+    const maxIter = +els.modalCard.querySelector("#ms-iter").value;
+    if (!goal) { toast("Skriv målet först.", "error", 2500); return; }
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/missions`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ goal, rubric, maxIter }) }).catch(() => null);
+    if (r && r.ok) { toast("Uppdraget är igång — Simba arbetar i bakgrunden.", "success", 2500); openMissions(); }
+    else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte starta.", "error", 3000); }
+  };
+}
+async function openMissionDetail(id) {
+  stopMissionPoll();
+  const render = async () => {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/missions/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(j.error || "Kunde inte hämta uppdraget.", "error", 3000); return null; }
+    return j.mission;
+  };
+  const m = await render();
+  if (!m) return;
+  const [ic, label] = MISSION_STATUS[m.status] || ["•", m.status];
+  openModal(
+    `<div class="artifact-head"><h3 style="margin:0;font-size:15px">${ic} ${escapeHtml(String(m.goal).slice(0, 80))}</h3><button class="btn" data-act="back">Tillbaka</button></div>
+     <p class="sub">${escapeHtml(label)} · iteration ${m.iterations}/${m.maxIter}</p>
+     <div class="tabs" id="ms-tabs"><button class="tab active" data-t="result">Resultat</button><button class="tab" data-t="log">Förlopp</button></div>
+     <div class="src-view" id="ms-body">${m.result ? formatMarkdown(m.result) : '<div class="hint">Inget resultat än — Simba arbetar.</div>'}</div>
+     <div class="modal-actions">
+       ${m.result ? '<button class="btn" data-act="chat">Skicka till chatten</button>' : ""}
+       <button class="btn primary" data-act="close">Stäng</button>
+     </div>`,
+    { onClose: stopMissionPoll }
+  );
+  els.modalCard.classList.add("wide");
+  const body = els.modalCard.querySelector("#ms-body");
+  const logHtml = () => (m.progress || []).map((p) => `<div class="sched-meta" style="padding:3px 0">${escapeHtml(new Date(p.at).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" }))} · ${escapeHtml(p.text)}</div>`).join("") || '<div class="hint">Tomt.</div>';
+  els.modalCard.querySelector("#ms-tabs").addEventListener("click", (e) => {
+    const t = e.target.closest(".tab");
+    if (!t) return;
+    els.modalCard.querySelectorAll("#ms-tabs .tab").forEach((x) => x.classList.toggle("active", x === t));
+    body.innerHTML = t.dataset.t === "log" ? logHtml() : (m.result ? formatMarkdown(m.result) : '<div class="hint">Inget resultat än.</div>');
+  });
+  els.modalCard.querySelector('[data-act="back"]').onclick = () => { stopMissionPoll(); openMissions(); };
+  els.modalCard.querySelector('[data-act="close"]').onclick = () => { stopMissionPoll(); closeModalSilently(); };
+  els.modalCard.querySelector('[data-act="chat"]')?.addEventListener("click", () => {
+    stopMissionPoll(); closeModalSilently(); clearWelcome();
+    renderMessage("assistant", m.result);
+    messages.push({ role: "assistant", content: [{ type: "text", text: m.result }] });
+    saveConversation();
+  });
+  if (["queued", "running"].includes(m.status)) {
+    _missionPoll = setInterval(async () => {
+      if (!els.modalCard.querySelector("#ms-body")) { stopMissionPoll(); return; }
+      const fresh = await render();
+      if (fresh && (fresh.status !== m.status || fresh.progress?.length !== m.progress?.length)) { stopMissionPoll(); openMissionDetail(id); }
+    }, 5000);
+  }
+}
+
+/* ---- Bevakningar (proactive watchers) ------------------------------------- */
+async function openWatchers() {
+  const token = await getSsoToken(false);
+  if (!token) { toast("Logga in med Microsoft för att använda bevakningar.", "info", 2500); return; }
+  openModal(
+    `<div class="vault-head">
+       <div><h3 style="margin:0">Bevakningar</h3><p class="sub" style="margin:2px 0 0">Simba kollar åt dig och mejlar när något händer — datakällor eller mappar.</p></div>
+       <button class="btn primary" id="wa-new" style="padding:7px 12px;flex:none">＋ Ny bevakning</button>
+     </div>
+     <div id="wa-list" class="files-list" style="max-height:55vh"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  els.modalCard.querySelector("#wa-new").onclick = watcherCreateForm;
+  loadWatchers();
+}
+async function loadWatchers() {
+  const el = els.modalCard.querySelector("#wa-list");
+  if (!el) return;
+  try {
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/watchers`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { el.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta.")}</div>`; return; }
+    const ws = j.watchers || [];
+    if (!ws.length) { el.innerHTML = '<div class="hint" style="padding:6px 2px">Inga bevakningar än. Prova: bevaka en mapp för nya avtal, eller ett nyckeltal i ekonomisystemet.</div>'; return; }
+    el.innerHTML = ws.map((w) => `
+      <div class="sched-item" data-id="${escapeHtml(w.id)}">
+        <div class="sched-main">
+          <div class="sched-name">${w.kind === "folder" ? "📁" : "📈"} ${escapeHtml(w.name)}</div>
+          <div class="sched-meta">${w.lastError ? `⚠ ${escapeHtml(String(w.lastError).slice(0, 70))}` : w.lastAlert ? `Senast larm ${escapeHtml(mailDate(w.lastAlert))}` : w.lastCheck ? `Kollad ${escapeHtml(mailDate(w.lastCheck))} · inget larm` : "Inte kollad än"} · var ${w.config?.intervalMinutes || 60}:e min</div>
+        </div>
+        <div class="sched-acts">
+          <button class="btn oa-act" data-act="test" style="padding:4px 9px">Testa</button>
+          <button class="msg-act" data-act="del" title="Ta bort">🗑</button>
+        </div>
+      </div>`).join("");
+    el.querySelectorAll(".sched-item").forEach((item) => {
+      item.querySelector('[data-act="test"]').addEventListener("click", async () => {
+        toast("Kollar nu…", "info", 1500);
+        const t = await getSsoToken(false);
+        const r2 = await fetch(`${API_BASE}/api/watchers/${encodeURIComponent(item.dataset.id)}/check`, { method: "POST", headers: { Authorization: `Bearer ${t}` } }).catch(() => null);
+        const j2 = r2 ? await r2.json().catch(() => ({})) : {};
+        if (r2 && r2.ok) toast(j2.result?.summary ? `Villkor: ${j2.result.triggered ? "UTLÖST" : "lugnt"} — ${j2.result.summary.slice(0, 120)}` : `Kollat — ${j2.result?.triggered ? "utlöst" : "inget larm"}`, j2.result?.triggered ? "info" : "success", 5000);
+        else toast(j2.error || "Kontrollen misslyckades.", "error", 3500);
+        loadWatchers();
+      });
+      item.querySelector('[data-act="del"]').addEventListener("click", async () => {
+        if (!(await uiConfirm("Ta bort bevakningen?", { danger: true }))) { openWatchers(); return; }
+        const t = await getSsoToken(false);
+        await fetch(`${API_BASE}/api/watchers/${encodeURIComponent(item.dataset.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${t}` } }).catch(() => {});
+        loadWatchers();
+      });
+    });
+  } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå bevakningarna.</div>'; }
+}
+async function watcherCreateForm(kind = "connector") {
+  const isFolder = kind === "folder";
+  let connectors = [];
+  if (!isFolder) {
+    try {
+      const token = await getSsoToken(false);
+      const j = await fetch(`${API_BASE}/api/connectors`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()).catch(() => ({}));
+      connectors = (j.connectors || []).map((c) => ({ ...c, readEps: (c.endpoints || []).filter((e) => (e.method || "GET").toUpperCase() === "GET") })).filter((c) => c.readEps.length);
+    } catch { /* empty */ }
+  }
+  openModal(
+    `<h3>Ny bevakning</h3>
+     <label class="vault-l">Typ</label>
+     <select id="wa-kind" class="mail-folder" style="width:100%">
+       <option value="connector"${!isFolder ? " selected" : ""}>📈 Datakälla (nyckeltal/villkor)</option>
+       <option value="folder"${isFolder ? " selected" : ""}>📁 Mapp (nya/ändrade filer)</option>
+     </select>
+     <label class="vault-l">Namn</label><input id="wa-name" class="files-q" type="text" placeholder="${isFolder ? "t.ex. Nya avtal" : "t.ex. Obetalda fakturor över gräns"}" />
+     ${isFolder
+       ? `<label class="vault-l">Delningslänk till mappen</label><input id="wa-url" class="files-q" type="text" placeholder="https://…sharepoint.com/…" />`
+       : `<div class="dc-grid">
+            <div><label class="vault-l">Datakälla</label><select id="wa-conn" class="mail-folder" style="width:100%">${connectors.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join("") || '<option value="">— Inga datakällor —</option>'}</select></div>
+            <div><label class="vault-l">Endpoint</label><select id="wa-ep" class="mail-folder" style="width:100%"></select></div>
+          </div>
+          <label class="vault-l">Villkor (naturligt språk — Simba bedömer mot datan)</label>
+          <input id="wa-cond" class="files-q" type="text" placeholder="t.ex. 'larma om summan av obetalda fakturor överstiger 200 000 kr'" />`}
+     <div class="dc-grid">
+       <div><label class="vault-l">Kolla var (minuter)</label><input id="wa-int" class="files-q" type="number" min="15" max="1440" value="60" /></div>
+       <div><label class="vault-l">Mejla larm till</label><input id="wa-mail" class="files-q" type="text" placeholder="din@adress.se" /></div>
+     </div>
+     <div class="modal-actions"><button class="btn" data-act="back">Tillbaka</button><button class="btn primary" data-act="save">Skapa bevakning</button></div>`
+  );
+  const kindSel = els.modalCard.querySelector("#wa-kind");
+  kindSel.onchange = () => watcherCreateForm(kindSel.value);
+  const epSel = els.modalCard.querySelector("#wa-ep");
+  const connSel = els.modalCard.querySelector("#wa-conn");
+  if (connSel && epSel) {
+    const fillEps = () => {
+      const c = connectors.find((x) => x.id === connSel.value);
+      epSel.innerHTML = c ? c.readEps.map((e) => `<option value="${escapeHtml(e.key)}">${escapeHtml(e.label || e.key)}</option>`).join("") : "";
+    };
+    connSel.onchange = fillEps;
+    fillEps();
+  }
+  els.modalCard.querySelector('[data-act="back"]').onclick = () => openWatchers();
+  els.modalCard.querySelector('[data-act="save"]').onclick = async () => {
+    const k = kindSel.value;
+    const name = els.modalCard.querySelector("#wa-name").value.trim();
+    const config = {
+      intervalMinutes: +els.modalCard.querySelector("#wa-int").value || 60,
+      email: els.modalCard.querySelector("#wa-mail").value.trim(),
+    };
+    if (k === "folder") config.url = els.modalCard.querySelector("#wa-url").value.trim();
+    else {
+      config.connectorId = connSel?.value || "";
+      config.endpointKey = epSel?.value || "";
+      config.condition = els.modalCard.querySelector("#wa-cond").value.trim();
+    }
+    const token = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/watchers`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ name, kind: k, config }) }).catch(() => null);
+    if (r && r.ok) { toast("Bevakningen är igång", "success", 2000); openWatchers(); }
+    else { const j = r ? await r.json().catch(() => ({})) : {}; toast(j.error || "Kunde inte skapa.", "error", 3500); }
+  };
+}
+
 /* ---- Voice input (Web Speech API, Swedish) -------------------------------
  * Shows the mic only where the browser supports speech recognition (Chromium-
  * based hosts incl. the Office webview on Windows/desktop web). Tap to talk,
@@ -4030,6 +4369,9 @@ function buildSidebarNav() {
     { icon: "☁", label: "Molnfiler", run: openFilesBrowser },
     { icon: "🔌", label: "Datakällor", run: openConnectors },
     { icon: "📄", label: "Mallar", run: openTemplates },
+    { icon: "🔬", label: "Djupresearch", run: openDeepResearch },
+    { icon: "🎯", label: "Uppdrag", run: openMissions },
+    { icon: "🔔", label: "Bevakningar", run: openWatchers },
   );
   nav.innerHTML = items.map((it, i) => `<button class="sb-nav-item" data-i="${i}"><span class="sb-nav-ic">${it.icon}</span>${escapeHtml(it.label)}</button>`).join("");
   nav.querySelectorAll(".sb-nav-item").forEach((b) => b.addEventListener("click", () => { closeNav(); items[+b.dataset.i].run(); }));
@@ -4052,7 +4394,10 @@ function commandList() {
   if (ssoServerConfigured) cmds.splice(5, 0, { icon: "🔌", label: "Datakällor (ekonomisystem)", run: () => openConnectors() });
   if (ssoServerConfigured) cmds.splice(5, 0, { icon: "📄", label: "Mallar", run: () => openTemplates() });
   if (IS_EXCEL) cmds.push({ icon: "↺", label: "Ändringslogg (arket)", run: () => openChangeLog() });
+  cmds.splice(2, 0, { icon: "🔬", label: "Djupresearch", run: () => openDeepResearch() });
   if (ssoServerConfigured) cmds.splice(5, 0, { icon: "☁", label: "Molnfiler", run: () => openFilesBrowser() });
+  if (ssoServerConfigured) cmds.push({ icon: "🎯", label: "Uppdrag (långjobb)", run: () => openMissions() });
+  if (ssoServerConfigured) cmds.push({ icon: "🔔", label: "Bevakningar", run: () => openWatchers() });
   if (busy) cmds.unshift({ icon: "◼", label: "Stoppa Simba", run: () => stopGeneration() });
   return cmds;
 }

@@ -31,6 +31,8 @@ import { listConnectors, createConnector, updateConnector, deleteConnector, quer
 import { listSources, createSource, deleteSource, syncSourceById } from "./ingest.js";
 import { teamsConfigured, verifyBotToken, sendActivity, cleanTeamsText, conversationHistory, rememberTurn, TEAMS_SYSTEM } from "./teamsbot.js";
 import { listTemplates, createTemplate, deleteTemplate } from "./templates.js";
+import { listWatchers, createWatcher, deleteWatcher, checkWatcher } from "./watchers.js";
+import { listMissions, getMission, createMission, cancelMission, runMission } from "./missions.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -1296,6 +1298,61 @@ app.post("/api/research", async (req, res) => {
   }
 });
 
+// ---- Deep research: a multi-round, cited research run ---------------------
+// Unlike /api/research (one pass), this streams a full research session: the
+// model plans, runs several web_search/web_fetch rounds, then synthesizes a
+// structured Swedish report with source links. SSE like /api/chat.
+const DEEPRESEARCH_SYSTEM =
+  "Du är Simbas djupresearch-läge. Arbeta som en researcher: bryt ned frågan, sök brett (flera sökningar med olika vinklar), " +
+  "hämta och läs de viktigaste källorna med web_fetch, korsvalidera påståenden mellan oberoende källor, och skriv sedan en " +
+  "strukturerad svensk rapport i markdown: kort sammanfattning överst (3–5 punkter), sedan tematiska avsnitt, sedan en " +
+  "källförteckning med länkar. Ange källa (länk) direkt vid viktiga sifferpåståenden. Var ärlig om osäkerhet och motstridiga " +
+  "uppgifter. Hitta ALDRIG på källor.";
+
+app.post("/api/deepresearch", async (req, res) => {
+  if (!preflight(req, res)) return;
+  if (!(await enforceAuth(req, res))) return;
+  const question = String(req.body?.question || "").trim().slice(0, 4000);
+  if (!question) return res.status(400).json({ error: "Ange en forskningsfråga." });
+  let user = null;
+  if (ssoConfigured && bearer(req)) { try { user = await verifyToken(bearer(req)); } catch { /* anon ok unless REQUIRE_AUTH */ } }
+
+  res.set({ "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+  res.flushHeaders?.();
+  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  inflight++;
+  try {
+    const messages = [{ role: "user", content: `Forskningsfråga: ${question}` }];
+    let final = null;
+    for (let round = 0; round < 12; round++) {
+      const s = client.messages.stream({
+        model: MODEL, max_tokens: 16000,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+        system: DEEPRESEARCH_SYSTEM,
+        tools: [
+          { type: "web_search_20260209", name: "web_search", max_uses: 12 },
+          { type: "web_fetch_20260209", name: "web_fetch", max_uses: 10 },
+        ],
+        messages,
+      });
+      s.on("text", (t) => send("delta", { text: t }));
+      final = await s.finalMessage();
+      if (user && final.usage) recordUsage(user.key, final.model, final.usage).catch(() => {});
+      if (final.stop_reason !== "pause_turn") break; // server tools done
+      messages.push({ role: "assistant", content: final.content }); // resume
+    }
+    send("final", { content: final?.content || [], stop_reason: final?.stop_reason, model: final?.model });
+  } catch (err) {
+    console.error("[Simba] /api/deepresearch error:", err?.message || err);
+    send("error", { error: "Djupresearchen kunde inte slutföras. Försök igen." });
+  } finally {
+    inflight--;
+    res.end();
+  }
+});
+
 // ---- OneDrive / SharePoint files via Microsoft Graph (OBO) ---------------
 // Requires SSO + a client secret + the Files.Read delegated permission.
 const FILE_OPEN_MAX = 8 * 1024 * 1024;
@@ -1536,6 +1593,71 @@ app.post("/api/teams/messages", async (req, res) => {
     console.error("[Simba] teams reply failed:", e?.message || e);
     sendActivity(activity.serviceUrl, activity.conversation.id, { type: "message", text: "Något gick fel — försök igen om en stund." }).catch(() => {});
   }
+});
+
+// ---- Uppdrag (goal-driven long jobs with a definition of done) -------------
+app.get("/api/missions", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ missions: await listMissions(user.key) }); }
+  catch (err) { console.error("[Simba] missions list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta uppdrag." }); }
+});
+app.get("/api/missions/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const m = await getMission(user.key, req.params.id);
+    if (!m) return res.status(404).json({ error: "Hittades inte." });
+    res.json({ mission: m });
+  } catch (err) { res.status(502).json({ error: "Kunde inte hämta uppdraget." }); }
+});
+app.post("/api/missions", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const m = await createMission(user.key, orgOf(user), { goal: req.body?.goal, rubric: req.body?.rubric, maxIter: req.body?.maxIter });
+    // Fire-and-forget: the mission runs in the background; the client polls.
+    runMission(client, MODEL, user.key, m.id).catch((e) => console.error("[Simba] mission run failed:", e?.message || e));
+    res.json({ mission: m });
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || "Kunde inte starta uppdraget." }); }
+});
+app.post("/api/missions/:id/cancel", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await cancelMission(user.key, req.params.id); res.json({ ok: true }); }
+  catch (err) { res.status(502).json({ error: "Kunde inte avbryta." }); }
+});
+
+// ---- Proactive watchers ("bevakningar") ------------------------------------
+app.get("/api/watchers", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ watchers: await listWatchers(user.key) }); }
+  catch (err) { console.error("[Simba] watchers list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta bevakningar." }); }
+});
+app.post("/api/watchers", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const config = { ...(req.body?.config || {}), email: req.body?.config?.email || user.email };
+    res.json({ watcher: await createWatcher(user.key, orgOf(user), { name: req.body?.name, kind: req.body?.kind, config }) });
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || "Kunde inte skapa bevakningen." }); }
+});
+app.post("/api/watchers/:id/check", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const w = (await listWatchers(user.key)).find((x) => x.id === req.params.id);
+    if (!w) return res.status(404).json({ error: "Hittades inte." });
+    const r = await checkWatcher(client, MODEL_SIMPLE, { ...w, user_key: user.key, org_key: orgOf(user) });
+    res.json({ result: r });
+  } catch (err) { res.status(err.status || 502).json({ error: err.message || "Kontrollen misslyckades." }); }
+});
+app.delete("/api/watchers/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await deleteWatcher(user.key, req.params.id); res.json({ ok: true }); }
+  catch (err) { res.status(502).json({ error: "Kunde inte ta bort bevakningen." }); }
 });
 
 // ---- Org-shared prompt templates ------------------------------------------
