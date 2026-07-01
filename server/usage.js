@@ -83,6 +83,15 @@ async function init() {
        PRIMARY KEY (user_key, hour)
      )`
   );
+  // Who is behind a user_key — so the governance view can show names, not GUIDs.
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS simba_users (
+       user_key  TEXT PRIMARY KEY,
+       name      TEXT,
+       email     TEXT,
+       last_seen TIMESTAMPTZ NOT NULL DEFAULT now()
+     )`
+  );
 }
 function ensureReady() {
   if (!ready) ready = init().catch((e) => { console.error("[Simba] usage init failed:", e.message); pool = null; });
@@ -223,6 +232,97 @@ async function hourRows(userKey) {
     (memHours.get(userKey) || []).forEach((n, i) => { hours[i] = Number(n || 0); });
   }
   return hours;
+}
+
+/* ---- Org governance: who's using Simba, and what it costs ---------------- */
+
+const memUsers = new Map(); // userKey -> { name, email, last_seen }
+const seenRecently = new Map(); // userKey -> ts (throttle directory upserts)
+
+// Best-effort directory upsert (called per chat turn, throttled to ~hourly).
+export async function rememberUser(userKey, name, email) {
+  if (!userKey) return;
+  const now = Date.now();
+  if (now - (seenRecently.get(userKey) || 0) < 3600_000) return;
+  seenRecently.set(userKey, now);
+  if (seenRecently.size > 20000) seenRecently.clear();
+  try {
+    await ensureReady();
+    if (pool) {
+      await pool.query(
+        `INSERT INTO simba_users (user_key, name, email, last_seen) VALUES ($1,$2,$3,now())
+         ON CONFLICT (user_key) DO UPDATE SET name=COALESCE($2, simba_users.name), email=COALESCE($3, simba_users.email), last_seen=now()`,
+        [userKey, String(name || "").slice(0, 200) || null, String(email || "").slice(0, 200) || null]
+      );
+    } else {
+      memUsers.set(userKey, { name: name || "", email: email || "", last_seen: new Date().toISOString() });
+    }
+  } catch (e) { console.error("[Simba] rememberUser failed:", e?.message || e); }
+}
+
+// Org-wide usage: totals (today / 7 / 30 days) + top users by 30-day cost.
+// The org is the tenant prefix of user_key ("tid:oid" → "tid").
+export async function getOrgUsage(orgPrefix) {
+  await ensureReady();
+  const day = today();
+  const weekStart = localDay(new Date(Date.now() - 6 * 86400_000));
+  const monthStart = localDay(new Date(Date.now() - 29 * 86400_000));
+  let rows = [];
+  const names = new Map();
+  if (pool) {
+    const r = await pool.query(
+      "SELECT user_key, to_char(day,'YYYY-MM-DD') AS day, turns, in_tokens, out_tokens, cost FROM simba_usage WHERE user_key LIKE $1 AND day >= (now() - interval '31 days')::date",
+      [`${orgPrefix}:%`]
+    );
+    rows = r.rows;
+    const u = await pool.query("SELECT user_key, name, email FROM simba_users WHERE user_key LIKE $1", [`${orgPrefix}:%`]);
+    for (const x of u.rows) names.set(x.user_key, x.name || x.email || "");
+  } else {
+    for (const [userKey, days] of mem) {
+      if (!userKey.startsWith(`${orgPrefix}:`)) continue;
+      for (const r of days.values()) if (r.day >= monthStart) rows.push({ user_key: userKey, ...r });
+    }
+    for (const [k, v] of memUsers) if (k.startsWith(`${orgPrefix}:`)) names.set(k, v.name || v.email || "");
+  }
+  const totals = { today: blankRow("today"), week: blankRow("week"), month: blankRow("month") };
+  const perUser = new Map();
+  const users = new Set();
+  for (const r of rows) {
+    users.add(r.user_key);
+    if (r.day === day) addInto(totals.today, r);
+    if (r.day >= weekStart) addInto(totals.week, r);
+    addInto(totals.month, r);
+    const u = perUser.get(r.user_key) || { turns: 0, cost: 0, todayTurns: 0 };
+    u.turns += Number(r.turns || 0); u.cost += Number(r.cost || 0);
+    if (r.day === day) u.todayTurns += Number(r.turns || 0);
+    perUser.set(r.user_key, u);
+  }
+  const topUsers = [...perUser.entries()]
+    .sort((a, b) => b[1].cost - a[1].cost)
+    .slice(0, 12)
+    .map(([k, v]) => ({ label: names.get(k) || `…${k.slice(-8)}`, turns: v.turns, todayTurns: v.todayTurns, cost: v.cost }));
+  return { totals, topUsers, activeUsers: users.size };
+}
+
+// Today's estimated org spend, cached briefly — cheap enough to gate every turn.
+const spendCache = new Map(); // orgPrefix -> { at, usd }
+export async function orgSpendToday(orgPrefix) {
+  const hit = spendCache.get(orgPrefix);
+  if (hit && Date.now() - hit.at < 60_000) return hit.usd;
+  await ensureReady();
+  let usd = 0;
+  if (pool) {
+    const r = await pool.query("SELECT COALESCE(SUM(cost),0) AS c FROM simba_usage WHERE user_key LIKE $1 AND day = $2::date", [`${orgPrefix}:%`, today()]);
+    usd = Number(r.rows[0]?.c || 0);
+  } else {
+    const day = today();
+    for (const [userKey, days] of mem) {
+      if (!userKey.startsWith(`${orgPrefix}:`)) continue;
+      usd += Number(days.get(day)?.cost || 0);
+    }
+  }
+  spendCache.set(orgPrefix, { at: Date.now(), usd });
+  return usd;
 }
 
 // Rich stats for the home dashboard: a full daily activity series (for the

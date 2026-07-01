@@ -99,8 +99,9 @@ export async function logRun(orgKey, agentId, { status, summary, detail }) {
 }
 export async function listRuns(orgKey, agentId, limit = 20) {
   await ensureReady();
-  if (pool) { const r = await pool.query("SELECT id,agent_id,at,status,summary FROM simba_agent_runs WHERE org_key=$1 AND agent_id=$2 ORDER BY at DESC LIMIT $3", [orgKey, agentId, limit]); return r.rows; }
-  return runsMem.filter((x) => x.org_key === orgKey && x.agent_id === agentId).sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, limit);
+  // agentId null/undefined → all of the org's runs (governance overview).
+  if (pool) { const r = await pool.query("SELECT id,agent_id,at,status,summary FROM simba_agent_runs WHERE org_key=$1 AND ($2::text IS NULL OR agent_id=$2) ORDER BY at DESC LIMIT $3", [orgKey, agentId ?? null, limit]); return r.rows; }
+  return runsMem.filter((x) => x.org_key === orgKey && (agentId == null || x.agent_id === agentId)).sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, limit);
 }
 
 /* ---- Approvals --------------------------------------------------------- */

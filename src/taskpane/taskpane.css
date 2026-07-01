@@ -1008,6 +1008,7 @@ body.desktop .welcome p { font-size: 15px; }
 
 /* Mic (voice input) — pulsing accent while recording */
 #mic.rec { background: var(--accent-tint); border-color: var(--accent); animation: micPulse 1.2s ease-in-out infinite; }
+#mic.voice { border-color: var(--accent); color: var(--accent); } /* voice mode armed */
 @keyframes micPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(217, 119, 87, 0.35); } 50% { box-shadow: 0 0 0 7px rgba(217, 119, 87, 0); } }
 
 /* ⌘K global-search group headers */

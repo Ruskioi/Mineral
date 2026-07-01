@@ -2034,6 +2034,7 @@ async function onSend() {
     pruneHeavyHistory();
     saveConversation();
     refreshMemoryFromServer(); // pick up anything auto-memory learned this turn
+    speakLastReply();          // voice mode: read the answer aloud, then re-listen
   }
 }
 
@@ -4322,6 +4323,34 @@ async function watcherCreateForm(kind = "connector") {
  * based hosts incl. the Office webview on Windows/desktop web). Tap to talk,
  * tap again to stop; the transcript lands in the composer for review. */
 let _rec = null, _recActive = false;
+function startDictation() {
+  const btn = document.getElementById("mic");
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR || _recActive) return;
+  window.speechSynthesis?.cancel(); // barge-in: talking interrupts Simba's speech
+  _rec = new SR();
+  _rec.lang = "sv-SE";
+  _rec.interimResults = true;
+  // In voice mode a pause ends the utterance and auto-sends — a conversation,
+  // not a dictation buffer. Manual dictation keeps listening until tapped off.
+  _rec.continuous = !voiceMode;
+  const baseText = els.prompt.value ? els.prompt.value.replace(/\s+$/, "") + " " : "";
+  _rec.onresult = (e) => {
+    let text = "";
+    for (const res of e.results) text += res[0].transcript;
+    els.prompt.value = baseText + text.trim();
+    autoGrow();
+  };
+  _rec.onend = () => {
+    _recActive = false; btn?.classList.remove("rec");
+    if (voiceMode && els.prompt.value.trim() && !busy) onSend();
+    else els.prompt.focus();
+  };
+  _rec.onerror = () => { _recActive = false; btn?.classList.remove("rec"); if (!voiceMode) toast("Dikteringen avbröts.", "info", 2000); };
+  try { _rec.start(); _recActive = true; btn?.classList.add("rec"); }
+  catch { toast("Kunde inte starta mikrofonen.", "error", 2500); }
+}
+
 function wireVoiceInput() {
   const btn = document.getElementById("mic");
   if (!btn) return;
@@ -4330,22 +4359,166 @@ function wireVoiceInput() {
   btn.hidden = false;
   btn.addEventListener("click", () => {
     if (_recActive) { _rec?.stop(); return; }
-    _rec = new SR();
-    _rec.lang = "sv-SE";
-    _rec.interimResults = true;
-    _rec.continuous = true;
-    const baseText = els.prompt.value ? els.prompt.value.replace(/\s+$/, "") + " " : "";
-    _rec.onresult = (e) => {
-      let text = "";
-      for (const res of e.results) text += res[0].transcript;
-      els.prompt.value = baseText + text.trim();
-      autoGrow();
-    };
-    _rec.onend = () => { _recActive = false; btn.classList.remove("rec"); els.prompt.focus(); };
-    _rec.onerror = () => { _recActive = false; btn.classList.remove("rec"); toast("Dikteringen avbröts.", "info", 2000); };
-    try { _rec.start(); _recActive = true; btn.classList.add("rec"); }
-    catch { toast("Kunde inte starta mikrofonen.", "error", 2500); }
+    startDictation();
   });
+}
+
+/* ---- Voice mode: a hands-free conversation loop --------------------------- *
+ * Dictate → auto-send → Simba's reply is read aloud (sv-SE) → mic re-opens.
+ * Toggled from the ⌘K palette; any tap on the mic while speaking barges in. */
+let voiceMode = false;
+function stripForSpeech(md) {
+  return String(md || "")
+    .replace(/```[\s\S]*?```/g, " (kodblock utelämnat) ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_~>#|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 2500);
+}
+function lastAssistantText() {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== "assistant") continue;
+    const c = messages[i].content;
+    if (typeof c === "string") return c;
+    if (Array.isArray(c)) return c.filter((b) => b && b.type === "text").map((b) => b.text).join("\n");
+  }
+  return "";
+}
+function speakLastReply() {
+  if (!voiceMode || !window.speechSynthesis) return;
+  const text = stripForSpeech(lastAssistantText());
+  if (!text) { if (voiceMode) startDictation(); return; }
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "sv-SE";
+  const sv = window.speechSynthesis.getVoices().find((v) => /^sv/i.test(v.lang));
+  if (sv) u.voice = sv;
+  u.onend = () => { if (voiceMode && !busy) startDictation(); }; // hand the turn back
+  window.speechSynthesis.speak(u);
+}
+function toggleVoiceMode() {
+  if (!(window.SpeechRecognition || window.webkitSpeechRecognition) || !window.speechSynthesis) {
+    toast("Röstläge stöds inte i den här miljön.", "info", 2500);
+    return;
+  }
+  voiceMode = !voiceMode;
+  document.getElementById("mic")?.classList.toggle("voice", voiceMode);
+  if (voiceMode) { toast("🎧 Röstläge på — prata när mikrofonen lyser.", "success", 2500); startDictation(); }
+  else { window.speechSynthesis.cancel(); _rec?.stop(); toast("Röstläge av.", "info", 1500); }
+}
+
+/* ---- Meeting notes: transcript → structured minutes → shared workspace ---- */
+function openMeetingNotes() {
+  openModal(
+    `<h3>📝 Mötesanteckningar</h3>
+     <p class="sub">Klistra in en transkription eller råanteckningar (eller diktera med mikrofonen i chatten) — Simba strukturerar dem till beslut och åtgärdspunkter och sparar i arbetsutrymmet.</p>
+     <input id="mn-title" class="files-q" type="text" placeholder="Mötets namn, t.ex. 'Ledningsmöte 12 juni'" style="margin:0 0 8px" />
+     <textarea id="mn-text" class="memory-text" rows="8" placeholder="Klistra in transkription/anteckningar här…"></textarea>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Avbryt</button><button class="btn primary" data-act="run">Skapa anteckningar</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  els.modalCard.querySelector('[data-act="run"]').onclick = () => {
+    const title = els.modalCard.querySelector("#mn-title").value.trim() || "Möte";
+    const raw = els.modalCard.querySelector("#mn-text").value.trim();
+    if (!raw) { toast("Klistra in transkriptionen först.", "error", 2500); return; }
+    closeModalSilently();
+    // Route through the normal chat pipeline — Simba's tools (save_to_workspace)
+    // do the saving, so the notes land where everything else lives.
+    els.prompt.value =
+      `Skapa strukturerade mötesanteckningar på svenska för "${title}": 1) kort sammanfattning, ` +
+      `2) fattade beslut, 3) åtgärdspunkter som tabell (åtgärd, ansvarig, deadline), 4) öppna frågor. ` +
+      `Spara sedan anteckningarna i arbetsutrymmet med titeln "${title}".\n\nTRANSKRIPTION:\n${raw.slice(0, 60000)}`;
+    onSend();
+  };
+}
+
+/* ---- Governance: org-wide usage for admins -------------------------------- */
+async function openGovernance() {
+  const token = await getSsoToken(false);
+  if (!token) { toast("Logga in med Microsoft för att se organisationens användning.", "info", 2500); return; }
+  openModal(
+    `<h3>🏛 Styrning</h3>
+     <p class="sub">Hela organisationens Simba-användning — förbrukning, toppanvändare och agentaktivitet.</p>
+     <div id="gov-body"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  const el = els.modalCard.querySelector("#gov-body");
+  try {
+    const r = await fetch(`${API_BASE}/api/org-usage`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { el.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte hämta.")}</div>`; return; }
+    const usd = (n) => `$${Number(n || 0).toFixed(2)}`;
+    const t = j.totals || {};
+    const budget = j.budget?.dailyUsd
+      ? `<div class="hint" style="margin-top:6px">Dagsbudget: ${usd(j.budget.spentTodayUsd)} av ${usd(j.budget.dailyUsd)} förbrukat.</div>`
+      : "";
+    const users = (j.topUsers || []).map((u) => `
+      <div class="sched-item"><div class="sched-main">
+        <div class="sched-name">${escapeHtml(u.label)}</div>
+        <div class="sched-meta">${u.turns} svar (30 d) · ${u.todayTurns} idag · ~${usd(u.cost)}</div>
+      </div></div>`).join("") || '<div class="hint" style="padding:4px 2px">Ingen användning registrerad än.</div>';
+    const runs = (j.agents?.recentRuns || []).slice(0, 6).map((x) => `
+      <div class="sched-item"><div class="sched-main">
+        <div class="sched-name">${escapeHtml(x.summary || x.agent_id || "Körning")}</div>
+        <div class="sched-meta">${escapeHtml(String(x.at || "").slice(0, 16).replace("T", " "))} · ${escapeHtml(x.status || "")}</div>
+      </div></div>`).join("");
+    el.innerHTML = `
+      <div class="pf-cards">
+        <div class="pf-card"><div class="pf-num">${t.today?.turns ?? 0}</div><div class="pf-lbl">svar idag · ~${usd(t.today?.cost)}</div></div>
+        <div class="pf-card"><div class="pf-num">${t.week?.turns ?? 0}</div><div class="pf-lbl">7 dagar · ~${usd(t.week?.cost)}</div></div>
+        <div class="pf-card"><div class="pf-num">${t.month?.turns ?? 0}</div><div class="pf-lbl">30 dagar · ~${usd(t.month?.cost)}</div></div>
+        <div class="pf-card"><div class="pf-num">${j.activeUsers ?? 0}</div><div class="pf-lbl">aktiva användare</div></div>
+      </div>
+      ${budget}
+      <div class="label" style="margin:12px 0 6px">Toppanvändare (30 dagar)</div>
+      <div class="sched-list" style="max-height:26vh;overflow:auto">${users}</div>
+      ${runs ? `<div class="label" style="margin:12px 0 6px">Senaste agentkörningar (${j.agents?.count ?? 0} agenter)</div><div class="sched-list" style="max-height:20vh;overflow:auto">${runs}</div>` : ""}
+      <div class="hint" style="margin-top:10px">Kostnader är uppskattningar från Claudes listpriser — Simba fakturerar inget själv.</div>`;
+  } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå servern.</div>'; }
+}
+
+/* ---- RAG quality eval: is the knowledge base answering well? --------------- */
+async function openVaultEval() {
+  const token = await getSsoToken(false);
+  if (!token) { toast("Logga in med Microsoft först.", "info", 2500); return; }
+  openModal(
+    `<h3>🧪 Sökkvalitet</h3>
+     <p class="sub">Simba granskar de senaste verkliga frågorna mot kunskapsbanken: hur ofta var källorna relevanta, och vilka frågor fick inga träffar alls?</p>
+     <div id="ve-body"><div class="hint" style="padding:6px 2px">Utvärderar… (tar ca 10 sekunder)</div></div>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  const el = els.modalCard.querySelector("#ve-body");
+  try {
+    const r = await fetch(`${API_BASE}/api/vault/eval`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: "{}" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { el.innerHTML = `<div class="hint" style="padding:6px 2px">${escapeHtml(j.error || "Kunde inte utvärdera.")}</div>`; return; }
+    if (!j.evaluated && !(j.misses || []).length) {
+      el.innerHTML = '<div class="hint" style="padding:6px 2px">Inga sökningar loggade än sedan servern startade. Ställ några frågor som använder kunskapsbanken och kör utvärderingen igen.</div>';
+      return;
+    }
+    const pct = j.precision == null ? "–" : `${Math.round(j.precision * 100)} %`;
+    const rows = (j.perQuery || []).map((q) => `
+      <div class="sched-item"><div class="sched-main">
+        <div class="sched-name">${escapeHtml(q.query.slice(0, 80))}</div>
+        <div class="sched-meta">${q.relevant}/${q.k} källor relevanta${q.why ? ` · ${escapeHtml(q.why)}` : ""}</div>
+      </div></div>`).join("");
+    const misses = (j.misses || []).map((m) => `<li>${escapeHtml(m.slice(0, 90))}</li>`).join("");
+    el.innerHTML = `
+      <div class="pf-cards">
+        <div class="pf-card"><div class="pf-num">${pct}</div><div class="pf-lbl">träffsäkerhet (precision)</div></div>
+        <div class="pf-card"><div class="pf-num">${j.evaluated}</div><div class="pf-lbl">frågor granskade</div></div>
+        <div class="pf-card"><div class="pf-num">${(j.misses || []).length}</div><div class="pf-lbl">frågor utan träff</div></div>
+      </div>
+      ${rows ? `<div class="label" style="margin:12px 0 6px">Per fråga</div><div class="sched-list" style="max-height:30vh;overflow:auto">${rows}</div>` : ""}
+      ${misses ? `<div class="label" style="margin:12px 0 6px">Utan träff — kunskap som saknas?</div><ul class="hint" style="margin:0;padding-left:18px">${misses}</ul>` : ""}
+      <div class="hint" style="margin-top:10px">Tips: frågor utan träff är den tydligaste signalen om vad som borde läggas in i kunskapsbanken.</div>`;
+  } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå servern.</div>'; }
 }
 
 /* ---- Org-shared prompt templates ----------------------------------------- */
@@ -4436,6 +4609,8 @@ function buildSidebarNav() {
     { icon: "🔬", label: "Djupresearch", run: openDeepResearch },
     { icon: "🎯", label: "Uppdrag", run: openMissions },
     { icon: "🔔", label: "Bevakningar", run: openWatchers },
+    { icon: "📝", label: "Mötesanteckningar", run: openMeetingNotes },
+    { icon: "🏛", label: "Styrning", run: openGovernance },
   );
   nav.innerHTML = items.map((it, i) => `<button class="sb-nav-item" data-i="${i}"><span class="sb-nav-ic">${it.icon}</span>${escapeHtml(it.label)}</button>`).join("");
   nav.querySelectorAll(".sb-nav-item").forEach((b) => b.addEventListener("click", () => { closeNav(); items[+b.dataset.i].run(); }));
@@ -4462,6 +4637,9 @@ function commandList() {
   if (ssoServerConfigured) cmds.splice(5, 0, { icon: "☁", label: "Molnfiler", run: () => openFilesBrowser() });
   if (ssoServerConfigured) cmds.push({ icon: "🎯", label: "Uppdrag (långjobb)", run: () => openMissions() });
   if (ssoServerConfigured) cmds.push({ icon: "🔔", label: "Bevakningar", run: () => openWatchers() });
+  cmds.push({ icon: "📝", label: "Mötesanteckningar", run: () => openMeetingNotes() });
+  cmds.push({ icon: "🎧", label: "Röstläge (samtala med Simba)", run: () => toggleVoiceMode() });
+  if (ssoServerConfigured) cmds.push({ icon: "🏛", label: "Styrning (organisationens användning)", run: () => openGovernance() });
   if (busy) cmds.unshift({ icon: "◼", label: "Stoppa Simba", run: () => stopGeneration() });
   return cmds;
 }
@@ -4855,6 +5033,7 @@ async function openVault() {
     `<div class="vault-head">
        <div><h3 style="margin:0">Kunskapsbank</h3><p class="sub" style="margin:2px 0 0">Företagets delade minne — Simba grundar sina svar i detta i varje session.</p></div>
        <div style="display:flex;gap:6px;flex:none">
+         <button class="btn" id="vault-eval" style="padding:7px 12px" title="Utvärdera hur väl kunskapsbanken svarar på verkliga frågor">🧪</button>
          <button class="btn" id="vault-analyze" style="padding:7px 12px">Analysera</button>
          <button class="btn primary" id="vault-new" style="padding:7px 12px">＋ Ny</button>
        </div>
@@ -4871,6 +5050,7 @@ async function openVault() {
   els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
   els.modalCard.querySelector("#vault-new").onclick = () => vaultEdit(null);
   els.modalCard.querySelector("#vault-analyze").onclick = analyzeVaultUI;
+  els.modalCard.querySelector("#vault-eval").onclick = openVaultEval;
   const qEl = els.modalCard.querySelector("#vault-q");
   let deb;
   qEl.addEventListener("input", () => { clearTimeout(deb); deb = setTimeout(() => loadVault(qEl.value.trim()), 300); });

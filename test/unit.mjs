@@ -563,6 +563,35 @@ check("watchers (proactive bevakningar) are wired", () => {
   assert(/function openWatchers/.test(taskpane) && /label: "Bevakningar"/.test(taskpane), "watchers UI missing");
 });
 
+check("RAG quality eval (retrieval log + precision judging) is wired", () => {
+  const vlt = read("server/vault.js");
+  assert(/export function retrievalLog/.test(vlt) && /function logRetrieval/.test(vlt) && /slice\(-100\)/.test(vlt), "bounded retrieval log missing");
+  assert(/app\.post\("\/api\/vault\/eval"/.test(server) && /misses/.test(server), "eval endpoint (precision + zero-hit queries) missing");
+  assert(/function openVaultEval/.test(taskpane) && /id="vault-eval"/.test(taskpane), "eval UI in the vault missing");
+});
+
+check("voice mode (hands-free conversation loop) is wired", () => {
+  assert(/function toggleVoiceMode/.test(taskpane) && /function speakLastReply/.test(taskpane) && /SpeechSynthesisUtterance/.test(taskpane), "voice mode / TTS missing");
+  assert(/function stripForSpeech/.test(taskpane), "markdown must be stripped before speaking");
+  assert(/speechSynthesis\?\.cancel\(\)/.test(taskpane) || /speechSynthesis\.cancel\(\)/.test(taskpane), "barge-in (talking interrupts speech) missing");
+  assert(/Röstläge/.test(taskpane) && /speakLastReply\(\);/.test(taskpane), "voice mode must be reachable and speak after turns");
+});
+
+check("meeting notes (transcript → minutes → workspace) are wired", () => {
+  assert(/function openMeetingNotes/.test(taskpane) && /åtgärdspunkter/i.test(taskpane), "meeting-notes flow missing");
+  assert(/label: "Mötesanteckningar"/.test(taskpane), "meeting notes must be reachable from nav/palette");
+});
+
+check("governance (org-wide usage, top users, spend cap) is wired", () => {
+  const usg = read("server/usage.js");
+  assert(/export async function getOrgUsage/.test(usg) && /export async function orgSpendToday/.test(usg) && /export async function rememberUser/.test(usg), "org usage store missing");
+  assert(/simba_users/.test(usg), "user directory (names for the governance view) missing");
+  assert(/app\.get\("\/api\/org-usage"/.test(server) && /isOrgAdmin/.test(server), "org-usage endpoint must be admin-gated");
+  assert(/SIMBA_ORG_DAILY_USD/.test(server) && /orgSpendToday\(orgOf\(user\)\)/.test(server), "optional org daily spend cap missing");
+  assert(/rememberUser\(user\.key/.test(server), "chat must feed the governance directory");
+  assert(/function openGovernance/.test(taskpane) && /label: "Styrning"/.test(taskpane), "governance UI missing");
+});
+
 check("ambient context (recent-inbox weaving) is wired & cached", () => {
   const amb = read("server/ambient.js");
   assert(/export async function ambientContext/.test(amb) && /oboGraphToken/.test(amb), "ambient module must use the user's own delegated consent");

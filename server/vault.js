@@ -375,7 +375,21 @@ export async function retrieveWithSources(orgKey, text, maxChars = 4000) {
   const out = await retrieveUncached(orgKey, text, maxChars);
   ctxCache.set(key, { at: Date.now(), out });
   if (ctxCache.size > 300) ctxCache.delete(ctxCache.keys().next().value);
+  logRetrieval(orgKey, text, out.sources); // once per unique query (cache hits skip)
   return out;
+}
+
+/* Recent retrievals per org (bounded, in-memory) — powers the RAG quality eval:
+ * which real questions hit the vault and what came back (incl. zero-hit queries,
+ * the strongest signal that knowledge is missing). */
+const retLog = new Map(); // orgKey -> [{ at, query, hits }]
+export function retrievalLog(orgKey) { return retLog.get(orgKey) || []; }
+function logRetrieval(orgKey, query, sources) {
+  const q = String(query || "").trim();
+  if (!q) return;
+  const arr = retLog.get(orgKey) || [];
+  arr.push({ at: new Date().toISOString(), query: q.slice(0, 300), hits: (sources || []).map((s) => s.title) });
+  retLog.set(orgKey, arr.slice(-100));
 }
 export async function retrieveForContext(orgKey, text, maxChars = 4000) {
   return (await retrieveWithSources(orgKey, text, maxChars)).text;

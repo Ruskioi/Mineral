@@ -17,7 +17,7 @@ import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
-import { recordUsage, getUsage, getStats } from "./usage.js";
+import { recordUsage, getUsage, getStats, rememberUser, getOrgUsage, orgSpendToday } from "./usage.js";
 import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation, listWorkspace, saveWorkspace, deleteWorkspace, workspaceContext } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, listAttachments, getAttachment, MAIL_SCOPE } from "./graph.js";
@@ -26,7 +26,7 @@ import { startScheduler, schedulerEnabled, runOrgAgent } from "./scheduler.js";
 import { appOnlyGraphToken, sendMailAsUser } from "./graph.js";
 import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, listRuns, listApprovals, getApproval, decideApproval, logRun } from "./orgagents.js";
 import { chooseModel, lastUserText } from "./router.js";
-import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, retrieveWithSources, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
+import { listVault, getEntry, createEntry, updateEntry, deleteEntry, searchVault, retrieveForContext, retrieveWithSources, retrievalLog, getFile as getVaultFile, digest as vaultDigest, vectorEnabled } from "./vault.js";
 import { listConnectors, createConnector, updateConnector, deleteConnector, queryConnector, testConnector, writeConnector } from "./connectors.js";
 import { listSources, createSource, deleteSource, syncSourceById } from "./ingest.js";
 import { teamsConfigured, verifyBotToken, sendActivity, cleanTeamsText, conversationHistory, rememberTurn, TEAMS_SYSTEM } from "./teamsbot.js";
@@ -41,6 +41,13 @@ import { runBrowserTask } from "./browser.js";
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
 const VAULT_ADMINS = (process.env.SIMBA_VAULT_ADMINS || "").split(",").map((s) => s.trim()).filter(Boolean);
 const canWriteVault = (user) => !VAULT_ADMINS.length || VAULT_ADMINS.includes(String(user.key).split(":")[1]);
+
+// Governance admins (org-wide usage view). Falls back to the vault admins;
+// empty = any signed-in org member (small orgs shouldn't need config to see this).
+const ORG_ADMINS = (process.env.SIMBA_ADMINS || process.env.SIMBA_VAULT_ADMINS || "").split(",").map((s) => s.trim()).filter(Boolean);
+const isOrgAdmin = (user) => !ORG_ADMINS.length || ORG_ADMINS.includes(String(user.key).split(":")[1]);
+// Optional org-wide daily spend cap (estimated USD). 0/unset = off.
+const ORG_DAILY_USD = Number(process.env.SIMBA_ORG_DAILY_USD || 0);
 const orgOf = (user) => String(user.key).split(":")[0]; // tenant id = org scope
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -756,6 +763,28 @@ app.get("/api/usage", async (req, res) => {
   }
 });
 
+// ---- Governance: org-wide usage, top users, agent activity (admins) -------
+app.get("/api/org-usage", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!isOrgAdmin(user)) return res.status(403).json({ error: "Endast administratörer kan se organisationens användning." });
+  try {
+    const [usage, agents, runs] = await Promise.all([
+      getOrgUsage(orgOf(user)),
+      listAgents(orgOf(user)).catch(() => []),
+      listRuns(orgOf(user), null, 15).catch(() => []),
+    ]);
+    res.json({
+      ...usage,
+      budget: { dailyUsd: ORG_DAILY_USD || 0, spentTodayUsd: ORG_DAILY_USD ? await orgSpendToday(orgOf(user)).catch(() => 0) : usage.totals.today.cost },
+      agents: { count: (agents || []).length, recentRuns: (runs || []).slice(0, 15) },
+    });
+  } catch (err) {
+    console.error("[Simba] org-usage failed:", err?.message || err);
+    res.status(502).json({ error: "Kunde inte hämta organisationens användning." });
+  }
+});
+
 // ---- Home dashboard: rich activity stats for the welcome screen -----------
 app.get("/api/stats", async (req, res) => {
   const user = await requireUser(req, res);
@@ -1108,6 +1137,11 @@ app.post("/api/chat", async (req, res) => {
     res.set("Retry-After", "3600");
     return res.status(429).json({ error: "Du har nått din dagliga gräns för Simba. Försök igen imorgon." });
   }
+  if (user && ORG_DAILY_USD && (await orgSpendToday(orgOf(user)).catch(() => 0)) >= ORG_DAILY_USD) {
+    res.set("Retry-After", "3600");
+    return res.status(429).json({ error: "Organisationens dagliga AI-budget är förbrukad. Försök igen imorgon." });
+  }
+  if (user) rememberUser(user.key, user.name, user.email).catch(() => {}); // governance directory (throttled)
   let vaultText = "", workspaceText = "", vaultSources = [], ambientText = "";
   if (user) {
     // Run the context lookups concurrently — they're independent stores.
@@ -1909,6 +1943,43 @@ app.post("/api/vault", async (req, res) => {
     const entry = await createEntry(orgOf(user), { topic, title, content, tags, file, author: user.email || user.name || "" });
     res.json({ entry });
   } catch (err) { console.error("[Simba] vault create failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte spara posten." }); }
+});
+
+// ---- RAG quality eval: how well does retrieval answer real questions? -----
+// Judges the sources the vault returned for recent REAL queries (the bounded
+// retrieval log) with the fast model → precision + zero-hit queries + advice.
+app.post("/api/vault/eval", async (req, res) => {
+  if (!preflight(req, res)) return;
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const log = retrievalLog(orgOf(user));
+    // Latest occurrence per unique query, newest first, cap the judged set.
+    const uniq = [...new Map(log.map((l) => [l.query, l])).values()].slice(-10).reverse();
+    const misses = uniq.filter((l) => !l.hits.length).map((l) => l.query);
+    const judged = [];
+    for (const l of uniq.filter((x) => x.hits.length)) {
+      const { sources, text } = await retrieveWithSources(orgOf(user), l.query, 3000);
+      judged.push({ query: l.query, sources: sources.map((s) => s.title), context: text.slice(0, 2500) });
+    }
+    let perQuery = [];
+    if (judged.length) {
+      const sys = 'Du utvärderar en söktjänst. För varje fråga: hur många av källorna är RELEVANTA för att besvara frågan? Svara ENBART med JSON: {"results":[{"i":<index>,"k":<antal källor>,"relevant":<antal relevanta>,"why":"<kort svensk motivering>"}]}';
+      const content = judged.map((j, i) => `#${i} FRÅGA: ${j.query}\nKÄLLOR (${j.sources.length}): ${j.sources.join(" | ")}\nUTDRAG:\n${j.context}`).join("\n\n---\n\n");
+      const resp = await withRetry(() => client.messages.create({ model: MODEL_SIMPLE, max_tokens: 1200, system: sys, messages: [{ role: "user", content: content.slice(0, 40000) }] }), "vault-eval");
+      const t = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+      try { const m = t.match(/\{[\s\S]*\}/); if (m) perQuery = JSON.parse(m[0]).results || []; } catch { /* leave empty */ }
+    }
+    const rows = perQuery.map((r) => ({
+      query: judged[r.i]?.query || "", k: Number(r.k) || judged[r.i]?.sources.length || 0,
+      relevant: Math.max(0, Number(r.relevant) || 0), why: String(r.why || "").slice(0, 200),
+    })).filter((r) => r.query);
+    const precision = rows.length ? rows.reduce((s, r) => s + (r.k ? r.relevant / r.k : 0), 0) / rows.length : null;
+    res.json({ evaluated: rows.length, precision, perQuery: rows, misses: misses.slice(0, 10), logged: log.length });
+  } catch (err) {
+    console.error("[Simba] vault eval failed:", err?.message || err);
+    res.status(502).json({ error: "Kunde inte utvärdera sökkvaliteten." });
+  }
 });
 
 // Single entry — used by the citation chips under grounded answers.
