@@ -766,39 +766,41 @@ body.desktop .welcome p { font-size: 15px; }
 }
 .foot-label { font-size: 11.5px; color: var(--ink-faint); }
 
-/* Claude-style pill pickers (model + edit-mode) in the composer footer. */
-.pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--border); background: var(--bg-soft);
-  color: var(--ink-soft); border-radius: 999px;
-  padding: 5px 11px; font-size: 12px; font-weight: 600; cursor: pointer;
-  transition: background var(--speed), border-color var(--speed), color var(--speed);
+/* Model / edit-mode pickers styled precisely like Claude's model selector:
+ * a quiet text button (name + chevron) that opens a rounded card of rows, each
+ * a name + one-line description with a checkmark on the current selection. */
+.mpick {
+  display: inline-flex; align-items: center; gap: 3px;
+  border: 0; background: transparent; color: var(--ink-soft);
+  font: inherit; font-size: 13px; font-weight: 500;
+  padding: 5px 7px; border-radius: 8px; cursor: pointer;
+  transition: background var(--speed), color var(--speed);
 }
-.pill:hover { background: var(--surface); border-color: var(--border-strong); color: var(--ink); }
-.pill[aria-expanded="true"] { border-color: var(--accent); color: var(--ink); }
-.pill.on { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-tint); }
-.pill-ic { font-size: 12px; line-height: 1; }
-.pill-caret { font-size: 9px; opacity: 0.6; margin-left: -1px; }
-.pill-menu {
-  position: fixed; z-index: 200; min-width: 244px; max-width: 88vw;
+.mpick:hover { background: var(--bg-soft); color: var(--ink); }
+.mpick[aria-expanded="true"] { background: var(--bg-soft); color: var(--ink); }
+.mpick-caret { width: 12px; height: 12px; opacity: 0.55; flex: none; }
+.mpick-menu {
+  position: fixed; z-index: 200; width: 300px; max-width: 90vw;
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 14px; padding: 6px; box-shadow: var(--shadow-lg);
-  animation: pillIn 0.16s var(--ease-back) both;
+  border-radius: 16px; padding: 6px;
+  box-shadow: 0 4px 6px rgba(40, 35, 28, 0.04), 0 12px 34px rgba(40, 35, 28, 0.16);
+  animation: mpickIn 0.15s var(--ease) both;
 }
-@keyframes pillIn { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
-.pill-opt {
-  display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+@media (prefers-color-scheme: dark) {
+  .mpick-menu { box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3), 0 12px 34px rgba(0, 0, 0, 0.5); }
+}
+@keyframes mpickIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.mpick-opt {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left;
   border: 0; background: transparent; cursor: pointer;
-  padding: 9px 10px; border-radius: 10px; color: var(--ink);
+  padding: 10px 12px; border-radius: 12px; color: var(--ink);
   transition: background var(--speed);
 }
-.pill-opt:hover { background: var(--bg-soft); }
-.pill-opt.sel { background: var(--accent-tint); }
-.pill-opt-ic { width: 22px; text-align: center; font-size: 15px; flex: none; }
-.pill-opt-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.pill-opt-label { font-size: 13.5px; font-weight: 600; }
-.pill-opt-desc { font-size: 11.5px; color: var(--ink-soft); }
-.pill-opt-check { color: var(--accent-strong); font-weight: 700; flex: none; width: 14px; text-align: center; }
+.mpick-opt:hover { background: var(--bg-soft); }
+.mpick-opt-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.mpick-opt-name { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; }
+.mpick-opt-desc { font-size: 12.5px; line-height: 1.35; color: var(--ink-soft); }
+.mpick-opt-check { flex: none; width: 16px; color: var(--ink); padding-top: 2px; }
 .seg {
   display: inline-flex;
   background: var(--bg-soft);

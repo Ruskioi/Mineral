@@ -3037,34 +3037,34 @@ function applyTheme(theme) {
   else document.documentElement.setAttribute("data-theme", theme);
 }
 
-// Reflect the current model/edit-mode selection on the composer pills.
+// Reflect the current model/edit-mode selection on the composer buttons (the
+// button just shows the selected name, like Claude's model button).
 function syncPills() {
   const m = MODEL_CHOICES.find((c) => c.key === modelPref) || MODEL_CHOICES[0];
   const modelLabel = document.getElementById("model-pill-label");
   if (modelLabel) modelLabel.textContent = m.label;
-  if (els.modelPill) { els.modelPill.querySelector(".pill-ic").textContent = m.icon; els.modelPill.classList.toggle("on", modelPref !== "auto"); }
   const e = EDIT_MODES.find((x) => x.key === editMode) || EDIT_MODES[1];
   const modeLabel = document.getElementById("mode-pill-label");
   if (modeLabel) modeLabel.textContent = e.label;
-  if (els.modePill) els.modePill.querySelector(".pill-ic").textContent = e.icon;
 }
 
-// A Claude-style dropdown menu anchored above a composer pill. Lists items with
-// icon + label + description and a check on the current selection.
+const CHECK_SVG = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// Claude-style model menu anchored above a composer button: a rounded card with
+// rows of name + one-line description and a checkmark on the current selection.
 function openPillMenu(anchor, items, currentKey, onPick) {
-  document.querySelector(".pill-menu")?.remove(); // only one open at a time
+  document.querySelector(".mpick-menu")?.remove(); // only one open at a time
   anchor.setAttribute("aria-expanded", "true");
   const menu = document.createElement("div");
-  menu.className = "pill-menu";
+  menu.className = "mpick-menu";
   menu.setAttribute("role", "menu");
   menu.innerHTML = items.map((it) =>
-    `<button class="pill-opt${it.key === currentKey ? " sel" : ""}" role="menuitem" data-key="${it.key}">
-       <span class="pill-opt-ic">${it.icon}</span>
-       <span class="pill-opt-main"><span class="pill-opt-label">${escapeHtml(it.label)}</span><span class="pill-opt-desc">${escapeHtml(it.desc || "")}</span></span>
-       <span class="pill-opt-check">${it.key === currentKey ? "✓" : ""}</span>
+    `<button class="mpick-opt${it.key === currentKey ? " sel" : ""}" role="menuitem" data-key="${it.key}">
+       <span class="mpick-opt-main"><span class="mpick-opt-name">${escapeHtml(it.label)}</span><span class="mpick-opt-desc">${escapeHtml(it.desc || "")}</span></span>
+       <span class="mpick-opt-check">${it.key === currentKey ? CHECK_SVG : ""}</span>
      </button>`).join("");
   document.body.appendChild(menu);
-  // Position: left-aligned to the anchor, opening upward (composer sits at the bottom).
+  // Left-aligned to the button, opening upward (the composer sits at the bottom).
   const r = anchor.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
   menu.style.top = `${r.top - menu.offsetHeight - 8}px`;
@@ -3076,7 +3076,7 @@ function openPillMenu(anchor, items, currentKey, onPick) {
   };
   const onDoc = (ev) => { if (!menu.contains(ev.target) && ev.target !== anchor) close(); };
   const onKey = (ev) => { if (ev.key === "Escape") { ev.preventDefault(); close(); } };
-  menu.querySelectorAll(".pill-opt").forEach((b) =>
+  menu.querySelectorAll(".mpick-opt").forEach((b) =>
     b.addEventListener("click", () => { const k = b.dataset.key; close(); onPick(k); }));
   setTimeout(() => { document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey, true); }, 0);
 }

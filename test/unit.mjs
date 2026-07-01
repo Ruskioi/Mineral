@@ -279,7 +279,7 @@ check("in-chat model picker (Auto / Pluto / Simba) is wired", () => {
   assert(/function prettyModel/.test(taskpane) && /return "Simba"/.test(taskpane) && /return "Pluto"/.test(taskpane), "haiku→Simba / opus→Pluto naming missing");
   assert(/function openPillMenu/.test(taskpane) && /id="model-pill"/.test(read("src/taskpane/taskpane.html")), "model pill UI missing");
   assert(/model: modelPref/.test(taskpane), "chat request must send the chosen model");
-  assert(/\.pill-menu/.test(read("src/taskpane/taskpane.css")), "pill dropdown styling missing");
+  assert(/\.mpick-menu/.test(read("src/taskpane/taskpane.css")), "model dropdown styling missing");
 });
 
 check("PWA (installable web app) is wired", () => {
