@@ -17,6 +17,7 @@ import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
+import { recordUsage, getUsage } from "./usage.js";
 import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation, listWorkspace, saveWorkspace, deleteWorkspace, workspaceContext } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, listAttachments, getAttachment, MAIL_SCOPE } from "./graph.js";
@@ -706,6 +707,24 @@ app.put("/api/memory", async (req, res) => {
   }
 });
 
+// ---- Profile: usage + estimated spend for the signed-in user --------------
+app.get("/api/usage", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const usage = await getUsage(user.key);
+    res.json({
+      profile: { name: user.name || "", email: user.email || "", org: orgOf(user) || "" },
+      usage,
+      limits: { dailyTurns: USER_DAILY || 0 },
+      model: MODEL,
+    });
+  } catch (err) {
+    console.error("[Simba] usage read failed:", err?.message || err);
+    res.status(502).json({ error: "Kunde inte hämta användning." });
+  }
+});
+
 // ---- Shared conversation history (per user, across devices/surfaces) ------
 app.get("/api/conversations", async (req, res) => {
   const user = await requireUser(req, res);
@@ -1017,6 +1036,8 @@ app.post("/api/chat", async (req, res) => {
       usage: final.usage,
       model: final.model,
     });
+    // Record token usage + estimated spend for the signed-in user's profile view.
+    if (user && final.usage) recordUsage(user.key, final.model, final.usage).catch(() => {});
   } catch (err) {
     console.error("[Simba] /api/chat error:", err?.message || err); // detail stays server-side
     send("error", { error: "Simba kunde inte slutföra svaret. Försök igen." });

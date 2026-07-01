@@ -62,6 +62,12 @@ const _connW = await _conn.createConnector("t-connw", { name: "NEXT", base_url: 
 const _connWepMethod = _connW.endpoints[0]?.method;
 const _connBuilt = await _conn.buildWriteRequests("t-connw", _connW.id, _connW.endpoints[0].key, [{ email: "a@x.se", hours: 8, date: "2026-07-01" }]);
 const _connWriteRejectsGet = await _conn.writeConnector("t-conn", "Fortnox", "fakturor", { x: 1 }).then(() => false).catch((e) => e.status === 400);
+// Usage accounting: estimated cost + round-trip.
+const _usage = await import("../server/usage.js");
+const _usdOpus = _usage.estimateCost("claude-opus-4-8", { input_tokens: 1_000_000, output_tokens: 0 }).cost;
+const _usdHaiku = _usage.estimateCost("claude-haiku-4-5", { input_tokens: 1_000_000, output_tokens: 0 }).cost;
+await _usage.recordUsage("t-usage", "claude-opus-4-8", { input_tokens: 100, output_tokens: 50 });
+const _usageSummary = await _usage.getUsage("t-usage");
 // Org agents: run-log + approval round-trip.
 const _oa = await import("../server/orgagents.js");
 const _ag = await _oa.createAgent("t-oa", { name: "TR", type: "time_reconciler", config: { mailbox: "t@x.se", recipient: "e@x.se" } });
@@ -433,6 +439,20 @@ check("finance/business connectors bridge is wired & safe", () => {
   // store behavior prepared below
   assert(_connHeaderNames.includes("Access-Token") && !_connListJson.includes("topsecret"), "connector list must expose header names but never secret values");
   assert(_connHttpsRejected === true, "non-HTTPS base URL must be rejected");
+});
+
+check("profile view: usage + estimated spend is wired", () => {
+  const usg = read("server/usage.js");
+  assert(/export function estimateCost/.test(usg) && /export async function recordUsage/.test(usg) && /export async function getUsage/.test(usg), "usage store API missing");
+  assert(/opus/.test(usg) && /haiku/.test(usg), "per-model pricing table missing");
+  assert(/recordUsage\(user\.key/.test(server) && /app\.get\("\/api\/usage"/.test(server), "usage must be recorded per turn + exposed via /api/usage");
+  // client: a Profil tab that renders identity + usage cards + chart
+  assert(/data-tab="profile"/.test(taskpane) && /function populateProfile/.test(taskpane), "profile UI missing");
+  assert(/\/api\/usage/.test(taskpane) && /pf-cards/.test(taskpane), "profile must fetch usage + render cards");
+  assert(/\.pf-avatar/.test(read("src/taskpane/taskpane.css")) && /\.pf-chart/.test(read("src/taskpane/taskpane.css")), "profile styling missing");
+  // store behaviour prepared above: Opus is priced above Haiku; a turn round-trips
+  assert(_usdOpus === 5 && _usdHaiku === 1, "per-1M input pricing should match list prices (Opus $5, Haiku $1)");
+  assert(_usageSummary.today.turns === 1 && _usageSummary.all.cost > 0, "usage summary should round-trip a recorded turn");
 });
 
 check("connector WRITES (post hours into e.g. NEXT) are wired & approval-gated", () => {

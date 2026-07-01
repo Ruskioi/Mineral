@@ -2129,14 +2129,19 @@ function openSettings() {
   openModal(
     `<h3>Inställningar</h3>
      <div class="tabs" id="settings-tabs" role="tablist">
-       <button class="tab active" data-tab="general">Allmänt</button>
+       <button class="tab active" data-tab="profile">Profil</button>
+       <button class="tab" data-tab="general">Allmänt</button>
        <button class="tab" data-tab="memory">Minne</button>
        <button class="tab" data-tab="chats">Chattar</button>
        <button class="tab" data-tab="workspace">Synk</button>
        <button class="tab" data-tab="schedules">Scheman</button>
      </div>
 
-     <div class="tab-panel" data-panel="general">
+     <div class="tab-panel" data-panel="profile">
+       <div id="profile-body"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
+     </div>
+
+     <div class="tab-panel" data-panel="general" hidden>
        <div class="setting-row">
          <div><div class="label">Utseende</div><div class="hint">Följ systemet eller välj ett tema</div></div>
          <div class="seg" id="theme-seg">
@@ -2204,14 +2209,16 @@ function openSettings() {
      </div>`
   );
   // Lazy-load each tab's data the first time it's shown.
-  const loaded = { chats: false, schedules: false, workspace: false };
+  const loaded = { chats: false, schedules: false, workspace: false, profile: false };
   const showTab = (name) => {
     els.modalCard.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
     els.modalCard.querySelectorAll(".tab-panel").forEach((p) => { p.hidden = p.dataset.panel !== name; });
     if (name === "chats" && signedIn && !loaded.chats) { loaded.chats = true; populateConvList(); }
     if (name === "schedules" && signedIn && !loaded.schedules) { loaded.schedules = true; populateSchedules(); }
     if (name === "workspace" && signedIn && !loaded.workspace) { loaded.workspace = true; populateWorkspace(); }
+    if (name === "profile" && !loaded.profile) { loaded.profile = true; populateProfile(); }
   };
+  loaded.profile = true; populateProfile(); // profile is the default tab
   els.modalCard.querySelector("#settings-tabs").addEventListener("click", (e) => {
     const t = e.target.closest(".tab");
     if (t) showTab(t.dataset.tab);
@@ -3281,6 +3288,73 @@ async function populateWorkspace() {
       };
     });
   } catch { el.innerHTML = hint("Kunde inte nå arbetsutrymmet."); }
+}
+
+// The profile view: identity + usage & estimated spend, Claude-style cards.
+function fmtTokens(n) {
+  n = Number(n || 0);
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(Math.round(n));
+}
+function fmtUsd(n) {
+  n = Number(n || 0);
+  if (n > 0 && n < 0.01) return "<$0.01";
+  return "$" + n.toFixed(2);
+}
+async function populateProfile() {
+  const el = els.modalCard?.querySelector("#profile-body");
+  if (!el) return;
+  const initials = (s) => (String(s || "").trim().split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase() || "?");
+  if (!ssoServerConfigured || !signedIn) {
+    el.innerHTML =
+      `<div class="pf-head"><div class="pf-avatar">${initials(userLabel || "Simba")}</div>
+        <div class="pf-id"><div class="pf-name">${escapeHtml(userLabel || "Inte inloggad")}</div>
+        <div class="pf-sub">${ssoServerConfigured ? "Logga in med Microsoft för att se din användning." : "Användning visas när Microsoft-inloggning är på."}</div></div></div>` +
+      (ssoServerConfigured ? `<div class="modal-actions" style="justify-content:flex-start"><button class="btn primary" id="pf-signin">Logga in</button></div>` : "");
+    el.querySelector("#pf-signin")?.addEventListener("click", async () => {
+      const ok = await initIdentity(true);
+      if (ok) { toast("Inloggad", "success", 1500); populateProfile(); } else toast("Inloggning misslyckades", "error", 2500);
+    });
+    return;
+  }
+  el.innerHTML = '<div class="hint" style="padding:6px 2px">Laddar användning…</div>';
+  try {
+    const token = await getSsoToken(false);
+    const r = token && await fetch(`${API_BASE}/api/usage`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = r && r.ok ? await r.json() : null;
+    if (!j) { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte hämta användning.</div>'; return; }
+    const p = j.profile || {}, u = j.usage || {}, lim = j.limits || {};
+    const today = u.today || {}, month = u.month || {}, all = u.all || {};
+    const cap = Number(lim.dailyTurns || 0);
+    const usedToday = Number(today.turns || 0);
+    const pct = cap ? Math.min(100, Math.round((usedToday / cap) * 100)) : 0;
+    const series = Array.isArray(u.series) ? u.series : [];
+    const maxTurns = Math.max(1, ...series.map((s) => s.turns));
+    const bars = series.map((s) => {
+      const h = Math.round((s.turns / maxTurns) * 100);
+      const label = new Date(s.day + "T00:00:00").toLocaleDateString("sv-SE", { weekday: "short" }).slice(0, 2);
+      return `<div class="pf-bar" title="${escapeHtml(s.day)}: ${s.turns} svar · ${fmtUsd(s.cost)}"><div class="pf-bar-fill" style="height:${Math.max(3, h)}%"></div><span class="pf-bar-x">${escapeHtml(label)}</span></div>`;
+    }).join("");
+    el.innerHTML =
+      `<div class="pf-head">
+         <div class="pf-avatar">${initials(p.name || p.email)}</div>
+         <div class="pf-id">
+           <div class="pf-name">${escapeHtml(p.name || "Simba-användare")}</div>
+           <div class="pf-sub">${escapeHtml(p.email || "")}${p.org ? ` · <span class="pf-org">org ${escapeHtml(String(p.org).slice(0, 8))}…</span>` : ""}</div>
+         </div>
+       </div>
+       <div class="pf-cards">
+         <div class="pf-card"><div class="pf-card-k">Denna månad</div><div class="pf-card-v">${fmtUsd(month.cost)}</div><div class="pf-card-s">${Number(month.turns || 0)} svar</div></div>
+         <div class="pf-card"><div class="pf-card-k">Idag</div><div class="pf-card-v">${usedToday}${cap ? ` / ${cap}` : ""}</div><div class="pf-card-s">${cap ? "svar (dagsgräns)" : "svar idag"}</div></div>
+         <div class="pf-card"><div class="pf-card-k">Totalt</div><div class="pf-card-v">${fmtTokens(Number(all.in_tokens || 0) + Number(all.out_tokens || 0))}</div><div class="pf-card-s">tokens · ${fmtUsd(all.cost)}</div></div>
+       </div>
+       ${cap ? `<div class="pf-progress"><div class="pf-progress-fill" style="width:${pct}%"></div></div>` : ""}
+       <div class="pf-chart-h">Senaste 7 dagarna</div>
+       <div class="pf-chart">${bars}</div>
+       <div class="hint" style="margin-top:10px">Modell: ${escapeHtml(j.model || modelName)}. Kostnaden är en uppskattning från Claudes listpriser (in/ut-tokens och cache) — Simba fakturerar inget själv.</div>`;
+  } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå användningsdata.</div>'; }
 }
 
 // A clean tap-friendly menu (the ⋯ button) — same actions as the ⌘K palette.

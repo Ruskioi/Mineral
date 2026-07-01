@@ -934,6 +934,36 @@ body.desktop .welcome p { font-size: 15px; }
 .btn.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
 .btn.danger:hover { filter: brightness(0.94); }
 
+/* ---- Profile view (identity + usage / estimated spend) ---- */
+.pf-head { display: flex; align-items: center; gap: 12px; padding: 4px 2px 14px; }
+.pf-avatar {
+  width: 46px; height: 46px; border-radius: 50%; flex: none;
+  display: grid; place-items: center; font-weight: 700; font-size: 16px;
+  color: var(--accent-strong); background: var(--accent-tint);
+  border: 1px solid var(--border);
+}
+.pf-id { min-width: 0; }
+.pf-name { font-family: var(--serif); font-size: 17px; font-weight: 600; }
+.pf-sub { font-size: 12.5px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-org { color: var(--ink-faint); }
+.pf-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.pf-card {
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 12px 11px;
+  background: var(--bg-soft);
+}
+.pf-card-k { font-size: 11px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ink-faint); }
+.pf-card-v { font-family: var(--serif); font-size: 22px; font-weight: 600; margin-top: 4px; line-height: 1.1; }
+.pf-card-s { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+.pf-progress { height: 7px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); overflow: hidden; margin-top: 12px; }
+.pf-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-strong)); transition: width var(--speed); }
+.pf-chart-h { font-size: 11px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ink-faint); margin: 16px 0 8px; }
+.pf-chart { display: flex; align-items: flex-end; gap: 8px; height: 90px; }
+.pf-bar { flex: 1; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 5px; }
+.pf-bar-fill { width: 100%; max-width: 26px; border-radius: 6px 6px 3px 3px; background: var(--accent-tint); border: 1px solid var(--border); transition: height var(--speed) var(--ease-back); }
+.pf-bar:hover .pf-bar-fill { background: var(--accent); }
+.pf-bar-x { font-size: 10px; color: var(--ink-faint); }
+@media (max-width: 460px) { .pf-cards { grid-template-columns: 1fr; } }
+
 /* Scheduled-jobs manager (in settings) */
 .sched-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; margin: 2px 0 4px; }
 .sched-item {
