@@ -169,6 +169,7 @@ async function initIdentity(interactive = false) {
     store.set("simba.memory", JSON.stringify(merged)); // set without triggering a push yet
     if (merged.length !== serverNotes.length) pushMemory(); // local had extras → upload
     loadConversations(); // resume the user's most recent chat across devices
+    _statsCache = null; renderHomeStats(); // personalized home dashboard, now that we know who they are
     return true;
   } catch { return false; } // stay local
 }
@@ -404,7 +405,7 @@ function applyDesktopMode() {
   document.body.classList.add("desktop");          // CSS hides Excel-only chrome
   if (els.prompt) els.prompt.placeholder = "Fråga Simba vad som helst…";
   const w = document.querySelector(".welcome");
-  if (w) w.innerHTML = desktopWelcomeHTML();
+  if (w) w.innerHTML = '<div id="home-stats" class="home-stats" hidden></div>' + desktopWelcomeHTML();
   bindSuggestions();
   // PWA: register the service worker so the web app is installable + offline-resilient.
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
@@ -474,12 +475,158 @@ function welcomeHTML() {
           ["🔍", "Hitta och förklara formelfel"],
         ]
       );
-  return `<div class="welcome">${inner}</div>`;
+  return `<div class="welcome"><div id="home-stats" class="home-stats" hidden></div>${inner}</div>`;
 }
 
 function bindSuggestions() {
   document.querySelectorAll(".suggestion").forEach((b) =>
     b.addEventListener("click", () => { els.prompt.value = b.dataset.prompt || b.textContent; onSend(); }));
+  renderHomeStats(); // fill the personalized stats card if the user is signed in
+}
+
+// A Claude-style "welcome" dashboard: a greeting + an activity card (sessions,
+// messages, tokens, streaks, peak hour, favorite model) with a contribution
+// heatmap, shown on the home screen once the user is signed in.
+let _statsCache = null;
+async function renderHomeStats() {
+  const host = document.getElementById("home-stats");
+  if (!host) return;
+  if (!signedIn) { host.hidden = true; return; }
+  try {
+    if (!_statsCache) {
+      const token = await getSsoToken(false);
+      if (!token) { host.hidden = true; return; }
+      const r = await fetch(`${API_BASE}/api/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { host.hidden = true; return; }
+      _statsCache = await r.json();
+    }
+    host.hidden = false;
+    drawHomeStats(host, _statsCache, "all");
+  } catch { host.hidden = true; }
+}
+
+function statsWindow(series, range) {
+  if (range === "all") return series;
+  const days = range === "7d" ? 7 : 30;
+  const cut = new Date(Date.now() - (days - 1) * 86400_000).toISOString().slice(0, 10);
+  return series.filter((s) => s.day >= cut);
+}
+function longestStreak(series) {
+  const active = new Set(series.filter((s) => s.messages > 0).map((s) => s.day));
+  let best = 0, cur = 0;
+  if (!active.size) return { current: 0, longest: 0 };
+  const first = series[0]?.day || new Date().toISOString().slice(0, 10);
+  const start = new Date(first + "T00:00:00");
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  for (let d = new Date(start); d <= today; d.setDate(d.getDate() + 1)) {
+    const key = d.toISOString().slice(0, 10);
+    if (active.has(key)) { cur++; best = Math.max(best, cur); } else cur = 0;
+  }
+  // current streak = trailing run ending today (or yesterday)
+  let current = 0;
+  for (let d = new Date(today); ; d.setDate(d.getDate() - 1)) {
+    const key = d.toISOString().slice(0, 10);
+    if (active.has(key)) current++;
+    else if (key !== today.toISOString().slice(0, 10)) break;
+    else break;
+  }
+  return { current, longest: best };
+}
+function drawHomeStats(host, data, range) {
+  const series = Array.isArray(data.series) ? data.series : [];
+  const win = statsWindow(series, range);
+  const messages = win.reduce((a, s) => a + s.messages, 0);
+  const tokens = win.reduce((a, s) => a + s.tokens, 0);
+  const activeDays = win.filter((s) => s.messages > 0).length;
+  const streak = longestStreak(series);
+  const hours = data.hours || [];
+  const peakHour = hours.length ? hours.indexOf(Math.max(...hours)) : -1;
+  const models = (data.models || []).slice().sort((a, b) => b.messages - a.messages);
+  const favorite = models[0] ? prettyModel(models[0].model) : "—";
+  const totalTokensAll = series.reduce((a, s) => a + s.tokens, 0);
+  // Fun comparison: a novel is ~100k tokens.
+  const book = 100_000;
+  const mult = totalTokensAll / book;
+  const fun = mult >= 1
+    ? `Du har använt ~${mult >= 10 ? Math.round(mult) : mult.toFixed(1)}× fler tokens än en hel roman.`
+    : `Snart har du skrivit lika mycket som en hel roman.`;
+  const cell = (k, v, s) => `<div class="hs-cell"><div class="hs-k">${escapeHtml(k)}</div><div class="hs-v">${escapeHtml(String(v))}</div>${s ? `<div class="hs-s">${escapeHtml(s)}</div>` : ""}</div>`;
+
+  const overview =
+    `<div class="hs-grid">
+       ${cell("Sessioner", data.sessions ?? 0)}
+       ${cell("Meddelanden", fmtNum(messages))}
+       ${cell("Totalt tokens", fmtTokens(tokens))}
+       ${cell("Aktiva dagar", activeDays)}
+       ${cell("Nuvarande streak", streak.current + (streak.current === 1 ? " dag" : " dagar"))}
+       ${cell("Längsta streak", streak.longest + (streak.longest === 1 ? " dag" : " dagar"))}
+       ${cell("Populäraste tid", peakHour >= 0 ? `kl ${peakHour}` : "—")}
+       ${cell("Favoritmodell", favorite)}
+     </div>
+     <div class="hs-heat">${heatmapHTML(series, range)}</div>
+     <div class="hs-fun">${escapeHtml(fun)}</div>`;
+
+  const maxM = Math.max(1, ...models.map((m) => m.messages));
+  const modelsView = models.length
+    ? `<div class="hs-models">${models.map((m) => `
+        <div class="hs-model">
+          <div class="hs-model-top"><span class="hs-model-name">${escapeHtml(prettyModel(m.model))}</span><span class="hs-model-n">${fmtNum(m.messages)} svar · ${fmtTokens(m.tokens)} tokens</span></div>
+          <div class="hs-model-bar"><div class="hs-model-fill" style="width:${Math.round((m.messages / maxM) * 100)}%"></div></div>
+        </div>`).join("")}</div>`
+    : `<div class="hint" style="padding:8px 2px">Ingen modellanvändning än.</div>`;
+
+  host.innerHTML =
+    `<div class="hs-greet"><span class="hs-spark">✳</span> ${escapeHtml(greetingFor(data.name))}</div>
+     <div class="hs-card">
+       <div class="hs-head">
+         <div class="hs-tabs">
+           <button class="hs-tab active" data-view="overview">Översikt</button>
+           <button class="hs-tab" data-view="models">Modeller</button>
+         </div>
+         <div class="hs-ranges">
+           <button class="hs-range${range === "all" ? " active" : ""}" data-range="all">Allt</button>
+           <button class="hs-range${range === "30d" ? " active" : ""}" data-range="30d">30d</button>
+           <button class="hs-range${range === "7d" ? " active" : ""}" data-range="7d">7d</button>
+         </div>
+       </div>
+       <div class="hs-body" data-view="overview">${overview}</div>
+       <div class="hs-body" data-view="models" hidden>${modelsView}</div>
+     </div>`;
+
+  host.querySelectorAll(".hs-range").forEach((b) =>
+    b.addEventListener("click", () => drawHomeStats(host, data, b.dataset.range)));
+  host.querySelectorAll(".hs-tab").forEach((b) =>
+    b.addEventListener("click", () => {
+      host.querySelectorAll(".hs-tab").forEach((t) => t.classList.toggle("active", t === b));
+      host.querySelectorAll(".hs-body").forEach((p) => { p.hidden = p.dataset.view !== b.dataset.view; });
+    }));
+}
+function greetingFor(name) {
+  const first = String(name || "").trim().split(/\s+/)[0] || "";
+  const h = new Date().getHours();
+  const tod = h < 5 ? "God natt" : h < 10 ? "God morgon" : h < 18 ? "Hej" : "God kväll";
+  return first ? `${tod}, ${first} — vad händer härnäst?` : "Vad händer härnäst?";
+}
+function fmtNum(n) { return Number(n || 0).toLocaleString("sv-SE"); }
+// A GitHub-style contribution heatmap (weeks as columns, weekdays as rows).
+function heatmapHTML(series, range) {
+  const days = range === "7d" ? 21 : range === "30d" ? 63 : 119; // show a bit of context
+  const byDay = new Map(series.map((s) => [s.day, s.messages]));
+  const max = Math.max(1, ...series.map((s) => s.messages));
+  const end = new Date(); end.setHours(0, 0, 0, 0);
+  const cells = [];
+  // Pad so the first column starts on the right weekday row (Mon=0 … Sun=6).
+  const first = new Date(end.getTime() - (days - 1) * 86400_000);
+  const pad = (first.getDay() + 6) % 7;
+  for (let i = 0; i < pad; i++) cells.push('<span class="hs-heat-c pad"></span>');
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(end.getTime() - i * 86400_000);
+    const key = d.toISOString().slice(0, 10);
+    const n = byDay.get(key) || 0;
+    const lvl = n === 0 ? 0 : Math.min(4, Math.ceil((n / max) * 4));
+    cells.push(`<span class="hs-heat-c l${lvl}" title="${key}: ${n} svar"></span>`);
+  }
+  return `<div class="hs-heat-grid">${cells.join("")}</div>`;
 }
 
 function hideSplash() {

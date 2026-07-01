@@ -467,6 +467,17 @@ check("profile view: usage + estimated spend is wired", () => {
   assert(_usageSummary.today.turns === 1 && _usageSummary.all.cost > 0, "usage summary should round-trip a recorded turn");
 });
 
+check("home dashboard (welcome-screen activity stats) is wired", () => {
+  const usg = read("server/usage.js");
+  assert(/export async function getStats/.test(usg) && /simba_usage_models/.test(usg) && /simba_usage_hours/.test(usg), "stats store (models + hours) missing");
+  assert(/app\.get\("\/api\/stats"/.test(server) && /getStats\(user\.key\)/.test(server), "/api/stats endpoint missing");
+  // client: dashboard renders greeting + cells + heatmap + models tab
+  assert(/function renderHomeStats/.test(taskpane) && /function drawHomeStats/.test(taskpane), "home stats render functions missing");
+  assert(/id="home-stats"/.test(taskpane) && /function heatmapHTML/.test(taskpane), "home stats slot / heatmap missing");
+  assert(/Favoritmodell/.test(taskpane) && /Populäraste tid/.test(taskpane) && /längsta streak|Längsta streak/.test(taskpane), "stat cells missing");
+  assert(/\.hs-card/.test(read("src/taskpane/taskpane.css")) && /\.hs-heat-grid/.test(read("src/taskpane/taskpane.css")), "dashboard styling missing");
+});
+
 check("connector WRITES (post hours into e.g. NEXT) are wired & approval-gated", () => {
   const conn = read("server/connectors.js");
   const sch = read("server/scheduler.js");

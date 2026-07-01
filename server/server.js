@@ -17,7 +17,7 @@ import express from "express";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
-import { recordUsage, getUsage } from "./usage.js";
+import { recordUsage, getUsage, getStats } from "./usage.js";
 import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation, listWorkspace, saveWorkspace, deleteWorkspace, workspaceContext } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, listAttachments, getAttachment, MAIL_SCOPE } from "./graph.js";
@@ -722,6 +722,26 @@ app.get("/api/usage", async (req, res) => {
   } catch (err) {
     console.error("[Simba] usage read failed:", err?.message || err);
     res.status(502).json({ error: "Kunde inte hämta användning." });
+  }
+});
+
+// ---- Home dashboard: rich activity stats for the welcome screen -----------
+app.get("/api/stats", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const [stats, convs] = await Promise.all([
+      getStats(user.key),
+      listConversations(user.key).catch(() => []),
+    ]);
+    res.json({
+      name: user.name || user.email || "",
+      sessions: Array.isArray(convs) ? convs.length : 0,
+      ...stats,
+    });
+  } catch (err) {
+    console.error("[Simba] stats failed:", err?.message || err);
+    res.status(502).json({ error: "Kunde inte hämta statistik." });
   }
 });
 

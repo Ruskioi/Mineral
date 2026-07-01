@@ -1006,6 +1006,46 @@ body.desktop .welcome p { font-size: 15px; }
 .pf-bar-x { font-size: 10px; color: var(--ink-faint); }
 @media (max-width: 460px) { .pf-cards { grid-template-columns: 1fr; } }
 
+/* ---- Home dashboard (welcome-screen activity stats, Claude-style) ---- */
+.home-stats { width: 100%; margin: 0 0 22px; }
+.hs-greet { font-family: var(--serif); font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin: 4px 2px 14px; display: flex; align-items: center; gap: 9px; }
+.hs-spark { color: var(--accent); font-size: 20px; }
+.hs-card { border: 1px solid var(--border); border-radius: 18px; background: var(--bg-soft); padding: 14px; }
+.hs-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.hs-tabs, .hs-ranges { display: inline-flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 2px; }
+.hs-tab, .hs-range {
+  border: 0; background: transparent; color: var(--ink-soft);
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  padding: 4px 11px; border-radius: 8px; transition: background var(--speed), color var(--speed);
+}
+.hs-range { padding: 4px 9px; }
+.hs-tab:hover, .hs-range:hover { color: var(--ink); }
+.hs-tab.active, .hs-range.active { background: var(--bg); color: var(--ink); box-shadow: var(--shadow-sm); }
+.hs-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.hs-cell { background: var(--surface); padding: 12px 13px 11px; }
+.hs-k { font-size: 11.5px; color: var(--ink-soft); }
+.hs-v { font-family: var(--serif); font-size: 20px; font-weight: 600; margin-top: 3px; line-height: 1.1; }
+.hs-s { font-size: 11px; color: var(--ink-faint); margin-top: 1px; }
+.hs-heat { margin-top: 14px; overflow-x: auto; }
+.hs-heat-grid {
+  display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 1fr);
+  grid-auto-columns: 13px; gap: 4px; justify-content: start;
+}
+.hs-heat-c { width: 13px; height: 13px; border-radius: 3px; background: var(--surface); border: 1px solid var(--border); }
+.hs-heat-c.pad { background: transparent; border-color: transparent; }
+.hs-heat-c.l1 { background: color-mix(in srgb, var(--accent) 26%, var(--surface)); border-color: transparent; }
+.hs-heat-c.l2 { background: color-mix(in srgb, var(--accent) 48%, var(--surface)); border-color: transparent; }
+.hs-heat-c.l3 { background: color-mix(in srgb, var(--accent) 72%, var(--surface)); border-color: transparent; }
+.hs-heat-c.l4 { background: var(--accent); border-color: transparent; }
+.hs-fun { margin-top: 12px; font-size: 12.5px; color: var(--ink-soft); }
+.hs-models { display: flex; flex-direction: column; gap: 12px; padding: 2px; }
+.hs-model-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 5px; }
+.hs-model-name { font-size: 14px; font-weight: 600; }
+.hs-model-n { font-size: 11.5px; color: var(--ink-soft); }
+.hs-model-bar { height: 8px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); overflow: hidden; }
+.hs-model-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-strong)); }
+@media (max-width: 560px) { .hs-grid { grid-template-columns: repeat(2, 1fr); } }
+
 /* Scheduled-jobs manager (in settings) */
 .sched-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; margin: 2px 0 4px; }
 .sched-item {

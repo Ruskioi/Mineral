@@ -43,6 +43,8 @@ export function estimateCost(model, usage = {}) {
 let pool = null;
 let ready = null;
 const mem = new Map(); // userKey -> Map(day -> row)
+const memModels = new Map(); // userKey -> Map(model -> {turns,in_tokens,out_tokens,cost})
+const memHours = new Map();  // userKey -> number[24] (turns per hour of day)
 
 function makeSsl() {
   if (process.env.PGSSL_DISABLE) return false;
@@ -64,6 +66,27 @@ async function init() {
        cache_write BIGINT NOT NULL DEFAULT 0,
        cost       DOUBLE PRECISION NOT NULL DEFAULT 0,
        PRIMARY KEY (user_key, day)
+     )`
+  );
+  // Per-model totals (favorite model + Models tab).
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS simba_usage_models (
+       user_key   TEXT NOT NULL,
+       model      TEXT NOT NULL,
+       turns      INTEGER NOT NULL DEFAULT 0,
+       in_tokens  BIGINT  NOT NULL DEFAULT 0,
+       out_tokens BIGINT  NOT NULL DEFAULT 0,
+       cost       DOUBLE PRECISION NOT NULL DEFAULT 0,
+       PRIMARY KEY (user_key, model)
+     )`
+  );
+  // Per-hour-of-day totals (peak hour).
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS simba_usage_hours (
+       user_key TEXT NOT NULL,
+       hour     INTEGER NOT NULL,
+       turns    INTEGER NOT NULL DEFAULT 0,
+       PRIMARY KEY (user_key, hour)
      )`
   );
 }
@@ -102,6 +125,34 @@ export async function recordUsage(userKey, model, usage) {
       r.cache_read += cacheRead; r.cache_write += cacheWrite; r.cost += cost;
       days.set(day, r);
       if (days.size > 400) days.delete([...days.keys()].sort()[0]); // cap history
+    }
+    // Per-model + per-hour aggregates (for favorite model + peak hour).
+    const mdl = String(model || "").slice(0, 60) || "okänd";
+    const hour = new Date().getHours();
+    if (pool) {
+      await pool.query(
+        `INSERT INTO simba_usage_models (user_key, model, turns, in_tokens, out_tokens, cost)
+         VALUES ($1,$2,1,$3,$4,$5)
+         ON CONFLICT (user_key, model) DO UPDATE SET
+           turns = simba_usage_models.turns + 1,
+           in_tokens = simba_usage_models.in_tokens + $3,
+           out_tokens = simba_usage_models.out_tokens + $4,
+           cost = simba_usage_models.cost + $5`,
+        [userKey, mdl, inTok, outTok, cost]
+      );
+      await pool.query(
+        `INSERT INTO simba_usage_hours (user_key, hour, turns) VALUES ($1,$2,1)
+         ON CONFLICT (user_key, hour) DO UPDATE SET turns = simba_usage_hours.turns + 1`,
+        [userKey, hour]
+      );
+    } else {
+      if (!memModels.has(userKey)) memModels.set(userKey, new Map());
+      const mm = memModels.get(userKey);
+      const mr = mm.get(mdl) || { model: mdl, turns: 0, in_tokens: 0, out_tokens: 0, cost: 0 };
+      mr.turns += 1; mr.in_tokens += inTok; mr.out_tokens += outTok; mr.cost += cost;
+      mm.set(mdl, mr);
+      if (!memHours.has(userKey)) memHours.set(userKey, new Array(24).fill(0));
+      memHours.get(userKey)[hour] += 1;
     }
   } catch (e) { console.error("[Simba] recordUsage failed:", e?.message || e); }
 }
@@ -152,4 +203,41 @@ export async function getUsage(userKey) {
     summary.series.push({ day: d, turns: Number(r?.turns || 0), cost: Number(r?.cost || 0) });
   }
   return summary;
+}
+
+async function modelRows(userKey) {
+  await ensureReady();
+  if (pool) {
+    const r = await pool.query("SELECT model, turns, in_tokens, out_tokens, cost FROM simba_usage_models WHERE user_key=$1 ORDER BY turns DESC", [userKey]);
+    return r.rows;
+  }
+  return [...(memModels.get(userKey)?.values() || [])].sort((a, b) => b.turns - a.turns);
+}
+async function hourRows(userKey) {
+  await ensureReady();
+  const hours = new Array(24).fill(0);
+  if (pool) {
+    const r = await pool.query("SELECT hour, turns FROM simba_usage_hours WHERE user_key=$1", [userKey]);
+    for (const row of r.rows) hours[Number(row.hour)] = Number(row.turns);
+  } else {
+    (memHours.get(userKey) || []).forEach((n, i) => { hours[i] = Number(n || 0); });
+  }
+  return hours;
+}
+
+// Rich stats for the home dashboard: a full daily activity series (for the
+// heatmap + range-scoped totals), per-model breakdown, and per-hour histogram.
+// Range-scoping of the daily numbers is done on the client from `series`.
+export async function getStats(userKey) {
+  const rows = await allRows(userKey);
+  const tokensOf = (r) => Number(r.in_tokens || 0) + Number(r.out_tokens || 0) + Number(r.cache_read || 0) + Number(r.cache_write || 0);
+  const series = rows
+    .map((r) => ({ day: r.day, messages: Number(r.turns || 0), tokens: tokensOf(r), cost: Number(r.cost || 0) }))
+    .sort((a, b) => (a.day < b.day ? -1 : 1)); // oldest → newest
+  const models = (await modelRows(userKey)).map((m) => ({
+    model: m.model, messages: Number(m.turns || 0),
+    tokens: Number(m.in_tokens || 0) + Number(m.out_tokens || 0), cost: Number(m.cost || 0),
+  }));
+  const hours = await hourRows(userKey);
+  return { series, models, hours };
 }
