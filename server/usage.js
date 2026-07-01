@@ -9,9 +9,9 @@
  *
  * Postgres when DATABASE_URL is set; in-memory fallback (per instance) otherwise.
  */
-import pg from "pg";
+import { getPool, usingPostgres } from "./db.js";
 
-export const usingPostgres = Boolean(process.env.DATABASE_URL);
+export { usingPostgres };
 
 // Published list prices, USD per 1,000,000 tokens (input / output). Cache reads
 // bill ~0.1x the input rate; 5-minute cache writes ~1.25x. Matched by substring
@@ -46,15 +46,9 @@ const mem = new Map(); // userKey -> Map(day -> row)
 const memModels = new Map(); // userKey -> Map(model -> {turns,in_tokens,out_tokens,cost})
 const memHours = new Map();  // userKey -> number[24] (turns per hour of day)
 
-function makeSsl() {
-  if (process.env.PGSSL_DISABLE) return false;
-  if (process.env.PGSSL_CA) return { ca: process.env.PGSSL_CA, rejectUnauthorized: true };
-  return { rejectUnauthorized: false };
-}
-
 async function init() {
   if (!usingPostgres) return;
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: makeSsl(), max: 5 });
+  pool = getPool(); // shared pool (see db.js)
   await pool.query(
     `CREATE TABLE IF NOT EXISTS simba_usage (
        user_key   TEXT NOT NULL,
@@ -95,7 +89,13 @@ function ensureReady() {
   return ready;
 }
 
-function today() { return new Date().toISOString().slice(0, 10); }
+// Bucket days/hours in the org's local timezone, not UTC — otherwise evening
+// turns count toward the wrong day and "peak hour" is shifted for Swedish users.
+const TZ = process.env.SIMBA_TZ || "Europe/Stockholm";
+const dayFmt = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+const hourFmt = new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" });
+function localDay(d = new Date()) { return dayFmt.format(d); }
+function today() { return localDay(); }
 
 // Record one turn's usage for a user. Best-effort — never throws to the caller.
 export async function recordUsage(userKey, model, usage) {
@@ -128,7 +128,7 @@ export async function recordUsage(userKey, model, usage) {
     }
     // Per-model + per-hour aggregates (for favorite model + peak hour).
     const mdl = String(model || "").slice(0, 60) || "okänd";
-    const hour = new Date().getHours();
+    const hour = Number(hourFmt.format(new Date())) % 24;
     if (pool) {
       await pool.query(
         `INSERT INTO simba_usage_models (user_key, model, turns, in_tokens, out_tokens, cost)
@@ -183,7 +183,7 @@ export async function getUsage(userKey) {
   const rows = await allRows(userKey);
   const day = today();
   const month = day.slice(0, 7);
-  const weekStart = new Date(Date.now() - 6 * 86400_000).toISOString().slice(0, 10);
+  const weekStart = localDay(new Date(Date.now() - 6 * 86400_000));
 
   const summary = {
     today: blankRow("today"), week: blankRow("week"), month: blankRow("month"), all: blankRow("all"),
@@ -198,7 +198,7 @@ export async function getUsage(userKey) {
   }
   // 7-day series (oldest → newest) for a small bar chart, zero-filled.
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86400_000).toISOString().slice(0, 10);
+    const d = localDay(new Date(Date.now() - i * 86400_000));
     const r = byDay.get(d);
     summary.series.push({ day: d, turns: Number(r?.turns || 0), cost: Number(r?.cost || 0) });
   }
@@ -229,15 +229,14 @@ async function hourRows(userKey) {
 // heatmap + range-scoped totals), per-model breakdown, and per-hour histogram.
 // Range-scoping of the daily numbers is done on the client from `series`.
 export async function getStats(userKey) {
-  const rows = await allRows(userKey);
+  const [rows, mRows, hours] = await Promise.all([allRows(userKey), modelRows(userKey), hourRows(userKey)]);
   const tokensOf = (r) => Number(r.in_tokens || 0) + Number(r.out_tokens || 0) + Number(r.cache_read || 0) + Number(r.cache_write || 0);
   const series = rows
     .map((r) => ({ day: r.day, messages: Number(r.turns || 0), tokens: tokensOf(r), cost: Number(r.cost || 0) }))
     .sort((a, b) => (a.day < b.day ? -1 : 1)); // oldest → newest
-  const models = (await modelRows(userKey)).map((m) => ({
+  const models = mRows.map((m) => ({
     model: m.model, messages: Number(m.turns || 0),
     tokens: Number(m.in_tokens || 0) + Number(m.out_tokens || 0), cost: Number(m.cost || 0),
   }));
-  const hours = await hourRows(userKey);
   return { series, models, hours };
 }

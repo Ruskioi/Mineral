@@ -113,12 +113,15 @@ async function tick(client, model) {
       await notify(job, status, result).catch((e) => console.error(`[Simba] notify failed for ${job.id}:`, e?.message || e));
       console.log(`[Simba] job ${job.id} (${job.name}) -> ${status}`);
     }
+    // Centralized org agents (time reconciler, invoice reader, …). Inside the
+    // overlap guard: a slow agent pass must not race the next interval's pass,
+    // or the same period could be compiled/emailed twice.
+    await tickAgents(client, model);
   } catch (e) {
     console.error("[Simba] scheduler tick failed:", e?.message || e);
   } finally {
     running = false;
   }
-  await tickAgents(client, model); // centralized org agents (time reconciler, …)
 }
 
 // Email the job's owner a short summary of the run (best effort, opt-in per job).

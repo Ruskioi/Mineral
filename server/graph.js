@@ -105,9 +105,13 @@ export async function sendMail(graphToken, { to, cc, subject, body, replyToId })
     ...(cc ? { ccRecipients: recipients(cc) } : {}),
   };
   if (!message.toRecipients.length) throw Object.assign(new Error("Ingen mottagare angiven."), { status: 400 });
-  // Reply in-thread when replyToId is given, else a fresh send.
+  // Reply in-thread when replyToId is given, else a fresh send. Graph's /reply
+  // takes the text as `comment`; extra recipients (e.g. user-specified cc) must
+  // ride on `message` or they'd be silently dropped.
   const url = replyToId ? `${GRAPH}/me/messages/${encodeURIComponent(replyToId)}/reply` : `${GRAPH}/me/sendMail`;
-  const payload = replyToId ? { message: { body: message.body } , comment: String(body || "") } : { message, saveToSentItems: true };
+  const payload = replyToId
+    ? { comment: String(body || ""), ...(cc ? { message: { ccRecipients: recipients(cc) } } : {}) }
+    : { message, saveToSentItems: true };
   const r = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${graphToken}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   if (!r.ok) {
     const detail = (await r.text().catch(() => "")).slice(0, 300);

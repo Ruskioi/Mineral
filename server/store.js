@@ -5,12 +5,12 @@
  * Falls back to an in-process Map when it isn't — fine for local dev, but NOT
  * persistent (wiped on restart), so set DATABASE_URL in production.
  */
-import pg from "pg";
+import { getPool, usingPostgres } from "./db.js";
 
 const MAX_NOTES = 50;
 const MAX_NOTE_LEN = 280;
 
-export const usingPostgres = Boolean(process.env.DATABASE_URL);
+export { usingPostgres };
 
 const MAX_CONV_BYTES = 600_000;   // cap a stored conversation
 const MAX_CONV_MESSAGES = 200;    // keep the most recent N messages
@@ -43,15 +43,7 @@ function sanitize(notes) {
 
 async function init() {
   if (!usingPostgres) return;
-  // Render/Neon/Supabase require TLS; allow self-signed chains from managed PG.
-  // TLS: prefer real cert validation when a CA bundle is provided (PGSSL_CA);
-  // PGSSL_DISABLE turns TLS off for local dev. The unverified fallback remains
-  // for managed providers with self-signed chains and no published CA.
-  let ssl;
-  if (process.env.PGSSL_DISABLE) ssl = false;
-  else if (process.env.PGSSL_CA) ssl = { ca: process.env.PGSSL_CA, rejectUnauthorized: true };
-  else ssl = { rejectUnauthorized: false };
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl, max: 5 });
+  pool = getPool(); // shared pool (see db.js)
   await pool.query(
     `CREATE TABLE IF NOT EXISTS simba_memory (
        user_key  TEXT PRIMARY KEY,

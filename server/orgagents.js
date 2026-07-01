@@ -7,10 +7,10 @@
  *
  * Org-scoped (per tenant). Postgres when DATABASE_URL is set; memory fallback.
  */
-import pg from "pg";
+import { getPool, usingPostgres } from "./db.js";
 import { randomUUID } from "node:crypto";
 
-export const usingPostgres = Boolean(process.env.DATABASE_URL);
+export { usingPostgres };
 
 let pool = null;
 let ready = null;
@@ -18,15 +18,9 @@ const agentsMem = new Map();   // orgKey -> Map(id -> agent)
 const runsMem = [];            // {id, org_key, agent_id, at, status, summary, detail}
 const apprMem = [];            // approvals
 
-function makeSsl() {
-  if (process.env.PGSSL_DISABLE) return false;
-  if (process.env.PGSSL_CA) return { ca: process.env.PGSSL_CA, rejectUnauthorized: true };
-  return { rejectUnauthorized: false };
-}
-
 async function init() {
   if (!usingPostgres) return;
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: makeSsl(), max: 5 });
+  pool = getPool(); // shared pool (see db.js)
   await pool.query(`CREATE TABLE IF NOT EXISTS simba_agents (
      id TEXT PRIMARY KEY, org_key TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL,
      config JSONB NOT NULL DEFAULT '{}'::jsonb, state JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -127,9 +121,28 @@ export async function getApproval(orgKey, id) {
   if (pool) { const r = await pool.query("SELECT * FROM simba_agent_approvals WHERE org_key=$1 AND id=$2", [orgKey, id]); return r.rows[0] || null; }
   return apprMem.find((a) => a.org_key === orgKey && a.id === id) || null;
 }
+// Atomic claim: only flips a PENDING approval, and returns null if someone else
+// already decided it — so two admins clicking "approve" concurrently can't both
+// trigger the side effect (double email / double posting into a finance system).
 export async function decideApproval(orgKey, id, status, decidedBy) {
   await ensureReady();
-  if (pool) await pool.query("UPDATE simba_agent_approvals SET status=$3, decided_by=$4, decided_at=now() WHERE org_key=$1 AND id=$2", [orgKey, id, status, clean(decidedBy, 200)]);
-  else { const a = apprMem.find((x) => x.org_key === orgKey && x.id === id); if (a) { a.status = status; a.decided_by = decidedBy; a.decided_at = new Date().toISOString(); } }
-  return await getApproval(orgKey, id);
+  if (pool) {
+    const r = await pool.query(
+      "UPDATE simba_agent_approvals SET status=$3, decided_by=$4, decided_at=now() WHERE org_key=$1 AND id=$2 AND status='pending' RETURNING *",
+      [orgKey, id, status, clean(decidedBy, 200)]
+    );
+    return r.rows[0] || null;
+  }
+  const a = apprMem.find((x) => x.org_key === orgKey && x.id === id);
+  if (!a || a.status !== "pending") return null;
+  a.status = status; a.decided_by = decidedBy; a.decided_at = new Date().toISOString();
+  return a;
+}
+
+// Put a claimed approval back to pending (used when the approved side effect
+// failed, so an admin can retry instead of the action being silently lost).
+export async function reopenApproval(orgKey, id) {
+  await ensureReady();
+  if (pool) await pool.query("UPDATE simba_agent_approvals SET status='pending', decided_by=NULL, decided_at=NULL WHERE org_key=$1 AND id=$2", [orgKey, id]);
+  else { const a = apprMem.find((x) => x.org_key === orgKey && x.id === id); if (a) { a.status = "pending"; a.decided_by = null; a.decided_at = null; } }
 }

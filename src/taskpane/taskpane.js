@@ -142,13 +142,20 @@ let pushTimer = null;
 
 // Silent by default: only show Office's sign-in/consent dialog when the user
 // explicitly asks (interactive = true), so opening the pane never pops a prompt.
+// The token is cached for a few minutes: an agent turn makes one Office auth
+// round-trip per tool step otherwise, which adds real latency on every action.
+let _ssoTokCache = null; // { token, at }
+const SSO_TOK_TTL = 4 * 60_000;
 async function getSsoToken(interactive = false) {
+  if (!interactive && _ssoTokCache && Date.now() - _ssoTokCache.at < SSO_TOK_TTL) return _ssoTokCache.token;
   try {
     if (typeof OfficeRuntime === "undefined" || !OfficeRuntime.auth?.getAccessToken) return null;
-    return await OfficeRuntime.auth.getAccessToken({
+    const token = await OfficeRuntime.auth.getAccessToken({
       allowSignInPrompt: interactive,
       allowConsentPrompt: interactive,
     });
+    if (token) _ssoTokCache = { token, at: Date.now() };
+    return token;
   } catch {
     return null; // not configured, not signed in, user dismissed, or unsupported host
   }
@@ -275,7 +282,9 @@ function boot(isExcel) {
 
   applyTheme(store.get("simba.theme", "auto"));
   syncPills();
-  document.querySelector(".brand-mark").innerHTML = MASCOT_IMG;
+  // Both brand marks get the mascot: the sidebar's (first in the DOM) AND the
+  // header's — querySelector alone hit only the hidden sidebar on narrow panes.
+  document.querySelectorAll(".brand-mark").forEach((el) => { el.innerHTML = MASCOT_IMG; });
   const wm = document.getElementById("chat-watermark"); // faint grey mascot behind the chat
   if (wm) wm.innerHTML = MASCOT_IMG;
 
@@ -293,6 +302,9 @@ function boot(isExcel) {
   els.navBackdrop = document.getElementById("nav-backdrop");
   els.menuBtn?.addEventListener("click", () => toggleNav());
   els.navBackdrop?.addEventListener("click", () => toggleNav(false));
+  // Crossing to the wide layout turns the drawer into a static rail — clear any
+  // stale open-drawer state so the dimming backdrop can't reappear on re-narrow.
+  window.addEventListener("resize", () => { if (window.innerWidth > 700) toggleNav(false); });
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
 
   // Claude-style pill pickers: model (Auto / Pluto / Simba) and edit-mode.
@@ -353,7 +365,20 @@ function boot(isExcel) {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !els.overlay.hidden) closeModal();
-    if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) { e.preventDefault(); openCommandPalette(); }
+    // Keep Tab inside an open modal (simple focus trap for keyboard/AT users).
+    if (e.key === "Tab" && !els.overlay.hidden) {
+      const f = els.modalCard.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      if (f.length) {
+        const first = f[0], last = f[f.length - 1];
+        if (!els.modalCard.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+        else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }
+    if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (els.overlay.hidden) openCommandPalette(); // never clobber an open dialog (a pending confirm would hang)
+    }
   });
 
   bindSuggestions();
@@ -389,17 +414,20 @@ function boot(isExcel) {
 }
 
 // Boot inside Excel via Office.onReady; otherwise (Electron/desktop or a plain
-// browser) boot in desktop mode. The timeout is a fallback if Office never readies.
+// browser) boot in desktop mode. Office.js fires onReady even outside Office
+// (host = null), so the timeout below is only a last-resort rescue if office.js
+// loaded but hung — generous enough that a slow Excel Online cold start can't
+// lose the race and get permanently mis-booted into desktop mode.
 if (typeof Office !== "undefined" && Office.onReady) {
   Office.onReady((info) => {
     const host = info && info.host;
     IS_OUTLOOK = host === Office.HostType.Outlook;
     boot(host === Office.HostType.Excel);
   });
+  setTimeout(() => boot(false), 15000);
 } else {
   boot(false);
 }
-setTimeout(() => boot(false), 4000);
 
 function applyDesktopMode() {
   document.body.classList.add("desktop");          // CSS hides Excel-only chrome
@@ -487,49 +515,55 @@ function bindSuggestions() {
 // A Claude-style "welcome" dashboard: a greeting + an activity card (sessions,
 // messages, tokens, streaks, peak hour, favorite model) with a contribution
 // heatmap, shown on the home screen once the user is signed in.
-let _statsCache = null;
+let _statsCache = null; // a PROMISE of the stats payload — concurrent callers share one fetch
 async function renderHomeStats() {
   const host = document.getElementById("home-stats");
   if (!host) return;
   if (!signedIn) { host.hidden = true; return; }
   try {
     if (!_statsCache) {
-      const token = await getSsoToken(false);
-      if (!token) { host.hidden = true; return; }
-      const r = await fetch(`${API_BASE}/api/stats`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!r.ok) { host.hidden = true; return; }
-      _statsCache = await r.json();
+      _statsCache = (async () => {
+        const token = await getSsoToken(false);
+        if (!token) return null;
+        const r = await fetch(`${API_BASE}/api/stats`, { headers: { Authorization: `Bearer ${token}` } });
+        return r.ok ? r.json() : null;
+      })();
     }
+    const data = await _statsCache;
+    if (!data) { _statsCache = null; host.hidden = true; return; }
     host.hidden = false;
-    drawHomeStats(host, _statsCache, "all");
-  } catch { host.hidden = true; }
+    drawHomeStats(host, data, "all");
+  } catch { _statsCache = null; host.hidden = true; }
 }
 
+// Format a Date as the LOCAL YYYY-MM-DD. toISOString() would convert to UTC and
+// shift every evening/midnight boundary a day for Swedish (UTC+1/+2) users —
+// wrong streaks, wrong heatmap columns, wrong 7d/30d windows.
+function localDayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 function statsWindow(series, range) {
   if (range === "all") return series;
   const days = range === "7d" ? 7 : 30;
-  const cut = new Date(Date.now() - (days - 1) * 86400_000).toISOString().slice(0, 10);
+  const cut = localDayKey(new Date(Date.now() - (days - 1) * 86400_000));
   return series.filter((s) => s.day >= cut);
 }
 function longestStreak(series) {
   const active = new Set(series.filter((s) => s.messages > 0).map((s) => s.day));
   let best = 0, cur = 0;
   if (!active.size) return { current: 0, longest: 0 };
-  const first = series[0]?.day || new Date().toISOString().slice(0, 10);
+  const first = series.find((s) => s.messages > 0)?.day || localDayKey(new Date());
   const start = new Date(first + "T00:00:00");
   const today = new Date(); today.setHours(0, 0, 0, 0);
   for (let d = new Date(start); d <= today; d.setDate(d.getDate() + 1)) {
-    const key = d.toISOString().slice(0, 10);
-    if (active.has(key)) { cur++; best = Math.max(best, cur); } else cur = 0;
+    if (active.has(localDayKey(d))) { cur++; best = Math.max(best, cur); } else cur = 0;
   }
-  // current streak = trailing run ending today (or yesterday)
+  // Current streak = trailing run of active days. An inactive TODAY doesn't
+  // break it (the day isn't over yet — start counting from yesterday instead).
   let current = 0;
-  for (let d = new Date(today); ; d.setDate(d.getDate() - 1)) {
-    const key = d.toISOString().slice(0, 10);
-    if (active.has(key)) current++;
-    else if (key !== today.toISOString().slice(0, 10)) break;
-    else break;
-  }
+  const d = new Date(today);
+  if (!active.has(localDayKey(d))) d.setDate(d.getDate() - 1);
+  while (active.has(localDayKey(d))) { current++; d.setDate(d.getDate() - 1); }
   return { current, longest: best };
 }
 function drawHomeStats(host, data, range) {
@@ -627,7 +661,7 @@ function heatmapHTML(series, range) {
   for (let i = 0; i < pad; i++) cells.push('<span class="hs-heat-c pad"></span>');
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(end.getTime() - i * 86400_000);
-    const key = d.toISOString().slice(0, 10);
+    const key = localDayKey(d);
     const n = byDay.get(key) || 0;
     const lvl = n === 0 ? 0 : Math.min(4, Math.ceil((n / max) * 4));
     cells.push(`<span class="hs-heat-c l${lvl}" title="${key}: ${n} svar"></span>`);
@@ -1984,7 +2018,13 @@ async function runAgentLoop() {
     try {
       reply = await callBackend(messages, onDelta);
     } catch (e) {
-      if (live) { if (live.text.trim()) finishStream(live, live.text.trim()); else live.wrap.remove(); }
+      if (live && live.text.trim()) {
+        finishStream(live, live.text.trim());
+        // Keep the partial reply in history too — otherwise the saved chat,
+        // export, and regenerate all diverge from what's on screen.
+        messages.push({ role: "assistant", content: [{ type: "text", text: live.text.trim() }] });
+        saveConversation();
+      } else if (live) live.wrap.remove();
       finalizeToolGroup(group);         // stop the running shimmer on error/stop
       if (stopRequested) return;        // clean user-stop: keep whatever streamed, no error
       throw e;
@@ -2112,7 +2152,13 @@ function parseSSE(block) {
 
 let modalResolver = null;
 
+let modalTrigger = null; // element to restore focus to when the modal closes
 function openModal(html, { onClose } = {}) {
+  // If a modal with a pending resolver is being replaced (e.g. a confirm dialog),
+  // resolve it as "declined" first — otherwise the awaiting promise hangs forever
+  // and stalls the agent loop.
+  if (!els.overlay.hidden && modalResolver) { const r = modalResolver; modalResolver = null; r(false); }
+  if (els.overlay.hidden) modalTrigger = document.activeElement;
   els.modalCard.classList.remove("wide"); // reset any artifact-size from a prior modal
   els.modalCard.innerHTML = html;
   els.overlay.hidden = false;
@@ -2127,6 +2173,8 @@ function closeModal() {
   const r = modalResolver;
   modalResolver = null;
   if (r) r(false);
+  modalTrigger?.focus?.(); // return focus to whatever opened the modal
+  modalTrigger = null;
 }
 
 /** Slides a small confirmation box up above the input; resolves true/false. */
@@ -2297,6 +2345,8 @@ function confirmSend({ to, cc, subject, body }) {
 function closeModalSilently() {
   els.overlay.hidden = true;
   modalResolver = null;
+  modalTrigger?.focus?.();
+  modalTrigger = null;
 }
 
 function valuesPreviewTable(values) {
@@ -2436,6 +2486,9 @@ function openSettings() {
     const list = memoryTextEl.value.split("\n").map((s) => s.trim()).filter(Boolean);
     memorySave(list);
   };
+  // Closing Settings any way at all (Escape, overlay click, Klar) keeps the
+  // user's memory edits — closing must never silently discard typed text.
+  modalResolver = () => saveMemoryFromText();
   els.modalCard.querySelector("#memory-clear").onclick = () => { memoryTextEl.value = ""; memoryClear(); };
   const signinBtn = els.modalCard.querySelector("#memory-signin");
   if (signinBtn) signinBtn.onclick = async () => {
@@ -2479,7 +2532,7 @@ function renderMessage(role, text, opts) {
     <div class="avatar">${role === "user" ? "🙂" : currentAvatar()}</div>
     <div class="body">${fileChip}${body}${actions}</div>`;
   els.messages.append(wrap);
-  scrollDown();
+  scrollDown(role === "user"); // sending a message always jumps to it
 }
 
 /* A generated file (pptx/docx/xlsx/pdf) shown as a click-to-download card. The
@@ -2547,7 +2600,9 @@ function startStream() {
 
 function appendStream(live, chunk) {
   live.text += chunk;
-  live.bubble.textContent = live.text;
+  // Append only the delta as a text node — resetting textContent would re-layout
+  // the ENTIRE accumulated reply on every chunk (O(n²) over a long answer).
+  live.bubble.appendChild(document.createTextNode(chunk));
   scrollDown();
 }
 
@@ -3235,16 +3290,29 @@ function openPillMenu(anchor, items, currentKey, onPick) {
   const r = anchor.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
   menu.style.top = `${r.top - menu.offsetHeight - 8}px`;
-  const close = () => {
+  const close = (refocus) => {
     menu.remove();
     anchor.setAttribute("aria-expanded", "false");
     document.removeEventListener("mousedown", onDoc, true);
     document.removeEventListener("keydown", onKey, true);
+    if (refocus) anchor.focus();
   };
+  const opts = [...menu.querySelectorAll(".mpick-opt")];
   const onDoc = (ev) => { if (!menu.contains(ev.target) && ev.target !== anchor) close(); };
-  const onKey = (ev) => { if (ev.key === "Escape") { ev.preventDefault(); close(); } };
-  menu.querySelectorAll(".mpick-opt").forEach((b) =>
-    b.addEventListener("click", () => { const k = b.dataset.key; close(); onPick(k); }));
+  // Full keyboard support: arrows move, Enter picks (native button), Escape
+  // closes, Tab stays inside the menu instead of escaping into the page.
+  const onKey = (ev) => {
+    if (ev.key === "Escape") { ev.preventDefault(); close(true); return; }
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp" || ev.key === "Tab") {
+      ev.preventDefault();
+      const dir = ev.key === "ArrowUp" || (ev.key === "Tab" && ev.shiftKey) ? -1 : 1;
+      const i = opts.indexOf(document.activeElement);
+      opts[(i + dir + opts.length) % opts.length]?.focus();
+    }
+  };
+  opts.forEach((b) =>
+    b.addEventListener("click", () => { const k = b.dataset.key; close(true); onPick(k); }));
+  (opts.find((b) => b.classList.contains("sel")) || opts[0])?.focus();
   setTimeout(() => { document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey, true); }, 0);
 }
 
@@ -3259,14 +3327,15 @@ function setBusy(state) {
   els.prompt.disabled = state;
 }
 
-// A brief happy wag of the header mascot when Simba finishes a reply.
+// A brief happy wag of the mascot when Simba finishes a reply — on every brand
+// mark, so the visible one wags regardless of surface (header vs sidebar rail).
 function cheerMascot() {
-  const el = document.querySelector(".brand-mark");
-  if (!el) return;
-  el.classList.remove("cheer");
-  void el.offsetWidth; // restart the animation
-  el.classList.add("cheer");
-  setTimeout(() => el.classList.remove("cheer"), 800);
+  document.querySelectorAll(".brand-mark").forEach((el) => {
+    el.classList.remove("cheer");
+    void el.offsetWidth; // restart the animation
+    el.classList.add("cheer");
+    setTimeout(() => el.classList.remove("cheer"), 800);
+  });
 }
 
 // User-initiated stop: abort the in-flight request and let the loop bail cleanly.
@@ -3280,8 +3349,21 @@ function autoGrow() {
   els.prompt.style.height = Math.min(els.prompt.scrollHeight, 140) + "px";
 }
 
-function scrollDown() {
-  els.messages.scrollTo({ top: els.messages.scrollHeight, behavior: "smooth" });
+// Auto-scroll, but never fight the user: if they've scrolled up to re-read
+// something we leave them alone; only follow when they're already near the
+// bottom. rAF-coalesced so hundreds of stream chunks cost one scroll per frame.
+let _scrollQueued = false;
+function scrollDown(force = false) {
+  const el = els.messages;
+  if (!el) return;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+  if (!force && !nearBottom) return;
+  if (_scrollQueued) return;
+  _scrollQueued = true;
+  requestAnimationFrame(() => {
+    _scrollQueued = false;
+    el.scrollTop = el.scrollHeight;
+  });
 }
 
 function clearWelcome() {
@@ -3326,11 +3408,15 @@ async function loadConversations() {
     if (Array.isArray(conversations) && conversations.length && !messages.length) {
       await openConversation(conversations[0].id); // resume the most recent
     }
-    refreshSidebar(); // populate the standalone sidebar once signed in
+    refreshSidebar(Array.isArray(conversations) ? conversations : null); // reuse the list we just fetched
   } catch { /* stay local */ }
 }
 
 async function openConversation(id) {
+  // Never swap conversations mid-turn: the agent loop pushes its blocks into the
+  // global `messages`, so switching now would splice this turn into the OTHER
+  // conversation's history and save it there.
+  if (busy) { toast("Vänta – Simba skriver klart först.", "info", 2000); return; }
   try {
     const token = await getSsoToken(false);
     if (!token) return;
@@ -3340,7 +3426,7 @@ async function openConversation(id) {
     conversationId = c.id;
     messages = Array.isArray(c.messages) ? c.messages : [];
     renderHistory(messages);
-    refreshSidebar();
+    renderSidebarList(); // update the active highlight from the cached list (no refetch)
   } catch { /* ignore */ }
 }
 
@@ -3348,23 +3434,39 @@ function saveConversation() {
   if (!signedIn || !messages.length) return;
   _statsCache = null; // a turn just happened → home dashboard should refetch next time it shows
   clearTimeout(convSaveTimer);
+  // Snapshot NOW: if the user starts a new chat before the debounce fires, the
+  // timer must still save THIS conversation (not an empty one) and must not
+  // steal the new chat's conversation id.
+  const snapMessages = messages;
+  const snapId = conversationId;
+  const snapTitle = convTitle();
   convSaveTimer = setTimeout(async () => {
     try {
       const token = await getSsoToken(false);
       if (!token) return;
-      if (!conversationId) {
+      if (!snapId) {
         const r = await fetch(`${API_BASE}/api/conversations`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ title: convTitle(), messages }),
+          body: JSON.stringify({ title: snapTitle, messages: snapMessages }),
         });
-        if (r.ok) { conversationId = (await r.json()).id; refreshSidebar(); }
+        if (r.ok) {
+          const newId = (await r.json()).id;
+          if (messages === snapMessages) conversationId = newId; // only if still the active chat
+          refreshSidebar();
+        }
         return;
       }
-      await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}`, {
+      await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(snapId)}`, {
         method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title: convTitle(), messages }),
+        body: JSON.stringify({ title: snapTitle, messages: snapMessages }),
       });
-      refreshSidebar();
+      // Refresh the sidebar entry locally instead of refetching the whole list.
+      const row = sidebarConvs.find((c) => c.id === snapId);
+      if (row) {
+        row.title = snapTitle;
+        sidebarConvs = [row, ...sidebarConvs.filter((c) => c.id !== snapId)];
+      }
+      renderSidebarList();
     } catch { /* best effort */ }
   }, 800);
 }
@@ -3636,20 +3738,28 @@ function openCommandPalette() {
   const qEl = els.modalCard.querySelector("#cmd-q");
   const listEl = els.modalCard.querySelector("#cmd-list");
   let view = cmds;
+  let sel = 0; // keyboard-highlighted row (the styling always implied this worked)
   const render = () => {
+    sel = Math.min(sel, Math.max(0, view.length - 1));
     listEl.innerHTML = view.map((c, i) =>
-      `<button class="file-item${i === 0 ? " active" : ""}" data-i="${i}"><span class="file-ic">${c.icon}</span><span class="file-main"><span class="file-name">${escapeHtml(c.label)}</span></span></button>`).join("")
+      `<button class="file-item${i === sel ? " active" : ""}" data-i="${i}"><span class="file-ic">${c.icon}</span><span class="file-main"><span class="file-name">${escapeHtml(c.label)}</span></span></button>`).join("")
       || '<div class="hint" style="padding:6px 2px">Inget matchar.</div>';
     listEl.querySelectorAll(".file-item").forEach((b) =>
       b.addEventListener("click", () => { const c = view[+b.dataset.i]; closeModalSilently(); c?.run(); }));
+    listEl.querySelector(".file-item.active")?.scrollIntoView({ block: "nearest" });
   };
   const run = (c) => { closeModalSilently(); c?.run(); };
   qEl.addEventListener("input", () => {
     const q = qEl.value.trim().toLowerCase();
     view = q ? cmds.filter((c) => c.label.toLowerCase().includes(q)) : cmds;
+    sel = 0;
     render();
   });
-  qEl.addEventListener("keydown", (e) => { if (e.key === "Enter" && view[0]) { e.preventDefault(); run(view[0]); } });
+  qEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && view[sel]) { e.preventDefault(); run(view[sel]); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); sel = (sel + 1) % Math.max(1, view.length); render(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); sel = (sel - 1 + view.length) % Math.max(1, view.length); render(); }
+  });
   render();
   qEl.focus();
 }
@@ -3920,7 +4030,6 @@ function setActiveAgent(agent) {
   } else if (els.prompt) {
     els.prompt.placeholder = IS_EXCEL ? "Fråga Simba om ditt kalkylark…" : "Fråga Simba vad som helst…";
   }
-  els.agents?.classList.toggle("on", !!agent);
 }
 
 function renderAgentChip() {
@@ -4666,11 +4775,11 @@ async function pickCloudFile(file) {
 
 // The standalone app's persistent sidebar list.
 let sidebarConvs = []; // cached for client-side search
-async function refreshSidebar() {
+async function refreshSidebar(preloaded) {
   const el = document.getElementById("sb-list");
   if (!el) return;
   if (!signedIn) { el.innerHTML = '<div class="hint" style="padding:6px 4px">Logga in för att spara och synka chattar.</div>'; return; }
-  sidebarConvs = (await fetchConvList()) || [];
+  sidebarConvs = preloaded || (await fetchConvList()) || [];
   const search = document.getElementById("sb-search");
   if (search && !search._wired) {
     search._wired = true;
@@ -4697,7 +4806,9 @@ function renderHistory(msgs) {
       if (isToolResult) continue;
       let text = typeof c === "string" ? c
         : Array.isArray(c) ? (c.find((b) => b && b.type === "text")?.text || "") : "";
-      text = text.replace(/\n\n\[Aktuell markering:[\s\S]*$/, "");
+      // Strip the plumbing we prepend/append to user turns (selection context and
+      // specialist-agent directives) — same cleanup exportChat does.
+      text = text.replace(/\n\n\[Aktuell markering:[\s\S]*$/, "").replace(/^\[Agent:[^\]]*\][\s\S]*?\n\n/, "");
       const hasFile = Array.isArray(c) && c.some((b) => b && (b.type === "image" || b.type === "document"));
       if (text.trim() || hasFile) renderMessage("user", text, hasFile ? { file: "bifogad fil" } : null);
     } else if (m.role === "assistant" && Array.isArray(m.content)) {

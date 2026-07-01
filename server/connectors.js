@@ -14,10 +14,10 @@
  *     human approves the exact bodies; there is no model tool that writes.
  *   - Responses size-capped; secrets never leave the server.
  */
-import pg from "pg";
+import { getPool, usingPostgres } from "./db.js";
 import { randomUUID } from "node:crypto";
 
-export const usingPostgres = Boolean(process.env.DATABASE_URL);
+export { usingPostgres };
 
 const MAX_CONNECTORS = 50;
 const MAX_RESP_BYTES = 300_000;
@@ -27,15 +27,9 @@ let pool = null;
 let ready = null;
 const mem = new Map(); // orgKey -> Map(id -> connector)
 
-function makeSsl() {
-  if (process.env.PGSSL_DISABLE) return false;
-  if (process.env.PGSSL_CA) return { ca: process.env.PGSSL_CA, rejectUnauthorized: true };
-  return { rejectUnauthorized: false };
-}
-
 async function init() {
   if (!usingPostgres) return;
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: makeSsl(), max: 5 });
+  pool = getPool(); // shared pool (see db.js)
   await pool.query(
     `CREATE TABLE IF NOT EXISTS simba_connectors (
        id         TEXT PRIMARY KEY,
@@ -137,13 +131,19 @@ export async function updateConnector(orgKey, id, patch) {
     endpoints: patch.endpoints != null ? sanitizeEndpoints(patch.endpoints) : (cur.endpoints || []),
   };
   if (!/^https:\/\//i.test(next.base_url)) throw Object.assign(new Error("Bas-URL måste vara HTTPS."), { status: 400 });
+  // Moving the connector to a DIFFERENT host without re-supplying credentials
+  // would silently ship the old host's secrets to the new one — require fresh
+  // headers instead (the old ones are dropped).
+  const hostOf = (u) => { try { return new URL(u).host; } catch { return ""; } };
+  if (patch.headers == null && hostOf(next.base_url) !== hostOf(cur.base_url)) next.headers = {};
   if (pool) {
     await pool.query(
       "UPDATE simba_connectors SET name=$3, base_url=$4, headers=$5::jsonb, endpoints=$6::jsonb, updated_at=now() WHERE org_key=$1 AND id=$2",
       [orgKey, id, next.name, next.base_url, JSON.stringify(next.headers), JSON.stringify(next.endpoints)]
     );
   } else {
-    Object.assign(mem.get(orgKey).get(id), next, { updated_at: new Date().toISOString() });
+    const m = mem.get(orgKey)?.get(id);
+    if (m) Object.assign(m, next, { updated_at: new Date().toISOString() });
   }
   return publicConnector({ id, ...next });
 }
@@ -190,13 +190,15 @@ export async function queryConnector(orgKey, source, endpointKey, params) {
 }
 
 // Live test while building a connector. If an existing connector id is given,
-// its STORED secret headers are merged (so you can test without re-typing them).
+// its STORED secret headers are merged (so you can test without re-typing them)
+// — and in that case the request is PINNED to the stored host, so stored secrets
+// can never be redirected to an attacker-chosen URL via the test endpoint.
 export async function testConnector(orgKey, { id, base_url, headers, path, params }) {
   let mergedHeaders = sanitizeHeaders(headers);
   let base = base_url;
   if (id) {
     const cur = (await listRaw(orgKey)).find((c) => c.id === id);
-    if (cur) { base = base || cur.base_url; mergedHeaders = { ...(cur.headers || {}), ...mergedHeaders }; }
+    if (cur) { base = cur.base_url; mergedHeaders = { ...(cur.headers || {}), ...mergedHeaders }; }
   }
   const r = await rawGet(base, path, mergedHeaders, params, { previewBytes: 4000 });
   return { ok: r.ok, status: r.status, preview: typeof r.data === "string" ? r.data.slice(0, 4000) : r.data };

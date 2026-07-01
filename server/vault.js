@@ -10,11 +10,11 @@
  * Org scope = the tenant id (tid). Uses Postgres when DATABASE_URL is set, with
  * an in-memory fallback for local dev.
  */
-import pg from "pg";
+import { getPool, usingPostgres } from "./db.js";
 import { randomUUID } from "node:crypto";
 import { embed, embedOne, cosine, vectorEnabled, chunkText, rerank, rerankEnabled } from "./embeddings.js";
 
-export const usingPostgres = Boolean(process.env.DATABASE_URL);
+export { usingPostgres };
 export { vectorEnabled };
 
 const MAX_ENTRIES = 5000;
@@ -27,15 +27,9 @@ let pool = null;
 let ready = null;
 const mem = new Map(); // orgKey -> Map(id -> entry)
 
-function makeSsl() {
-  if (process.env.PGSSL_DISABLE) return false;
-  if (process.env.PGSSL_CA) return { ca: process.env.PGSSL_CA, rejectUnauthorized: true };
-  return { rejectUnauthorized: false };
-}
-
 async function init() {
   if (!usingPostgres) return;
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: makeSsl(), max: 5 });
+  pool = getPool(); // shared pool (see db.js)
   await pool.query(
     `CREATE TABLE IF NOT EXISTS simba_vault (
        id         TEXT PRIMARY KEY,
@@ -77,16 +71,30 @@ function publicEntry(r) {
 function searchableText(e) { return [e.title, e.title, e.topic, (e.tags || []).join(" "), e.content].filter(Boolean).join("\n"); }
 
 // Raw rows incl. embedding (for scoring); excludes file bytes for size.
+// Retrieval runs on EVERY chat turn, and these rows carry all passage vectors —
+// so cache per org for a short TTL and invalidate on writes. (On multi-instance
+// deployments another instance's write can be visible up to TTL late; fine for
+// a knowledge base where reads vastly dominate.)
+const rawCache = new Map(); // orgKey -> { at, rows }
+const RAW_TTL_MS = 60_000;
+function invalidateOrg(orgKey) { rawCache.delete(orgKey); }
 async function listRaw(orgKey) {
   await ensureReady();
+  const hit = rawCache.get(orgKey);
+  if (hit && Date.now() - hit.at < RAW_TTL_MS) return hit.rows;
+  let rows;
   if (pool) {
     const r = await pool.query(
       "SELECT id, org_key, topic, title, content, tags, author, updated_at, file_name, file_type, embedding, chunks FROM simba_vault WHERE org_key = $1 ORDER BY topic, title LIMIT $2",
       [orgKey, MAX_ENTRIES]
     );
-    return r.rows;
+    rows = r.rows;
+  } else {
+    rows = [...(mem.get(orgKey)?.values() || [])].slice().sort((a, b) => (a.topic + a.title).localeCompare(b.topic + b.title));
   }
-  return [...(mem.get(orgKey)?.values() || [])].slice().sort((a, b) => (a.topic + a.title).localeCompare(b.topic + b.title));
+  rawCache.set(orgKey, { at: Date.now(), rows });
+  if (rawCache.size > 200) rawCache.delete(rawCache.keys().next().value); // bound orgs held
+  return rows;
 }
 
 export async function listVault(orgKey) {
@@ -174,6 +182,7 @@ export async function createEntry(orgKey, { topic, title, content, tags, author,
     if (!mem.has(orgKey)) mem.set(orgKey, new Map());
     mem.get(orgKey).set(entry.id, entry);
   }
+  invalidateOrg(orgKey);
   return publicEntry(entry);
 }
 
@@ -196,8 +205,16 @@ export async function updateEntry(orgKey, id, patch) {
     const f = await getFile(orgKey, id);
     if (f) { next.file_name = f.name; next.file_type = f.type; next.file_data = f.data; }
   }
-  const vec = await computeVectors(next);
-  next.embedding = vec.embedding; next.chunks = vec.chunks;
+  // Re-embed only when the searchable text actually changed — a tag edit or
+  // rename shouldn't trigger a full multi-chunk embedding round-trip.
+  const textChanged = next.content !== cur.content || next.title !== cur.title || next.topic !== cur.topic;
+  if (textChanged) {
+    const vec = await computeVectors(next);
+    next.embedding = vec.embedding; next.chunks = vec.chunks;
+  } else {
+    const prev = (await listRaw(orgKey)).find((e) => e.id === id);
+    next.embedding = prev?.embedding ?? null; next.chunks = prev?.chunks ?? null;
+  }
   if (pool) {
     await pool.query(
       "UPDATE simba_vault SET topic=$3, title=$4, content=$5, tags=$6::jsonb, file_name=$7, file_type=$8, file_data=$9, embedding=$10::jsonb, chunks=$11::jsonb, updated_at=now() WHERE org_key=$1 AND id=$2",
@@ -207,6 +224,7 @@ export async function updateEntry(orgKey, id, patch) {
     const e = mem.get(orgKey)?.get(id);
     if (e) Object.assign(e, next, { updated_at: new Date().toISOString() });
   }
+  invalidateOrg(orgKey);
   return await getEntry(orgKey, id);
 }
 
@@ -214,6 +232,7 @@ export async function deleteEntry(orgKey, id) {
   await ensureReady();
   if (pool) await pool.query("DELETE FROM simba_vault WHERE org_key = $1 AND id = $2", [orgKey, id]);
   else mem.get(orgKey)?.delete(id);
+  invalidateOrg(orgKey);
 }
 
 // A compact digest of the whole vault for analysis (titles + snippets).
@@ -307,8 +326,23 @@ export async function searchVault(orgKey, query, limit = 8) {
 // Build a compact context block of the most relevant entries for a turn — grounded
 // on the matched passage (not just the head of the document) so the model sees the
 // part that actually answers the question.
+// Memoized per (org, query) for a short window: during an agent loop every tool
+// round-trip re-runs retrieval for the SAME user text, which otherwise costs a
+// fresh Voyage embed + rerank network round-trip each time. Also keeps the
+// injected context byte-identical across loop iterations (prompt-cache friendly).
+const ctxCache = new Map(); // `${orgKey} ${text}` -> { at, out }
+const CTX_TTL_MS = 60_000;
 export async function retrieveForContext(orgKey, text, maxChars = 4000) {
   if (!orgKey) return "";
+  const key = `${orgKey} ${String(text || "").slice(0, 500)}`;
+  const hit = ctxCache.get(key);
+  if (hit && Date.now() - hit.at < CTX_TTL_MS) return hit.out;
+  const out = await retrieveForContextUncached(orgKey, text, maxChars);
+  ctxCache.set(key, { at: Date.now(), out });
+  if (ctxCache.size > 300) ctxCache.delete(ctxCache.keys().next().value);
+  return out;
+}
+async function retrieveForContextUncached(orgKey, text, maxChars) {
   const hits = await searchRanked(orgKey, text, 10);
   if (!hits.length) return "";
   const parts = [];

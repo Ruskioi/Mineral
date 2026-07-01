@@ -35,10 +35,20 @@ async function verifyWith(jwks, token) {
  * Verify an Office SSO bootstrap token. Returns a user object on success or
  * throws. The signature check (against Microsoft's JWKS) is the security-
  * critical step; we then confirm the audience is our app and the issuer is AAD.
+ *
+ * Validated tokens are cached until their own `exp` (capped at 5 min): every
+ * API call — and every tool round-trip in an agent loop — re-sends the same
+ * token, so this skips redundant signature checks without weakening anything
+ * (the cache key is the exact token string, and entries respect expiry).
  */
+const tokenCache = new Map(); // token -> { user, until }
+const TOKEN_CACHE_MAX = 500;
 export async function verifyToken(token) {
   if (!ssoConfigured) throw Object.assign(new Error("SSO is not configured on the server."), { status: 501 });
   if (!token) throw Object.assign(new Error("Missing bearer token."), { status: 401 });
+
+  const cached = tokenCache.get(token);
+  if (cached && cached.until > Date.now()) return cached.user;
 
   let payload;
   try {
@@ -65,11 +75,18 @@ export async function verifyToken(token) {
   if (AAD_TENANT && tid !== AAD_TENANT)
     throw Object.assign(new Error("Token tenant is not allowed."), { status: 401 });
 
-  return {
+  const user = {
     key: `${tid}:${oid}`, // stable, globally-unique per user
     name: payload.name || payload.preferred_username || "",
     email: payload.preferred_username || payload.upn || "",
   };
+  const tokenExpMs = Number(payload.exp || 0) * 1000;
+  const until = Math.min(Date.now() + 5 * 60_000, tokenExpMs || 0);
+  if (until > Date.now()) {
+    tokenCache.set(token, { user, until });
+    if (tokenCache.size > TOKEN_CACHE_MAX) tokenCache.delete(tokenCache.keys().next().value);
+  }
+  return user;
 }
 
 /** Pull a bearer token out of the Authorization header. */

@@ -9,10 +9,10 @@
  * Uses managed Postgres when DATABASE_URL is set; falls back to an in-process
  * Map otherwise (fine for dev, wiped on restart — set DATABASE_URL in prod).
  */
-import pg from "pg";
+import { getPool, usingPostgres } from "./db.js";
 import { randomUUID } from "node:crypto";
 
-export const usingPostgres = Boolean(process.env.DATABASE_URL);
+export { usingPostgres };
 
 const MAX_JOBS_PER_USER = 25;
 const MAX_PROMPT_LEN = 4000;
@@ -22,15 +22,9 @@ let pool = null;
 let ready = null;
 const mem = new Map(); // fallback: id -> job
 
-function makeSsl() {
-  if (process.env.PGSSL_DISABLE) return false;
-  if (process.env.PGSSL_CA) return { ca: process.env.PGSSL_CA, rejectUnauthorized: true };
-  return { rejectUnauthorized: false };
-}
-
 async function init() {
   if (!usingPostgres) return;
-  pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: makeSsl(), max: 5 });
+  pool = getPool(); // shared pool (see db.js)
   await pool.query(
     `CREATE TABLE IF NOT EXISTS simba_jobs (
        id          TEXT PRIMARY KEY,

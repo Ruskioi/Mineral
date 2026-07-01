@@ -819,16 +819,10 @@ const SPEED_MAP = {
 // Per-user memory is appended as a second block AFTER the cache breakpoint, so it
 // can vary per user without invalidating the shared, cached prefix.
 const MAX_MEMORY_CHARS = 4000;
-function buildSystem(memory, surface, vault, workspace) {
+function buildSystem(memory, surface) {
   const blocks = [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
   const mem = sanitizeMemory(memory);
   if (mem) blocks.push({ type: "text", text: `[Vad du minns om användaren]\n${mem}` });
-  const v = String(vault || "").slice(0, 6000);
-  if (v) blocks.push({ type: "text", text:
-    `[Företagets kunskapsbank — delad mellan alla i organisationen. Behandla som auktoritativa fakta om företaget; grunda dina svar i detta och säg till om något saknas.]\n${v}` });
-  const ws = String(workspace || "").slice(0, 3500);
-  if (ws) blocks.push({ type: "text", text:
-    `[Ditt delade arbetsutrymme — synkat mellan Excel, Outlook, webb och dator. Sådant användaren sparat (t.ex. en tabell fångad i Excel) och kan vilja använda här.]\n${ws}` });
   if (surface === "desktop") blocks.push({ type: "text", text:
     "[Läge] Du körs som en fristående AI-app (skrivbord/webb) — en fullständig allmän " +
     "assistent. Hjälp till med vad som helst: svara på frågor, skriva och resonera, söka " +
@@ -845,7 +839,43 @@ function buildSystem(memory, surface, vault, workspace) {
   else blocks.push({ type: "text", text:
     "[Läge] Du körs inuti Microsoft Excel. Du har full tillgång till kalkylarksverktygen — " +
     "läs och redigera arket direkt — utöver dina allmänna förmågor (webb, kod, dokument, minne)." });
+  // Cache the whole system prefix (prompt + memory + surface) as a unit — it only
+  // changes when the user's memory changes, so nearly every turn reads it from cache.
+  blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: "ephemeral" } };
   return blocks;
+}
+
+/* Per-turn retrieval (vault + workspace) used to live in the system prompt, but
+ * system renders BEFORE the messages — so retrieval text that varies with every
+ * query invalidated the prompt cache for the ENTIRE conversation each turn (full
+ * re-processing cost + latency). Instead we append it to the LAST user-text
+ * message: the prefix stays byte-stable, and within a tool loop the injection is
+ * deterministic (same query → same retrieval), so cache hits survive the loop. */
+function injectContext(messages, vault, workspace) {
+  const v = String(vault || "").slice(0, 6000);
+  const ws = String(workspace || "").slice(0, 3500);
+  if (!v && !ws) return messages;
+  let idx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role !== "user") continue;
+    if (Array.isArray(m.content) && m.content.some((b) => b && b.type === "tool_result")) continue;
+    idx = i; break;
+  }
+  if (idx < 0) return messages;
+  const parts = [];
+  if (v) parts.push(`[Företagets kunskapsbank — delad mellan alla i organisationen. Behandla som auktoritativa fakta om företaget; grunda dina svar i detta och säg till om något saknas.]\n${v}`);
+  if (ws) parts.push(`[Ditt delade arbetsutrymme — synkat mellan Excel, Outlook, webb och dator. Sådant användaren sparat och kan vilja använda här.]\n${ws}`);
+  const out = messages.slice();
+  const m = { ...out[idx] };
+  let content = m.content;
+  if (typeof content === "string") content = [{ type: "text", text: content }];
+  else if (Array.isArray(content)) content = content.map((b) => ({ ...b }));
+  else return messages;
+  content.push({ type: "text", text: `<automatisk_kontext>\n${parts.join("\n\n")}\n</automatisk_kontext>` });
+  m.content = content;
+  out[idx] = m;
+  return out;
 }
 function sanitizeMemory(memory) {
   let notes = [];
@@ -916,9 +946,9 @@ async function runModel(messages, speed, memory, surface, onText, vault, workspa
     max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: { effort: cfg.effort },
-    system: buildSystem(memory, surface, vault, workspace),
+    system: buildSystem(memory, surface),
     tools: TOOLS,
-    messages: withConversationCache(messages),
+    messages: withConversationCache(injectContext(messages, vault, workspace)),
   };
   // Base betas from optional MCP connectors; fast mode adds its own.
   const baseBetas = [];
@@ -979,11 +1009,18 @@ function ipRateLimited(ip) {
 // is set. Keyed to the Microsoft identity; in-memory (per instance), resets daily.
 const USER_DAILY = Number(process.env.SIMBA_USER_DAILY || 0);
 const userQuota = new Map(); // userKey -> { day, n }
+// The quota "day" follows the org's local timezone (not UTC), so the cap resets
+// at local midnight instead of 01/02:00 for Swedish users.
+const QUOTA_TZ_FMT = new Intl.DateTimeFormat("en-CA", { timeZone: process.env.SIMBA_TZ || "Europe/Stockholm", year: "numeric", month: "2-digit", day: "2-digit" });
 function quotaExceeded(userKey) {
   if (!USER_DAILY || !userKey) return false;
-  const day = new Date().toISOString().slice(0, 10);
+  const day = QUOTA_TZ_FMT.format(new Date());
   const q = userQuota.get(userKey);
-  if (!q || q.day !== day) { userQuota.set(userKey, { day, n: 1 }); if (userQuota.size > 20000) { /* crude cap */ } return false; }
+  if (!q || q.day !== day) {
+    userQuota.set(userKey, { day, n: 1 });
+    if (userQuota.size > 20000) for (const [k, v] of userQuota) { if (v.day !== day) userQuota.delete(k); } // drop stale days
+    return false;
+  }
   if (q.n >= USER_DAILY) return true;
   q.n++;
   return false;
@@ -1032,16 +1069,21 @@ app.post("/api/chat", async (req, res) => {
   if (ssoConfigured && bearer(req)) {
     try { user = await verifyToken(bearer(req)); } catch { /* fall back to IP limits, no vault */ }
   }
+  if (REQUIRE_AUTH && !user)
+    return res.status(401).json({ error: "Inloggning krävs för att använda Simba." });
   if (user && USER_DAILY && quotaExceeded(user.key)) {
     res.set("Retry-After", "3600");
     return res.status(429).json({ error: "Du har nått din dagliga gräns för Simba. Försök igen imorgon." });
   }
   let vaultText = "", workspaceText = "";
   if (user) {
-    try { vaultText = await retrieveForContext(orgOf(user), lastUserText(req.body.messages)); }
-    catch (e) { console.error("[Simba] vault retrieve failed:", e?.message || e); }
-    try { workspaceText = await workspaceContext(user.key); }
-    catch (e) { console.error("[Simba] workspace retrieve failed:", e?.message || e); }
+    // Run both context lookups concurrently — they're independent stores.
+    [vaultText, workspaceText] = await Promise.all([
+      retrieveForContext(orgOf(user), lastUserText(req.body.messages))
+        .catch((e) => { console.error("[Simba] vault retrieve failed:", e?.message || e); return ""; }),
+      workspaceContext(user.key)
+        .catch((e) => { console.error("[Simba] workspace retrieve failed:", e?.message || e); return ""; }),
+    ]);
   }
 
   inflight++;
@@ -1089,6 +1131,16 @@ async function runWithServerTools({ system, content, tools }) {
     return resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
   }
   return "Analysen tog för många steg. Försök avgränsa frågan.";
+}
+
+// Optional hard auth on the model endpoints (denial-of-wallet guard): with
+// SIMBA_REQUIRE_AUTH=1 (and SSO configured), anonymous requests can no longer
+// drive Claude calls. Off by default so open/no-SSO deployments keep working.
+const REQUIRE_AUTH = process.env.SIMBA_REQUIRE_AUTH === "1" && ssoConfigured;
+async function enforceAuth(req, res) {
+  if (!REQUIRE_AUTH) return true;
+  try { await verifyToken(bearer(req)); return true; }
+  catch { res.status(401).json({ error: "Inloggning krävs för att använda Simba." }); return false; }
 }
 
 function preflight(req, res) {
@@ -1147,6 +1199,7 @@ async function generateDocument(skillId, instructions) {
 
 app.post("/api/document", async (req, res) => {
   if (!preflight(req, res)) return;
+  if (!(await enforceAuth(req, res))) return;
   const skillId = DOC_SKILL[String(req.body?.kind || "pdf").toLowerCase()] || "pdf";
   const instructions = String(req.body?.instructions || "").slice(0, 8000);
   if (!instructions) return res.status(400).json({ error: "Missing 'instructions'." });
@@ -1162,6 +1215,7 @@ app.post("/api/document", async (req, res) => {
 // Run Python (pandas/numpy) over the selected data for analysis Excel can't do.
 app.post("/api/analyze", async (req, res) => {
   if (!preflight(req, res)) return;
+  if (!(await enforceAuth(req, res))) return;
   const data = String(req.body?.data || "").slice(0, 200_000);
   const question = String(req.body?.question || "").slice(0, 2000);
   if (!data) return res.status(400).json({ error: "Missing 'data'." });
@@ -1181,6 +1235,7 @@ app.post("/api/analyze", async (req, res) => {
 // General-purpose code execution: run Python for any task (not just spreadsheets).
 app.post("/api/code", async (req, res) => {
   if (!preflight(req, res)) return;
+  if (!(await enforceAuth(req, res))) return;
   const task = String(req.body?.task || "").slice(0, 8000);
   const data = String(req.body?.data || "").slice(0, 200_000);
   if (!task) return res.status(400).json({ error: "Missing 'task'." });
@@ -1200,6 +1255,7 @@ app.post("/api/code", async (req, res) => {
 // Look something up on the web (with the model's server-side search/fetch).
 app.post("/api/research", async (req, res) => {
   if (!preflight(req, res)) return;
+  if (!(await enforceAuth(req, res))) return;
   const query = String(req.body?.query || "").slice(0, 2000);
   if (!query) return res.status(400).json({ error: "Missing 'query'." });
   try {
@@ -1375,14 +1431,21 @@ app.post("/api/agents-approvals/:id/decide", async (req, res) => {
   if (!canWriteVault(user)) return res.status(403).json({ error: "Endast administratörer kan godkänna." });
   const approve = req.body?.approve === true;
   try {
-    const ap = await getApproval(orgOf(user), req.params.id);
-    if (!ap || ap.status !== "pending") return res.status(404).json({ error: "Hittades inte eller redan beslutad." });
+    // Claim the approval atomically FIRST — if another admin already decided it,
+    // this returns null and no side effect runs twice.
+    const ap = await decideApproval(orgOf(user), req.params.id, approve ? "approved" : "rejected", user.email || user.name);
+    if (!ap) return res.status(404).json({ error: "Hittades inte eller redan beslutad." });
     if (approve && ap.kind === "send_email") {
       const p = ap.payload || {};
-      const token = await appOnlyGraphToken(orgOf(user));
-      const html = `<pre style="white-space:pre-wrap;font-family:system-ui">${String(p.body || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`;
-      await sendMailAsUser(token, p.mailbox, p.to, p.subject, html);
-      await logRun(orgOf(user), ap.agent_id, { status: "sent", summary: `Godkänt av ${user.email || user.name} – skickade till ${p.to}` });
+      try {
+        const token = await appOnlyGraphToken(orgOf(user));
+        const html = `<pre style="white-space:pre-wrap;font-family:system-ui">${String(p.body || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`;
+        await sendMailAsUser(token, p.mailbox, p.to, p.subject, html);
+        await logRun(orgOf(user), ap.agent_id, { status: "sent", summary: `Godkänt av ${user.email || user.name} – skickade till ${p.to}` });
+      } catch (e) {
+        await reopenApproval(orgOf(user), ap.id).catch(() => {}); // let an admin retry
+        throw e;
+      }
     } else if (approve && ap.kind === "connector_write") {
       // Post the approved bodies into the linked data source (e.g. reported hours → NEXT).
       const p = ap.payload || {};
@@ -1391,15 +1454,19 @@ app.post("/api/agents-approvals/:id/decide", async (req, res) => {
         try { await writeConnector(orgOf(user), p.connectorId, p.endpointKey, body); okN++; }
         catch (e) { failN++; if (errs.length < 3) errs.push(e.message || String(e)); }
       }
+      if (failN && !okN) {
+        await reopenApproval(orgOf(user), ap.id).catch(() => {}); // nothing was written — retryable
+        await logRun(orgOf(user), ap.agent_id, { status: "error", summary: `Skrivning misslyckades helt: ${errs.join("; ")}` });
+        return res.status(502).json({ error: `Kunde inte skriva till datakällan: ${errs.join("; ")}` });
+      }
       await logRun(orgOf(user), ap.agent_id, {
         status: failN ? "partial" : "posted",
         summary: `Godkänt av ${user.email || user.name} – ${okN} post(er) skrivna till ${p.connectorName || "datakällan"}${failN ? `, ${failN} misslyckades (${errs.join("; ")})` : ""}`,
       });
-      if (failN && !okN) return res.status(502).json({ error: `Kunde inte skriva till datakällan: ${errs.join("; ")}` });
     } else if (!approve) {
       await logRun(orgOf(user), ap.agent_id, { status: "rejected", summary: `Avvisat av ${user.email || user.name}` });
     }
-    res.json({ approval: await decideApproval(orgOf(user), req.params.id, approve ? "approved" : "rejected", user.email || user.name) });
+    res.json({ approval: await getApproval(orgOf(user), req.params.id) });
   } catch (err) { console.error("[Simba] approval decide failed:", err?.message || err); res.status(err.status || 502).json({ error: err.message || "Kunde inte slutföra." }); }
 });
 

@@ -453,6 +453,35 @@ check("finance/business connectors bridge is wired & safe", () => {
   assert(_connHttpsRejected === true, "non-HTTPS base URL must be rejected");
 });
 
+check("audit hardening: perf + race + timezone fixes stay in place", () => {
+  // One shared pg pool — module-local pools regress connection usage 6x.
+  assert(/export function getPool/.test(read("server/db.js")), "shared db pool module missing");
+  for (const f of ["store", "vault", "usage", "connectors", "orgagents", "jobs"]) {
+    assert(!/new pg\.Pool/.test(read(`server/${f}.js`)), `${f}.js must use the shared pool`);
+  }
+  // Prompt cache: per-turn retrieval must ride in the messages, not the system prompt.
+  assert(/function injectContext/.test(server) && /injectContext\(messages, vault, workspace\)/.test(server), "context injection missing");
+  assert(!/buildSystem\(memory, surface, vault/.test(server), "vault text must not re-enter the system prompt (kills the conversation cache)");
+  // Atomic approvals: claim-before-act + reopen on failure.
+  const oa = read("server/orgagents.js");
+  assert(/AND status='pending' RETURNING/.test(oa) && /export async function reopenApproval/.test(oa), "approval claim/reopen missing");
+  assert(/reopenApproval\(orgOf\(user\)/.test(server), "decide handler must reopen on side-effect failure");
+  // Scheduler: agents tick inside the overlap guard.
+  const sch = read("server/scheduler.js");
+  assert(sch.indexOf("await tickAgents(client, model)") < sch.indexOf("scheduler tick failed"), "tickAgents must run inside the overlap guard (before tick()'s catch)");
+  // Connector test endpoint pins the stored host when merging stored secrets.
+  assert(/base = cur\.base_url/.test(read("server/connectors.js")), "testConnector must pin the stored host");
+  // Timezone-correct bucketing (Swedish users, UTC servers).
+  assert(/Europe\/Stockholm/.test(read("server/usage.js")) && /Europe\/Stockholm/.test(server), "local-timezone day bucketing missing");
+  // Vault retrieval caching (hot path) + invalidation on writes.
+  assert(/rawCache/.test(read("server/vault.js")) && /invalidateOrg\(orgKey\)/.test(read("server/vault.js")), "vault read cache/invalidation missing");
+  // Client: local-day keys, streaming append, near-bottom scroll, conv-switch guard.
+  assert(/function localDayKey/.test(taskpane) && /createTextNode\(chunk\)/.test(taskpane), "client day-key / streaming append fixes missing");
+  assert(/nearBottom/.test(taskpane), "scroll must respect the user's position");
+  assert(/Vänta – Simba skriver klart först/.test(taskpane), "openConversation must guard against mid-turn switching");
+  assert(/const snapMessages = messages/.test(taskpane), "saveConversation must snapshot at schedule time");
+});
+
 check("profile view: usage + estimated spend is wired", () => {
   const usg = read("server/usage.js");
   assert(/export function estimateCost/.test(usg) && /export async function recordUsage/.test(usg) && /export async function getUsage/.test(usg), "usage store API missing");
