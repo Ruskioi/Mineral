@@ -567,12 +567,18 @@ function drawHomeStats(host, data, range) {
      <div class="hs-fun">${escapeHtml(fun)}</div>`;
 
   const maxM = Math.max(1, ...models.map((m) => m.messages));
+  const totalMsgs = models.reduce((a, m) => a + m.messages, 0) || 1;
+  const totalCost = models.reduce((a, m) => a + (m.cost || 0), 0);
   const modelsView = models.length
-    ? `<div class="hs-models">${models.map((m) => `
-        <div class="hs-model">
-          <div class="hs-model-top"><span class="hs-model-name">${escapeHtml(prettyModel(m.model))}</span><span class="hs-model-n">${fmtNum(m.messages)} svar · ${fmtTokens(m.tokens)} tokens</span></div>
-          <div class="hs-model-bar"><div class="hs-model-fill" style="width:${Math.round((m.messages / maxM) * 100)}%"></div></div>
-        </div>`).join("")}</div>`
+    ? `<div class="hs-models-h"><span>${models.length} modell${models.length === 1 ? "" : "er"}</span><span>Uppskattad kostnad ${escapeHtml(fmtUsd(totalCost))}</span></div>
+       <div class="hs-models">${models.map((m) => {
+        const share = Math.round((m.messages / totalMsgs) * 100);
+        return `<div class="hs-model">
+          <div class="hs-model-top"><span class="hs-model-name">${escapeHtml(prettyModel(m.model))}</span><span class="hs-model-share">${share}%</span></div>
+          <div class="hs-model-bar"><div class="hs-model-fill" style="width:${Math.max(2, Math.round((m.messages / maxM) * 100))}%"></div></div>
+          <div class="hs-model-n">${fmtNum(m.messages)} svar · ${fmtTokens(m.tokens)} tokens · ${escapeHtml(fmtUsd(m.cost || 0))}</div>
+        </div>`;
+      }).join("")}</div>`
     : `<div class="hint" style="padding:8px 2px">Ingen modellanvändning än.</div>`;
 
   host.innerHTML =
@@ -3340,6 +3346,7 @@ async function openConversation(id) {
 
 function saveConversation() {
   if (!signedIn || !messages.length) return;
+  _statsCache = null; // a turn just happened → home dashboard should refetch next time it shows
   clearTimeout(convSaveTimer);
   convSaveTimer = setTimeout(async () => {
     try {
