@@ -563,6 +563,19 @@ check("watchers (proactive bevakningar) are wired", () => {
   assert(/function openWatchers/.test(taskpane) && /label: "Bevakningar"/.test(taskpane), "watchers UI missing");
 });
 
+check("app→Excel handoff (open Excel, add-in executes, reports back) is wired", () => {
+  const ho = read("server/handoffs.js");
+  assert(/export async function createHandoff/.test(ho) && /export async function claimNextHandoff/.test(ho) && /export async function completeHandoff/.test(ho), "handoff store missing");
+  assert(/FOR UPDATE SKIP LOCKED/.test(ho), "claiming must be atomic (two Excel windows must not both run the task)");
+  assert(/PENDING_TTL_MS/.test(ho), "stale pending tasks must expire (never run hours later)");
+  assert(/app\.post\("\/api\/handoffs"/.test(server) && /\/api\/handoffs\/claim/.test(server) && /\/api\/handoffs\/:id\/complete/.test(server), "handoff endpoints missing");
+  assert(/name: "open_in_excel"/.test(server) && /async open_in_excel\(/.test(taskpane), "open_in_excel tool must exist on both sides (parity)");
+  assert(/Du kör redan i Excel/.test(taskpane), "open_in_excel must refuse inside Excel (use sheet tools directly)");
+  assert(/function startHandoffWatcher/.test(taskpane) && /function runHandoff/.test(taskpane) && /function pollHandoff/.test(taskpane), "Excel pickup loop / app status poll missing");
+  assert(/excel\.new/.test(taskpane), "the app must open Excel for the user");
+  assert(/open_in_excel — Excel öppnas/.test(server), "the desktop system prompt must point the model at open_in_excel");
+});
+
 check("the standalone Simba app is a first-class surface (not Excel-flavored)", () => {
   const css = read("src/taskpane/taskpane.css");
   assert(/body\.desktop #mode-pill/.test(css) && !/body\.desktop \.composer-foot/.test(css), "the app must keep the composer footer (model/speed/project) — only the sheet-edit chip is Excel's");

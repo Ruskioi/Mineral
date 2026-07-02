@@ -37,6 +37,7 @@ import { ambientContext } from "./ambient.js";
 import { distillMemory } from "./automemory.js";
 import { runBrowserTask } from "./browser.js";
 import { pushEnabled, pushPublicKey, saveSubscription, deleteSubscription } from "./push.js";
+import { createHandoff, getHandoff, claimNextHandoff, completeHandoff } from "./handoffs.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -327,6 +328,11 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       query: { type: "string", description: "The question to research, phrased clearly." },
     }, required: ["query"] } },
+
+  { name: "open_in_excel", description: "Skicka en kalkylarksuppgift till Excel: Excel öppnas hos användaren och Simba-panelen där utför uppgiften direkt i arbetsboken (bygger kalkyler, formler, formatering, diagram). Använd när användaren vill SKAPA eller ÄNDRA något i Excel och du inte redan kör i Excel. Beskriv uppgiften komplett och självständigt — panelen i Excel ser inte den här chatten. Resultatet rapporteras tillbaka hit när det är klart.",
+    input_schema: { type: "object", properties: {
+      task: { type: "string", description: "Hela uppgiften, självförklarande: vad som ska byggas/ändras, med data, struktur och formatering. Ta med allt underlag som behövs." },
+    }, required: ["task"] } },
 
   { name: "show_artifact", description: "Visa en leverabel i ett live-fönster bredvid chatten (en 'artefakt'): en komplett interaktiv HTML-sida (inline JS/CSS tillåts), SVG-grafik, ett markdown-dokument eller källkod. Använd för dashboards, kalkylatorer, prototyper, rapporter och visualiseringar som användaren ska kunna se och interagera med direkt. Skicka HELA innehållet varje gång — samma titel uppdaterar artefakten som en ny version.",
     input_schema: { type: "object", properties: {
@@ -863,6 +869,37 @@ app.delete("/api/conversations/:id", async (req, res) => {
   catch (err) { console.error("[Simba] conv delete failed:", err?.message || err); res.status(502).json({ error: "Could not delete conversation." }); }
 });
 
+// ---- Handoffs: "gör det här i Excel" from the standalone app --------------
+// The app queues a task; the Excel add-in (same signed-in user) claims and
+// runs it with its sheet tools, then reports back so the app can show status.
+app.post("/api/handoffs", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ handoff: await createHandoff(user.key, req.body?.target, req.body?.task) }); }
+  catch (err) { res.status(err.status || 502).json({ error: err.message || "Kunde inte skapa uppgiften." }); }
+});
+app.post("/api/handoffs/claim", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ handoff: await claimNextHandoff(user.key, req.body?.target || "excel") }); }
+  catch (err) { console.error("[Simba] handoff claim failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta uppgifter." }); }
+});
+app.post("/api/handoffs/:id/complete", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await completeHandoff(user.key, req.params.id, { status: req.body?.status, result: req.body?.result }); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] handoff complete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte uppdatera uppgiften." }); }
+});
+app.get("/api/handoffs/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try {
+    const h = await getHandoff(user.key, req.params.id);
+    if (!h) return res.status(404).json({ error: "Hittades inte." });
+    res.json({ handoff: h });
+  } catch (err) { console.error("[Simba] handoff get failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta uppgiften." }); }
+});
+
 // ---- Web-push: notifications from watchers/uppdrag to the user's devices --
 app.get("/api/push/key", (req, res) => {
   res.json({ enabled: pushEnabled, key: pushPublicKey });
@@ -941,8 +978,9 @@ function buildSystem(memory, surface, project) {
     "på webben (web_lookup), köra kod och analysera data (run_code/analyze_data), skapa " +
     "dokument (create_document: Word/PowerPoint/Excel/PDF), läsa bifogade filer och " +
     "OneDrive/SharePoint-filer (list_files/open_file), schemalägga återkommande jobb " +
-    "(schedule_task) och minnas det viktiga (remember). Live-redigering av ett kalkylark " +
-    "sker i Excel-tillägget; nämn det bara om användaren uttryckligen vill ändra ett öppet ark." });
+    "(schedule_task) och minnas det viktiga (remember). Vill användaren SKAPA eller ÄNDRA något " +
+    "i ett kalkylark: använd open_in_excel — Excel öppnas och Simba-panelen där utför uppgiften " +
+    "i arbetsboken och rapporterar tillbaka hit." });
   else if (surface === "outlook") blocks.push({ type: "text", text:
     "[Läge] Du körs inuti Microsoft Outlook. Du kan läsa det MEJL SOM ÄR ÖPPET just nu direkt " +
     "med read_current_email (be om det när användaren säger 'det här mejlet'), samt arbeta med " +

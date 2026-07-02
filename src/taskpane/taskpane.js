@@ -67,7 +67,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "browse_website", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "show_artifact", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "browse_website", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "show_artifact", "open_in_excel", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -336,6 +336,7 @@ function boot(isExcel) {
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
   wireVoiceInput();
   wireArtifactPanel();
+  startHandoffWatcher(); // Excel only (self-guarded): pick up tasks sent from the app
   document.getElementById("project-pill")?.addEventListener("click", () => {
     const p = projects.find((x) => x.id === activeProject?.id) || activeProject;
     if (p) openProjectView(p);
@@ -1520,6 +1521,29 @@ const tools = {
     if (!L.length || !S.length) return { error: "Behöver labels och minst en serie med numeriska values." };
     renderChartCard(title, t, L, S);
     return { shown: true, note: "Diagrammet visas i chatten." };
+  },
+
+  async open_in_excel({ task }) {
+    if (IS_EXCEL) return { error: "Du kör redan i Excel — utför uppgiften direkt med kalkylarksverktygen istället." };
+    const token = await getSsoToken(false);
+    if (!token) return { error: "Logga in med Microsoft för att skicka uppgifter till Excel (Inställningar → Logga in)." };
+    try {
+      const r = await fetch(`${API_BASE}/api/handoffs`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ target: "excel", task }),
+      });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Kunde inte skicka uppgiften." }; }
+      const { handoff } = await r.json();
+      // Open Excel for the user (a fresh workbook in Excel på webben; popup
+      // blockers fall back to the card's link). The add-in picks the task up.
+      const win = window.open("https://excel.new", "_blank");
+      renderHandoffCard(handoff, !win);
+      pollHandoff(handoff.id);
+      return {
+        queued: true,
+        note: "Excel öppnas hos användaren. Simba-panelen i Excel utför uppgiften i arbetsboken och resultatet rapporteras tillbaka i den här chatten. Be användaren öppna Simba-panelen i Excel (fliken Start) om den inte redan är öppen.",
+      };
+    } catch { return { error: "Kunde inte nå servern." }; }
   },
 
   async show_artifact({ title, type, content, language }) {
@@ -3131,6 +3155,7 @@ function toolLabel(name, input) {
     web_lookup: `Söker på webben: "${input?.query || ""}"`,
     browse_website: input?.url ? `Använder webbläsaren: ${input.url}` : "Använder webbläsaren",
     show_artifact: `Bygger artefakt: ${input?.title || ""}`,
+    open_in_excel: "Skickar uppgiften till Excel",
     run_code: "Kör kod",
     create_document: `Skapar ${(input?.kind || "dokument").toUpperCase()}`,
     list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",
@@ -4728,6 +4753,106 @@ async function openVaultEval() {
       ${misses ? `<div class="label" style="margin:12px 0 6px">Utan träff — kunskap som saknas?</div><ul class="hint" style="margin:0;padding-left:18px">${misses}</ul>` : ""}
       <div class="hint" style="margin-top:10px">Tips: frågor utan träff är den tydligaste signalen om vad som borde läggas in i kunskapsbanken.</div>`;
   } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå servern.</div>'; }
+}
+
+/* ---- App→Excel handoff -----------------------------------------------------
+ * From the standalone app: open_in_excel queues the task server-side and opens
+ * Excel; the Simba panel inside Excel (same signed-in user) claims it, runs it
+ * with the sheet tools, and reports back. The app polls and shows the result. */
+
+// Status card in the app's chat, with a fallback link if the popup was blocked.
+function renderHandoffCard(handoff, popupBlocked) {
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  wrap.dataset.handoff = handoff.id;
+  wrap.innerHTML =
+    `<div class="avatar">${MASCOT_IMG}</div>` +
+    `<div class="body"><div class="handoff-card">` +
+    `<div class="ho-head"><span class="ho-spin">⏳</span> <b>Uppgift skickad till Excel</b></div>` +
+    `<div class="ho-task">${escapeHtml(String(handoff.task).slice(0, 160))}${handoff.task.length > 160 ? "…" : ""}</div>` +
+    `<div class="ho-status hint">${popupBlocked
+      ? 'Kunde inte öppna Excel automatiskt — <a href="https://excel.new" target="_blank" rel="noopener">öppna Excel här</a> och starta Simba-panelen (fliken Start).'
+      : "Excel öppnas i en ny flik. Öppna Simba-panelen där (fliken Start) så kör den igång direkt."}</div>` +
+    `</div></div>`;
+  els.messages.append(wrap);
+  scrollDown();
+}
+
+function handoffCardUpdate(id, status, result) {
+  const card = els.messages.querySelector(`[data-handoff="${id}"] .handoff-card`);
+  if (!card) return;
+  card.querySelector(".ho-head").innerHTML = status === "done"
+    ? "✅ <b>Klart i Excel</b>" : status === "error" ? "⚠️ <b>Excel-uppgiften misslyckades</b>" : "▶ <b>Excel arbetar…</b>";
+  if (result) card.querySelector(".ho-status").textContent = String(result).slice(0, 500);
+}
+
+const HANDOFF_POLL_MS = 5000;
+const HANDOFF_POLL_MAX = 15 * 60_000;
+function pollHandoff(id) {
+  const started = Date.now();
+  const tick = async () => {
+    if (Date.now() - started > HANDOFF_POLL_MAX) return; // stop quietly
+    try {
+      const token = await getSsoToken(false);
+      if (!token) return;
+      const r = await fetch(`${API_BASE}/api/handoffs/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) {
+        const { handoff } = await r.json();
+        handoffCardUpdate(id, handoff.status, handoff.status === "running" ? "" : handoff.result);
+        if (handoff.status === "done") { toast("✅ Excel-uppgiften är klar.", "success", 3000); return; }
+        if (handoff.status === "error") { toast("Excel-uppgiften misslyckades.", "error", 3000); return; }
+      }
+    } catch { /* transient — keep polling */ }
+    setTimeout(tick, HANDOFF_POLL_MS);
+  };
+  setTimeout(tick, HANDOFF_POLL_MS);
+}
+
+/* Excel side: claim pending tasks from the app and run them in the workbook.
+ * Checked shortly after boot and then periodically while the pane is open —
+ * so "öppna Excel + öppna Simba-panelen" is all the user has to do. */
+let _handoffTimer = null;
+function startHandoffWatcher() {
+  if (!IS_EXCEL || _handoffTimer) return;
+  const tick = async () => {
+    if (!signedIn || busy) return; // wait for sign-in / a free moment
+    try {
+      const token = await getSsoToken(false);
+      if (!token) return;
+      const r = await fetch(`${API_BASE}/api/handoffs/claim`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ target: "excel" }),
+      });
+      if (!r.ok) return;
+      const { handoff } = await r.json();
+      if (handoff) await runHandoff(handoff);
+    } catch { /* next tick */ }
+  };
+  _handoffTimer = setInterval(tick, 20_000);
+  setTimeout(tick, 2500); // fast first check right after the pane opens
+}
+
+async function runHandoff(handoff) {
+  toast("🪄 Kör uppgift från Simba-appen…", "info", 3000);
+  clearWelcome();
+  const before = messages.length;
+  els.prompt.value =
+    `[Uppgift skickad från Simba-appen — utför den direkt i den öppna arbetsboken, komplett och utan följdfrågor]\n\n${handoff.task}`;
+  await onSend();
+  // Report the outcome back so the app's card flips to done. Only count it as
+  // done if the run actually produced a new reply (onSend swallows errors).
+  const gotReply = messages.length > before && messages.slice(before).some((m) => m.role === "assistant");
+  try {
+    const token = await getSsoToken(false);
+    await fetch(`${API_BASE}/api/handoffs/${encodeURIComponent(handoff.id)}/complete`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        status: gotReply ? "done" : "error",
+        result: gotReply ? (lastAssistantText().slice(0, 2000) || "Klart.") : "Panelen kunde inte slutföra uppgiften — försök igen.",
+      }),
+    });
+  } catch { /* the app's poll will time out gracefully */ }
 }
 
 /* ---- Push-notiser: watchers/uppdrag reach this device (web/PWA) ------------ */
