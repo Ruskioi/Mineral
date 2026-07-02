@@ -22,6 +22,30 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+/* Web push: watchers, uppdrag and agents notify even when the app is closed. */
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { /* plain text payload */ }
+  const title = data.title || "Simba";
+  event.waitUntil(self.registration.showNotification(title, {
+    body: data.body || "",
+    icon: "/assets/icon-192.png",
+    badge: "/assets/icon-192.png",
+    data: { url: data.url || "/" },
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || "/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+      for (const w of wins) { if ("focus" in w) return w.focus(); }
+      return self.clients.openWindow(url);
+    })
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);

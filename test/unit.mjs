@@ -563,6 +563,55 @@ check("watchers (proactive bevakningar) are wired", () => {
   assert(/function openWatchers/.test(taskpane) && /label: "Bevakningar"/.test(taskpane), "watchers UI missing");
 });
 
+check("artifacts (live deliverables panel, sandboxed + versioned) are wired", () => {
+  assert(/name: "show_artifact"/.test(server), "show_artifact tool schema missing");
+  assert(/async show_artifact\(/.test(taskpane) && /"show_artifact"/.test(taskpane), "client tool + DESKTOP_TOOLS entry missing");
+  assert(/id="artifact-panel"/.test(read("src/taskpane/taskpane.html")), "artifact panel markup missing");
+  assert(/sandbox", "allow-scripts"/.test(taskpane) || /setAttribute\("sandbox", "allow-scripts"\)/.test(taskpane), "artifact iframes must be sandboxed (no same-origin)");
+  assert(/function rebuildArtifacts/.test(taskpane) && /stepArtifactVersion/.test(taskpane), "artifact versioning/restore missing");
+});
+
+check("message edit + retry-with-model are wired", () => {
+  assert(/function startEditMessage/.test(taskpane) && /data-act="edit"/.test(taskpane), "edit-message flow missing");
+  assert(/messages\.length = idx;/.test(taskpane), "edit must truncate history before resending");
+  assert(/Försök igen/.test(taskpane) && /openPillMenu\(act/.test(taskpane), "retry must offer a model picker");
+});
+
+check("visible thinking (streamed reasoning) is wired", () => {
+  assert(/s\.on\("thinking"/.test(server) && /send\("thinking"/.test(server), "server must stream thinking deltas");
+  assert(/function startThinking/.test(taskpane) && /function collapseThinking/.test(taskpane), "thinking card missing");
+  assert(/ev\.event === "thinking"/.test(taskpane), "client must handle thinking SSE frames");
+  assert(/Tänkte i/.test(taskpane), "thinking must collapse to a toggle when the answer starts");
+});
+
+check("rich code output (plots/files from run_code) is wired", () => {
+  assert(/function collectFileIds/.test(server) && /images, files/.test(server.slice(server.indexOf('app.post("/api/code"'))), "code endpoint must return produced files");
+  assert(/function renderImageCard/.test(taskpane) && /renderImageCard\(img\.name/.test(taskpane), "plots must render inline in the chat");
+});
+
+check("Projekt (chat folders with instructions) are wired", () => {
+  const st = read("server/store.js");
+  assert(/simba_projects/.test(st) && /export async function saveProject/.test(st) && /export async function deleteProject/.test(st), "project store missing");
+  assert(/project_id/.test(st), "conversations must carry a project assignment");
+  assert(/app\.get\("\/api\/projects"/.test(server) && /app\.post\("\/api\/projects"/.test(server), "project endpoints missing");
+  assert(/Stående instruktioner för det här projektet/.test(server), "project instructions must be injected into the system prompt");
+  assert(/function openProjects/.test(taskpane) && /function openProjectView/.test(taskpane) && /label: "Projekt"/.test(taskpane), "project UI missing");
+  assert(/project: activeProject/.test(taskpane), "chat requests must carry the active project");
+});
+
+check("web-push notifications are wired end-to-end", () => {
+  const ps = read("server/push.js");
+  assert(/export async function notifyUser/.test(ps) && /SIMBA_VAPID_PUBLIC/.test(ps), "push module missing");
+  assert(/statusCode === 404 \|\| e\?\.statusCode === 410/.test(ps), "dead subscriptions must be pruned");
+  assert(/app\.post\("\/api\/push\/subscribe"/.test(server) && /app\.get\("\/api\/push\/key"/.test(server), "push endpoints missing");
+  assert(/notifyUser\(w\.user_key/.test(read("server/watchers.js")), "watcher alerts must push");
+  assert(/notifyUser\(userKey/.test(read("server/missions.js")), "finished uppdrag must push");
+  const sw = read("web/sw.js");
+  assert(/addEventListener\("push"/.test(sw) && /notificationclick/.test(sw), "service worker push handlers missing");
+  assert(/function enablePush/.test(taskpane) && /pushManager\.subscribe/.test(taskpane), "client subscribe flow missing");
+  assert(JSON.parse(read("package.json")).dependencies["web-push"], "web-push dependency missing");
+});
+
 check("RAG quality eval (retrieval log + precision judging) is wired", () => {
   const vlt = read("server/vault.js");
   assert(/export function retrievalLog/.test(vlt) && /function logRetrieval/.test(vlt) && /slice\(-100\)/.test(vlt), "bounded retrieval log missing");

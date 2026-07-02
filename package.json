@@ -31,7 +31,8 @@
     "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "jose": "^6.2.3",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",

@@ -16,6 +16,7 @@ import { getPool, usingPostgres } from "./db.js";
 import { randomUUID } from "node:crypto";
 import { queryConnector } from "./connectors.js";
 import { appOnlyGraphToken, listFolderChildren, resolveShareUrl, sendMailAsUser } from "./graph.js";
+import { notifyUser } from "./push.js";
 
 export { usingPostgres };
 
@@ -172,6 +173,8 @@ export async function tickWatchers(client, simpleModel) {
     try {
       const { triggered, summary } = await checkWatcher(client, simpleModel, w);
       if (triggered) {
+        // Push first (instant, reaches the phone), then the email record.
+        await notifyUser(w.user_key, { title: `🔔 ${w.name}`, body: summary }).catch(() => {});
         const [, oid] = String(w.user_key).split(":");
         const token = await appOnlyGraphToken(w.org_key);
         await sendMailAsUser(token, oid, w.config.email, `🔔 Simba-bevakning: ${w.name}`,

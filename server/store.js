@@ -22,8 +22,9 @@ const MAX_WS_CONTENT = 6000;      // per item
 let pool = null;
 let ready = null;
 const mem = new Map(); // fallback: userKey -> string[]
-const convMem = new Map(); // fallback: userKey -> Map(id -> {id,title,messages,updated_at})
+const convMem = new Map(); // fallback: userKey -> Map(id -> {id,title,messages,project_id,updated_at})
 const wsMem = new Map();   // fallback: userKey -> Map(id -> {id,label,content,source,updated_at})
+const projMem = new Map(); // fallback: userKey -> Map(id -> {id,name,instructions,updated_at})
 
 function sanitize(notes) {
   if (!Array.isArray(notes)) return [];
@@ -58,6 +59,18 @@ async function init() {
        title      TEXT,
        messages   JSONB NOT NULL DEFAULT '[]'::jsonb,
        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+       PRIMARY KEY (user_key, id)
+     )`
+  );
+  await pool.query("ALTER TABLE simba_conversations ADD COLUMN IF NOT EXISTS project_id TEXT");
+  // Projects: chat folders with their own standing instructions (Claude-style).
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS simba_projects (
+       user_key     TEXT NOT NULL,
+       id           TEXT NOT NULL,
+       name         TEXT NOT NULL,
+       instructions TEXT NOT NULL DEFAULT '',
+       updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
        PRIMARY KEY (user_key, id)
      )`
   );
@@ -121,44 +134,45 @@ export async function listConversations(userKey) {
   await ensureReady();
   if (pool) {
     const r = await pool.query(
-      "SELECT id, title, updated_at FROM simba_conversations WHERE user_key = $1 ORDER BY updated_at DESC LIMIT $2",
+      "SELECT id, title, project_id, updated_at FROM simba_conversations WHERE user_key = $1 ORDER BY updated_at DESC LIMIT $2",
       [userKey, MAX_CONV_LIST]
     );
-    return r.rows.map((x) => ({ id: x.id, title: x.title || "", updated_at: x.updated_at }));
+    return r.rows.map((x) => ({ id: x.id, title: x.title || "", project_id: x.project_id || null, updated_at: x.updated_at }));
   }
   const m = convMem.get(userKey);
   if (!m) return [];
   return [...m.values()]
     .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
     .slice(0, MAX_CONV_LIST)
-    .map((c) => ({ id: c.id, title: c.title || "", updated_at: c.updated_at }));
+    .map((c) => ({ id: c.id, title: c.title || "", project_id: c.project_id || null, updated_at: c.updated_at }));
 }
 
 export async function getConversation(userKey, id) {
   await ensureReady();
   if (pool) {
-    const r = await pool.query("SELECT id, title, messages FROM simba_conversations WHERE user_key = $1 AND id = $2", [userKey, id]);
+    const r = await pool.query("SELECT id, title, messages, project_id FROM simba_conversations WHERE user_key = $1 AND id = $2", [userKey, id]);
     const row = r.rows[0];
-    return row ? { id: row.id, title: row.title || "", messages: row.messages || [] } : null;
+    return row ? { id: row.id, title: row.title || "", messages: row.messages || [], project_id: row.project_id || null } : null;
   }
   const c = convMem.get(userKey)?.get(id);
-  return c ? { id: c.id, title: c.title || "", messages: c.messages || [] } : null;
+  return c ? { id: c.id, title: c.title || "", messages: c.messages || [], project_id: c.project_id || null } : null;
 }
 
-export async function saveConversation(userKey, id, title, messages) {
+export async function saveConversation(userKey, id, title, messages, projectId) {
   await ensureReady();
   const msgs = trimMessages(messages);
   const t = String(title || "").slice(0, 200);
+  const pid = projectId ? String(projectId).slice(0, 80) : null;
   if (pool) {
     await pool.query(
-      `INSERT INTO simba_conversations (user_key, id, title, messages, updated_at)
-       VALUES ($1, $2, $3, $4::jsonb, now())
-       ON CONFLICT (user_key, id) DO UPDATE SET title = EXCLUDED.title, messages = EXCLUDED.messages, updated_at = now()`,
-      [userKey, id, t, JSON.stringify(msgs)]
+      `INSERT INTO simba_conversations (user_key, id, title, messages, project_id, updated_at)
+       VALUES ($1, $2, $3, $4::jsonb, $5, now())
+       ON CONFLICT (user_key, id) DO UPDATE SET title = EXCLUDED.title, messages = EXCLUDED.messages, project_id = EXCLUDED.project_id, updated_at = now()`,
+      [userKey, id, t, JSON.stringify(msgs), pid]
     );
   } else {
     if (!convMem.has(userKey)) convMem.set(userKey, new Map());
-    convMem.get(userKey).set(id, { id, title: t, messages: msgs, updated_at: new Date().toISOString() });
+    convMem.get(userKey).set(id, { id, title: t, messages: msgs, project_id: pid, updated_at: new Date().toISOString() });
   }
   return { id, title: t };
 }
@@ -230,6 +244,59 @@ export async function workspaceContext(userKey, maxChars = 3500) {
     used += block.length;
   }
   return parts.join("\n");
+}
+
+/* ---- Projects: chat folders with standing instructions ------------------ */
+
+export async function listProjects(userKey) {
+  await ensureReady();
+  if (pool) {
+    const r = await pool.query("SELECT id, name, instructions, updated_at FROM simba_projects WHERE user_key = $1 ORDER BY name LIMIT 30", [userKey]);
+    return r.rows;
+  }
+  return [...(projMem.get(userKey)?.values() || [])].sort((a, b) => a.name.localeCompare(b.name, "sv")).slice(0, 30);
+}
+
+export async function getProject(userKey, id) {
+  await ensureReady();
+  if (pool) {
+    const r = await pool.query("SELECT id, name, instructions FROM simba_projects WHERE user_key = $1 AND id = $2", [userKey, id]);
+    return r.rows[0] || null;
+  }
+  return projMem.get(userKey)?.get(id) || null;
+}
+
+export async function saveProject(userKey, { id, name, instructions }) {
+  await ensureReady();
+  const p = {
+    id: id || _uuid(),
+    name: String(name || "Projekt").trim().slice(0, 120),
+    instructions: String(instructions || "").slice(0, 6000),
+    updated_at: new Date().toISOString(),
+  };
+  if (pool) {
+    await pool.query(
+      `INSERT INTO simba_projects (user_key, id, name, instructions, updated_at) VALUES ($1,$2,$3,$4, now())
+       ON CONFLICT (user_key, id) DO UPDATE SET name = EXCLUDED.name, instructions = EXCLUDED.instructions, updated_at = now()`,
+      [userKey, p.id, p.name, p.instructions]
+    );
+  } else {
+    if (!projMem.has(userKey)) projMem.set(userKey, new Map());
+    projMem.get(userKey).set(p.id, p);
+  }
+  return p;
+}
+
+export async function deleteProject(userKey, id) {
+  await ensureReady();
+  if (pool) {
+    // Chats survive — they just leave the folder.
+    await pool.query("UPDATE simba_conversations SET project_id = NULL WHERE user_key = $1 AND project_id = $2", [userKey, id]);
+    await pool.query("DELETE FROM simba_projects WHERE user_key = $1 AND id = $2", [userKey, id]);
+  } else {
+    projMem.get(userKey)?.delete(id);
+    for (const c of convMem.get(userKey)?.values() || []) if (c.project_id === id) c.project_id = null;
+  }
 }
 
 // Rename without touching the stored messages.

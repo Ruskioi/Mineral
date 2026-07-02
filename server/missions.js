@@ -15,6 +15,7 @@ import { getPool, usingPostgres } from "./db.js";
 import { randomUUID } from "node:crypto";
 import { retrieveForContext } from "./vault.js";
 import { listConnectors, queryConnector } from "./connectors.js";
+import { notifyUser } from "./push.js";
 
 export { usingPostgres };
 
@@ -204,6 +205,7 @@ export async function runMission(client, model, userKey, id) {
       if (verdict.pass) {
         note(m, `Godkänt av granskaren${verdict.score ? ` (${verdict.score}/100)` : ""}. Klart.`);
         await update(m, { status: "done", result: deliverable });
+        await notifyUser(userKey, { title: "🎯 Uppdraget är klart", body: m.goal.slice(0, 120) }).catch(() => {});
         return;
       }
       feedback = clean(verdict.feedback, 2000) || "Uppfyller inte kraven — förbättra och komplettera.";
@@ -212,9 +214,11 @@ export async function runMission(client, model, userKey, id) {
     }
     note(m, "Max antal iterationer nått — levererar bästa versionen med reservation.");
     await update(m, { status: "done_partial" });
+    await notifyUser(userKey, { title: "🎯 Uppdraget är klart (med reservation)", body: m.goal.slice(0, 120) }).catch(() => {});
   } catch (e) {
     console.error(`[Simba] mission ${id} failed:`, e?.message || e);
     note(m, `Fel: ${(e?.message || "okänt").slice(0, 200)}`);
     await update(m, { status: "error" });
+    await notifyUser(userKey, { title: "🎯 Uppdraget misslyckades", body: m.goal.slice(0, 120) }).catch(() => {});
   }
 }

@@ -149,6 +149,9 @@
           <button id="mode-pill" class="cmode" type="button" aria-haspopup="menu" aria-expanded="false" title="Redigeringsläge – hur Simba får ändra arket">
             <span id="mode-pill-label">Fråga</span>
           </button>
+          <button id="project-pill" class="cmode" type="button" title="Chatten ligger i ett projekt – klicka för att öppna det" hidden>
+            <span id="project-pill-label">📁 Projekt</span>
+          </button>
         </div>
         <div class="cf-right">
           <button id="model-pill" class="mtext" type="button" aria-haspopup="menu" aria-expanded="false" title="Välj modell">
@@ -161,6 +164,25 @@
       </div>
     </footer>
   </div>
+
+  <!-- Artifacts: live deliverables rendered beside the chat -->
+  <aside id="artifact-panel" class="artifact-panel" hidden aria-label="Artefakt">
+    <div class="ap-head">
+      <div class="ap-title-wrap">
+        <span class="ap-type" id="ap-type">HTML</span>
+        <span class="ap-title" id="ap-title">Artefakt</span>
+      </div>
+      <div class="ap-acts">
+        <button id="ap-prev" class="icon-btn" title="Föregående version" aria-label="Föregående version">‹</button>
+        <span id="ap-ver" class="ap-ver">v1</span>
+        <button id="ap-next" class="icon-btn" title="Nästa version" aria-label="Nästa version">›</button>
+        <button id="ap-copy" class="icon-btn" title="Kopiera innehållet" aria-label="Kopiera">⧉</button>
+        <button id="ap-dl" class="icon-btn" title="Ladda ner" aria-label="Ladda ner">⬇</button>
+        <button id="ap-close" class="icon-btn" title="Stäng" aria-label="Stäng">✕</button>
+      </div>
+    </div>
+    <div id="ap-body" class="ap-body"></div>
+  </aside>
 
   <!-- Popups -->
   <div id="modal-overlay" class="modal-overlay" hidden>

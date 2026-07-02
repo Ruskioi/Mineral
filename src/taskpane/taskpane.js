@@ -63,7 +63,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "browse_website", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "browse_website", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "show_artifact", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -331,6 +331,11 @@ function boot(isExcel) {
   window.addEventListener("resize", () => { if (window.innerWidth > 700) toggleNav(false); });
   els.fileInput.addEventListener("change", (e) => { for (const f of e.target.files || []) handleAttach(f); e.target.value = ""; });
   wireVoiceInput();
+  wireArtifactPanel();
+  document.getElementById("project-pill")?.addEventListener("click", () => {
+    const p = projects.find((x) => x.id === activeProject?.id) || activeProject;
+    if (p) openProjectView(p);
+  });
 
   // Claude-style pill pickers: model (Auto / Pluto / Simba) and edit-mode.
   els.modelPill?.addEventListener("click", () => {
@@ -364,13 +369,19 @@ function boot(isExcel) {
       if (act.dataset.act === "copy") {
         copyText((msg && msg._raw) || "").then(() => toast("Kopierat", "success", 1400));
       } else if (act.dataset.act === "regen" && !busy) {
-        regenerate();
+        // Claude-style retry: pick which model should take another shot.
+        openPillMenu(act, [{ key: "same", label: "Försök igen", desc: "Samma modell som sist" }, ...MODEL_CHOICES], "same", (key) => {
+          if (key !== "same") { modelPref = key; store.set("simba.model", key); syncPills(); }
+          regenerate();
+        });
+      } else if (act.dataset.act === "edit" && !busy) {
+        startEditMessage(msg);
       }
       return;
     }
     const pv = e.target.closest(".preview-btn");
     if (pv) {
-      try { openArtifact(decodeURIComponent(escape(atob(pv.dataset.code || "")))); } catch { /* ignore */ }
+      try { openHtmlPreview(decodeURIComponent(escape(atob(pv.dataset.code || "")))); } catch { /* ignore */ }
       return;
     }
     const btn = e.target.closest(".copy-btn");
@@ -942,7 +953,11 @@ const tools = {
       });
       if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Körningen misslyckades." }; }
       const j = await r.json();
-      return { result: j.text };
+      // Anything the sandbox produced lands in the chat: plots inline, files as downloads.
+      for (const img of j.images || []) renderImageCard(img.name, img.media_type || "image/png", img.data);
+      for (const f of j.files || []) renderDownload(f.name, f.data, f.media_type || "application/octet-stream");
+      const extras = (j.images || []).length ? ` (${(j.images || []).length} diagram visas för användaren)` : "";
+      return { result: j.text + extras };
     } catch { return { error: "Kunde inte nå kodtjänsten." }; }
   },
 
@@ -1501,6 +1516,21 @@ const tools = {
     if (!L.length || !S.length) return { error: "Behöver labels och minst en serie med numeriska values." };
     renderChartCard(title, t, L, S);
     return { shown: true, note: "Diagrammet visas i chatten." };
+  },
+
+  async show_artifact({ title, type, content, language }) {
+    const t = String(title || "Artefakt").slice(0, 120);
+    const kind = ["html", "svg", "markdown", "code"].includes(type) ? type : "code";
+    const body = String(content || "");
+    if (!body.trim()) return { error: "Artefakten saknar innehåll." };
+    let a = artifacts.find((x) => x.title === t);
+    if (!a) { a = { title: t, type: kind, language: "", versions: [] }; artifacts.push(a); }
+    a.type = kind;
+    a.language = String(language || a.language || "");
+    a.versions.push(body);
+    renderArtifactChip(a);
+    openArtifact(a, a.versions.length - 1);
+    return { shown: true, title: t, version: a.versions.length, note: "Artefakten visas live bredvid chatten." };
   },
 
   async delegate_task({ task, context }) {
@@ -2071,6 +2101,62 @@ async function regenerate() {
   }
 }
 
+/* Edit an earlier user message and resend (Claude-style): history is cut back
+ * to just before that turn and the edited text goes through the normal send
+ * pipeline, so context injection, tools and streaming all behave as usual. */
+function startEditMessage(msgEl) {
+  if (!msgEl || busy) return;
+  // Which rendered user turn is this? Map it to the same-ordinal REAL user
+  // message in history (tool_result turns are never rendered as .msg.user).
+  const rendered = [...els.messages.querySelectorAll(".msg.user")];
+  const ordinal = rendered.indexOf(msgEl);
+  if (ordinal < 0) return;
+  let idx = -1, seen = -1;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    const isToolResult = Array.isArray(m.content) && m.content.some((b) => b && b.type === "tool_result");
+    if (isToolResult) continue;
+    if (++seen === ordinal) { idx = i; break; }
+  }
+  if (idx < 0) return;
+  const orig = messages[idx].content;
+  if (Array.isArray(orig) && orig.some((b) => b && b.type !== "text")) {
+    toast("Meddelanden med bilagor kan inte redigeras — skicka ett nytt.", "info", 3000);
+    return;
+  }
+  let text = typeof orig === "string" ? orig : (orig.find((b) => b.type === "text")?.text || "");
+  text = text.replace(/\n\n\[Aktuell markering:[\s\S]*$/, "").replace(/^\[Agent:[^\]]*\][\s\S]*?\n\n/, "").trim();
+
+  const body = msgEl.querySelector(".body");
+  const prevHTML = body.innerHTML;
+  body.innerHTML =
+    `<div class="edit-box"><textarea class="edit-ta" rows="3"></textarea>` +
+    `<div class="edit-acts"><button class="btn" data-act="cancel">Avbryt</button>` +
+    `<button class="btn primary" data-act="send">Skicka</button></div>` +
+    `<div class="hint" style="margin-top:4px">Svaren efter det här meddelandet ersätts.</div></div>`;
+  const ta = body.querySelector(".edit-ta");
+  ta.value = text;
+  ta.focus();
+  ta.setSelectionRange(text.length, text.length);
+  body.querySelector('[data-act="cancel"]').onclick = () => { body.innerHTML = prevHTML; };
+  body.querySelector('[data-act="send"]').onclick = () => {
+    const newText = ta.value.trim();
+    if (!newText) { body.innerHTML = prevHTML; return; }
+    messages.length = idx;                       // drop this turn and everything after
+    let n = msgEl; const drop = [];
+    while (n) { drop.push(n); n = n.nextElementSibling; }
+    drop.forEach((el) => el.remove());
+    rebuildArtifacts(false);                     // recompute state; surviving chips are still on screen
+    els.prompt.value = newText;
+    onSend();
+  };
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); body.querySelector('[data-act="send"]').click(); }
+    if (e.key === "Escape") body.querySelector('[data-act="cancel"]').click();
+  });
+}
+
 // Read-only tools (no side effects) — safe to run concurrently within a turn.
 const READ_TOOLS = new Set([
   "get_selection", "read_range", "get_sheet_info", "list_sheets", "describe_workbook",
@@ -2126,17 +2212,27 @@ async function runAgentLoop() {
   for (let i = 0; i < 12; i++) {
     if (stopRequested) { finalizeToolGroup(group); return; } // user pressed Stop between turns
     let live = null; // the streaming reply bubble for this iteration
+    let think = null; // the live reasoning card (adaptive thinking summaries)
+    const onThinking = (chunk) => {
+      if (!chunk) return;
+      if (group) { finalizeToolGroup(group); group = null; }
+      if (!think || !think.wrap.isConnected) think = startThinking();
+      appendThinking(think, chunk);
+    };
     const onDelta = (chunk) => {
       if (!chunk) return;
       if (group) { finalizeToolGroup(group); group = null; } // close the card before the reply
+      if (think) { collapseThinking(think); think = null; }  // reasoning done — tuck it away
       if (!live) live = startStream();
       appendStream(live, chunk);
     };
 
     let reply;
     try {
-      reply = await callBackend(messages, onDelta);
+      reply = await callBackend(messages, onDelta, onThinking);
+      if (think) { collapseThinking(think); think = null; } // tool-only turns: no text streamed
     } catch (e) {
+      if (think) collapseThinking(think);
       if (live && live.text.trim()) {
         finishStream(live, live.text.trim());
         // Keep the partial reply in history too — otherwise the saved chat,
@@ -2189,7 +2285,7 @@ async function runAgentLoop() {
   renderMessage("assistant", "_(Stoppade efter för många steg. Försök att avgränsa förfrågan.)_");
 }
 
-async function callBackend(history, onDelta) {
+async function callBackend(history, onDelta, onThinking) {
   const ctrl = new AbortController();
   activeController = ctrl; // so the Stop button can abort this request
   const timer = setTimeout(() => ctrl.abort(), 180000);
@@ -2201,7 +2297,12 @@ async function callBackend(history, onDelta) {
     res = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ messages: history, speed, model: modelPref, memory: memoryList(), ambient: prefAmbient(), autoMemory: prefAutoMem(), surface: IS_EXCEL ? "excel" : (IS_OUTLOOK ? "outlook" : "desktop") }),
+      body: JSON.stringify({
+        messages: history, speed, model: modelPref, memory: memoryList(),
+        ambient: prefAmbient(), autoMemory: prefAutoMem(),
+        project: activeProject ? { name: activeProject.name, instructions: activeProject.instructions } : undefined,
+        surface: IS_EXCEL ? "excel" : (IS_OUTLOOK ? "outlook" : "desktop"),
+      }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -2233,6 +2334,7 @@ async function callBackend(history, onDelta) {
     const ev = parseSSE(raw);
     if (!ev) return;
     if (ev.event === "delta") { try { onDelta?.(JSON.parse(ev.data).text); } catch { /* ignore */ } }
+    else if (ev.event === "thinking") { try { onThinking?.(JSON.parse(ev.data).text); } catch { /* ignore */ } }
     else if (ev.event === "final") { try { final = JSON.parse(ev.data); } catch { /* ignore */ } }
     else if (ev.event === "error") {
       let m = "Claude API request failed.";
@@ -2508,8 +2610,9 @@ function confirmPlan(title) {
 
 // Modal-based prompt/confirm (native window.prompt/confirm are blocked inside
 // the Office task pane, so we roll our own that work on every surface).
-// Render a model-generated HTML/SVG snippet in a sandboxed preview (artifacts).
-function openArtifact(html) {
+// Render a model-generated HTML/SVG snippet in a sandboxed preview (from a
+// code block's "Förhandsvisa" button — full artifacts use the side panel).
+function openHtmlPreview(html) {
   openModal(
     `<div class="artifact-head"><h3 style="margin:0">Förhandsvisning</h3><button class="btn" data-act="close">Stäng</button></div>
      <iframe class="artifact-frame" sandbox="allow-scripts" title="Förhandsvisning"></iframe>`
@@ -2633,6 +2736,10 @@ function openSettings() {
            <button class="seg-btn ${prefAmbient() ? "" : "active"}" data-v="off">Av</button>
          </div>
        </div>
+       <div class="setting-row">
+         <div><div class="label">Notiser</div><div class="hint">Bevakningar och uppdrag pushar till den här enheten (webb/PWA)</div></div>
+         <button class="btn" id="push-btn" style="padding:7px 12px;flex:none">Aktivera</button>
+       </div>
      </div>
 
      <div class="tab-panel" data-panel="memory" hidden>
@@ -2718,6 +2825,7 @@ function openSettings() {
     els.modalCard.querySelectorAll("#speed-seg .seg-btn")
       .forEach((x) => x.classList.toggle("active", x === b));
   });
+  els.modalCard.querySelector("#push-btn")?.addEventListener("click", enablePush);
   // Smart context + auto-memory toggles (simple on/off segments).
   for (const [segId, key] of [["#ambient-seg", "simba.ambient"], ["#automem-seg", "simba.automem"]]) {
     const seg = els.modalCard.querySelector(segId);
@@ -2771,9 +2879,11 @@ function renderMessage(role, text, opts) {
   const actions = role === "assistant"
     ? `<div class="msg-actions">` +
       `<button class="msg-act" data-act="copy" type="button" title="Kopiera svar" aria-label="Kopiera svar">⧉</button>` +
-      `<button class="msg-act" data-act="regen" type="button" title="Generera om" aria-label="Generera om">↻</button>` +
+      `<button class="msg-act" data-act="regen" type="button" title="Generera om (välj modell)" aria-label="Generera om">↻</button>` +
       `</div>`
-    : "";
+    : `<div class="msg-actions">` +
+      `<button class="msg-act" data-act="edit" type="button" title="Redigera och skicka om" aria-label="Redigera">✎</button>` +
+      `</div>`;
   const fileChip = opts?.file ? `<div class="msg-file">📎 ${escapeHtml(opts.file)}</div>` : "";
   const body = text ? `<div class="bubble">${formatMarkdown(text)}</div>` : "";
   wrap.innerHTML = `
@@ -2786,6 +2896,22 @@ function renderMessage(role, text, opts) {
 /* A generated file (pptx/docx/xlsx/pdf) shown as a click-to-download card. The
  * base64 is decoded to a Blob and saved on the user's click (a user gesture, so
  * it works in the Office webview and the desktop app). */
+// An image the sandbox produced (matplotlib plot etc) — shown inline, downloadable.
+function renderImageCard(name, mediaType, base64) {
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  wrap.innerHTML =
+    `<div class="avatar">${MASCOT_IMG}</div>` +
+    `<div class="body"><div class="img-card">` +
+    `<img alt="${escapeHtml(name)}" src="data:${escapeHtml(mediaType)};base64,${base64}" />` +
+    `<div class="img-card-bar"><span>${escapeHtml(name)}</span><button class="btn" type="button">Ladda ner</button></div>` +
+    `</div></div>`;
+  wrap.querySelector(".img-card-bar .btn").onclick = () => saveBase64(base64, name, mediaType);
+  els.messages.append(wrap);
+  scrollDown();
+}
+
 function renderDownload(filename, base64, mediaType) {
   clearTyping();
   const wrap = document.createElement("div");
@@ -2836,6 +2962,41 @@ function saveBase64(base64, filename, mediaType) {
 
 /* Live streaming reply: show plain text as it arrives, then swap to rich
  * markdown (with code highlighting + hover actions) once the turn completes. */
+/* ---- Live thinking (Claude-style): stream the model's reasoning summary ---- *
+ * While Simba reasons, a dimmed card streams the summarized thinking; once the
+ * real answer starts it collapses to a one-line toggle ("Tänkte i 8 s"). */
+function startThinking() {
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "think-card";
+  wrap.innerHTML =
+    `<button class="think-head" type="button" aria-expanded="true"><span class="think-star">✻</span> <span class="think-label">Tänker…</span></button>` +
+    `<div class="think-body"></div>`;
+  els.messages.append(wrap);
+  const body = wrap.querySelector(".think-body");
+  wrap.querySelector(".think-head").addEventListener("click", () => {
+    const open = wrap.classList.toggle("open");
+    wrap.querySelector(".think-head").setAttribute("aria-expanded", String(open));
+  });
+  wrap.classList.add("open");
+  scrollDown();
+  return { wrap, body, start: Date.now() };
+}
+function appendThinking(think, chunk) {
+  think.body.appendChild(document.createTextNode(chunk));
+  think.body.scrollTop = think.body.scrollHeight; // keep the newest reasoning visible
+  scrollDown();
+}
+function collapseThinking(think) {
+  if (!think?.wrap?.isConnected) return;
+  if (!think.body.textContent.trim()) { think.wrap.remove(); return; } // nothing arrived — no clutter
+  const secs = Math.max(1, Math.round((Date.now() - think.start) / 1000));
+  think.wrap.querySelector(".think-label").textContent = `Tänkte i ${secs} s`;
+  think.wrap.classList.remove("open");
+  think.wrap.classList.add("done");
+  think.wrap.querySelector(".think-head").setAttribute("aria-expanded", "false");
+}
+
 function startStream() {
   clearTyping();
   const wrap = document.createElement("div");
@@ -2965,6 +3126,7 @@ function toolLabel(name, input) {
     analyze_data: `Analyserar ${input?.address || "data"}`,
     web_lookup: `Söker på webben: "${input?.query || ""}"`,
     browse_website: input?.url ? `Använder webbläsaren: ${input.url}` : "Använder webbläsaren",
+    show_artifact: `Bygger artefakt: ${input?.title || ""}`,
     run_code: "Kör kod",
     create_document: `Skapar ${(input?.kind || "dokument").toUpperCase()}`,
     list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",
@@ -3659,6 +3821,10 @@ function clearWelcome() {
 function resetChat() {
   if (busy) { toast("Vänta lite — Simba arbetar fortfarande.", "info"); return; }
   messages = [];
+  artifacts = [];
+  closeArtifact();
+  activeProject = null; // a plain new chat starts outside any project
+  syncProjectChip();
   els.messages.innerHTML = welcomeHTML();
   bindSuggestions();
   document.body.classList.remove("has-chat"); // bring the welcome + watermark back
@@ -3710,7 +3876,14 @@ async function openConversation(id) {
     const c = await r.json();
     conversationId = c.id;
     messages = Array.isArray(c.messages) ? c.messages : [];
+    // Restore the chat's project (instructions ride with every request).
+    if (c.project_id) {
+      if (!projects.length) await loadProjects();
+      activeProject = projects.find((p) => p.id === c.project_id) || null;
+    } else activeProject = null;
+    syncProjectChip();
     renderHistory(messages);
+    rebuildArtifacts(); // artifacts live in tool_use blocks — restore their chips
     renderSidebarList(); // update the active highlight from the cached list (no refetch)
   } catch { /* ignore */ }
 }
@@ -3725,6 +3898,7 @@ function saveConversation() {
   const snapMessages = messages;
   const snapId = conversationId;
   const snapTitle = convTitle();
+  const snapProject = activeProject?.id || null;
   convSaveTimer = setTimeout(async () => {
     try {
       const token = await getSsoToken(false);
@@ -3732,7 +3906,7 @@ function saveConversation() {
       if (!snapId) {
         const r = await fetch(`${API_BASE}/api/conversations`, {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ title: snapTitle, messages: snapMessages }),
+          body: JSON.stringify({ title: snapTitle, messages: snapMessages, project: snapProject }),
         });
         if (r.ok) {
           const newId = (await r.json()).id;
@@ -3743,12 +3917,13 @@ function saveConversation() {
       }
       await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(snapId)}`, {
         method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title: snapTitle, messages: snapMessages }),
+        body: JSON.stringify({ title: snapTitle, messages: snapMessages, project: snapProject }),
       });
       // Refresh the sidebar entry locally instead of refetching the whole list.
       const row = sidebarConvs.find((c) => c.id === snapId);
       if (row) {
         row.title = snapTitle;
+        row.project_id = snapProject;
         sidebarConvs = [row, ...sidebarConvs.filter((c) => c.id !== snapId)];
       }
       renderSidebarList();
@@ -3771,7 +3946,7 @@ function renderConvInto(el, list, limit, afterPick) {
   if (!list.length) { el.innerHTML = '<div class="hint" style="padding:6px 4px">Inga sparade chattar än.</div>'; return; }
   el.innerHTML = list.slice(0, limit).map((c) =>
     `<div class="conv-row${c.id === conversationId ? " active" : ""}" data-id="${escapeHtml(c.id)}">
-       <button class="conv-item" data-id="${escapeHtml(c.id)}" title="${escapeHtml(c.title || "Namnlös chatt")}">${escapeHtml(c.title || "Namnlös chatt")}</button>
+       <button class="conv-item" data-id="${escapeHtml(c.id)}" title="${escapeHtml(c.title || "Namnlös chatt")}">${c.project_id ? "📁 " : ""}${escapeHtml(c.title || "Namnlös chatt")}</button>
        <div class="conv-acts">
          <button class="conv-act" data-act="rename" title="Byt namn" aria-label="Byt namn">✎</button>
          <button class="conv-act" data-act="del" title="Ta bort" aria-label="Ta bort">🗑</button>
@@ -4521,6 +4696,287 @@ async function openVaultEval() {
   } catch { el.innerHTML = '<div class="hint" style="padding:6px 2px">Kunde inte nå servern.</div>'; }
 }
 
+/* ---- Push-notiser: watchers/uppdrag reach this device (web/PWA) ------------ */
+function urlB64ToUint8(base64) {
+  const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b = (base64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+async function enablePush() {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") {
+      toast("Notiser kräver webb-/PWA-versionen av Simba (installera från webbläsaren).", "info", 3500);
+      return;
+    }
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) { toast("Notiser kräver webb-/PWA-versionen av Simba.", "info", 3000); return; }
+    const token = await getSsoToken(false);
+    if (!token) { toast("Logga in med Microsoft först.", "info", 2500); return; }
+    const kr = await fetch(`${API_BASE}/api/push/key`);
+    const { enabled, key } = await kr.json();
+    if (!enabled) { toast("Servern har inte push konfigurerat (VAPID-nycklar) — se .env.example.", "info", 4000); return; }
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { toast("Notiser nekades av webbläsaren.", "info", 2500); return; }
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(key) });
+    const r = await fetch(`${API_BASE}/api/push/subscribe`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ subscription: sub.toJSON() }),
+    });
+    if (r.ok) toast("🔔 Notiser aktiverade — bevakningar och uppdrag når dig här.", "success", 3000);
+    else toast("Kunde inte aktivera notiser.", "error", 3000);
+  } catch { toast("Kunde inte aktivera notiser.", "error", 3000); }
+}
+
+/* ---- Projekt: chat folders with standing instructions (Claude-style) ------ *
+ * A project groups chats and carries its own instructions ("Svara alltid som
+ * vår ekonomiavdelning…"). The active project's instructions ride with every
+ * request in that chat; new chats started from the project inherit it. */
+let projects = [];
+let activeProject = null; // { id, name, instructions }
+
+async function loadProjects() {
+  const token = await getSsoToken(false);
+  if (!token) return [];
+  try {
+    const r = await fetch(`${API_BASE}/api/projects`, { headers: { Authorization: `Bearer ${token}` } });
+    if (r.ok) projects = (await r.json()).projects || [];
+  } catch { /* keep cache */ }
+  return projects;
+}
+
+function syncProjectChip() {
+  const pill = document.getElementById("project-pill");
+  if (!pill) return;
+  pill.hidden = !activeProject;
+  if (activeProject) pill.querySelector("#project-pill-label").textContent = `📁 ${activeProject.name}`;
+}
+
+async function openProjects() {
+  const token = await getSsoToken(false);
+  if (!token) { toast("Logga in med Microsoft för att använda projekt.", "info", 2500); return; }
+  openModal(
+    `<div class="vault-head">
+       <div><h3 style="margin:0">Projekt</h3><p class="sub" style="margin:2px 0 0">Mappar för dina chattar — med egna stående instruktioner som följer varje svar.</p></div>
+       <button class="btn primary" id="proj-new" style="padding:7px 12px;flex:none">＋ Nytt projekt</button>
+     </div>
+     <div id="proj-list" class="files-list" style="max-height:55vh"><div class="hint" style="padding:6px 2px">Laddar…</div></div>
+     <div class="modal-actions"><button class="btn" data-act="cancel">Stäng</button></div>`
+  );
+  els.modalCard.querySelector('[data-act="cancel"]').onclick = closeModalSilently;
+  els.modalCard.querySelector("#proj-new").onclick = async () => {
+    const name = await uiPrompt("Vad ska projektet heta?");
+    if (!name) return;
+    const t = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({ name }) }).catch(() => null);
+    if (r && r.ok) { const { project } = await r.json(); await loadProjects(); openProjectView(project); }
+    else toast("Kunde inte skapa projektet.", "error", 3000);
+  };
+  await loadProjects();
+  const el = els.modalCard.querySelector("#proj-list");
+  if (!el) return;
+  if (!projects.length) { el.innerHTML = '<div class="hint" style="padding:6px 2px">Inga projekt än. Skapa ett för t.ex. "Bokslut 2026" eller "Anbud Trafikverket" — med egna instruktioner.</div>'; return; }
+  const counts = new Map();
+  for (const c of sidebarConvs) if (c.project_id) counts.set(c.project_id, (counts.get(c.project_id) || 0) + 1);
+  el.innerHTML = projects.map((p) => `
+    <div class="sched-item" data-id="${escapeHtml(p.id)}" style="cursor:pointer">
+      <div class="sched-main">
+        <div class="sched-name">📁 ${escapeHtml(p.name)}</div>
+        <div class="sched-meta">${counts.get(p.id) || 0} chattar${String(p.instructions || "").trim() ? " · har instruktioner" : ""}</div>
+      </div>
+    </div>`).join("");
+  el.querySelectorAll(".sched-item").forEach((row) => row.addEventListener("click", () => {
+    const p = projects.find((x) => x.id === row.dataset.id);
+    if (p) openProjectView(p);
+  }));
+}
+
+function openProjectView(p) {
+  const chats = sidebarConvs.filter((c) => c.project_id === p.id);
+  openModal(
+    `<div class="vault-head">
+       <div><h3 style="margin:0">📁 ${escapeHtml(p.name)}</h3><p class="sub" style="margin:2px 0 0">Instruktionerna nedan följer med varje svar i projektets chattar.</p></div>
+       <button class="btn primary" id="pv-chat" style="padding:7px 12px;flex:none">＋ Ny chatt här</button>
+     </div>
+     <textarea id="pv-ins" class="memory-text" rows="4" placeholder="Stående instruktioner, t.ex. 'Vi arbetar med anbudet till Trafikverket. Svara formellt, referera till AFU 2024, alla belopp exkl. moms.'">${escapeHtml(p.instructions || "")}</textarea>
+     <div class="label" style="margin:10px 0 6px">Chattar i projektet</div>
+     <div id="pv-chats" class="conv-list" style="max-height:30vh;overflow:auto">${chats.length ? "" : '<div class="hint" style="padding:4px 2px">Inga chattar än — starta en med knappen ovan, eller flytta hit den aktiva chatten.</div>'}</div>
+     <div class="modal-actions" style="justify-content:space-between">
+       <button class="btn" id="pv-del" style="color:var(--danger)">Ta bort projekt</button>
+       <div style="display:flex;gap:6px">
+         ${conversationId ? `<button class="btn" id="pv-move">Flytta hit aktiva chatten</button>` : ""}
+         <button class="btn primary" id="pv-save">Spara</button>
+       </div>
+     </div>`
+  );
+  renderConvInto(els.modalCard.querySelector("#pv-chats"), chats, 30, closeModalSilently);
+  els.modalCard.querySelector("#pv-save").onclick = async () => {
+    const instructions = els.modalCard.querySelector("#pv-ins").value;
+    const t = await getSsoToken(false);
+    const r = await fetch(`${API_BASE}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify({ id: p.id, name: p.name, instructions }) }).catch(() => null);
+    if (r && r.ok) {
+      if (activeProject?.id === p.id) activeProject = { ...p, instructions };
+      await loadProjects();
+      toast("Projektet sparat", "success", 1500);
+      closeModalSilently();
+    } else toast("Kunde inte spara.", "error", 3000);
+  };
+  els.modalCard.querySelector("#pv-chat").onclick = () => {
+    const instructions = els.modalCard.querySelector("#pv-ins").value; // read before the modal closes
+    closeModalSilently();
+    if (busy) { toast("Vänta — Simba arbetar.", "info", 2000); return; }
+    resetChat();
+    activeProject = { id: p.id, name: p.name, instructions };
+    syncProjectChip();
+    toast(`Ny chatt i ${p.name}`, "success", 1800);
+    els.prompt?.focus();
+  };
+  els.modalCard.querySelector("#pv-move")?.addEventListener("click", () => {
+    activeProject = p;
+    syncProjectChip();
+    saveConversation(); // persists the project assignment
+    toast(`Chatten flyttades till ${p.name}`, "success", 1800);
+    closeModalSilently();
+  });
+  els.modalCard.querySelector("#pv-del").onclick = async () => {
+    if (!(await uiConfirm(`Ta bort projektet "${p.name}"? Chatterna finns kvar utanför projektet.`, { danger: true }))) return;
+    const t = await getSsoToken(false);
+    await fetch(`${API_BASE}/api/projects/${encodeURIComponent(p.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${t}` } }).catch(() => {});
+    if (activeProject?.id === p.id) { activeProject = null; syncProjectChip(); }
+    await loadProjects();
+    refreshSidebar();
+    closeModalSilently();
+    toast("Projektet borttaget", "success", 1500);
+  };
+}
+
+/* ---- Artifacts: live deliverables beside the chat (Claude-style) ---------- *
+ * The model calls show_artifact with a complete HTML page / SVG / markdown /
+ * code file. It renders in a side panel — HTML and SVG inside a sandboxed
+ * iframe (allow-scripts only, no same-origin: it can never touch Simba's DOM,
+ * storage or tokens). Same title = a new VERSION of the same artifact, with
+ * ‹ › navigation. Rebuilt from history when a conversation is reopened. */
+let artifacts = [];  // [{ title, type, language, versions: [content] }]
+let apCurrent = -1;  // index into artifacts
+let apVersion = 0;   // shown version index
+
+const AP_EXT = { html: ".html", svg: ".svg", markdown: ".md" };
+const AP_MIME = { html: "text/html", svg: "image/svg+xml", markdown: "text/markdown" };
+function artifactFilename(a) {
+  const safe = a.title.replace(/[^\p{L}\p{N} _-]/gu, "").trim().replace(/\s+/g, "-").toLowerCase() || "artefakt";
+  return safe + (AP_EXT[a.type] || (a.language ? `.${a.language.replace(/[^a-z0-9]/gi, "").slice(0, 8)}` : ".txt"));
+}
+function saveText(name, text, mime) {
+  const url = URL.createObjectURL(new Blob([text], { type: mime || "text/plain" }));
+  const el = document.createElement("a");
+  el.href = url; el.download = name;
+  document.body.appendChild(el); el.click(); el.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function wireArtifactPanel() {
+  const $ = (id) => document.getElementById(id);
+  if (!$("artifact-panel")) return;
+  $("ap-close").onclick = closeArtifact;
+  $("ap-prev").onclick = () => stepArtifactVersion(-1);
+  $("ap-next").onclick = () => stepArtifactVersion(1);
+  $("ap-copy").onclick = () => {
+    const a = artifacts[apCurrent];
+    if (a) navigator.clipboard?.writeText(a.versions[apVersion]).then(() => toast("Kopierat", "success", 1200)).catch(() => {});
+  };
+  $("ap-dl").onclick = () => {
+    const a = artifacts[apCurrent];
+    if (a) saveText(artifactFilename(a), a.versions[apVersion], AP_MIME[a.type]);
+  };
+}
+
+function openArtifact(a, version) {
+  apCurrent = artifacts.indexOf(a);
+  if (apCurrent < 0) return;
+  apVersion = Math.max(0, Math.min(version ?? a.versions.length - 1, a.versions.length - 1));
+  document.getElementById("artifact-panel").hidden = false;
+  document.body.classList.add("artifact-open");
+  document.getElementById("ap-title").textContent = a.title;
+  document.getElementById("ap-type").textContent = a.type === "code" ? (a.language || "KOD").toUpperCase() : a.type.toUpperCase();
+  renderArtifactBody(a);
+  syncArtifactVer(a);
+}
+function closeArtifact() {
+  const p = document.getElementById("artifact-panel");
+  if (p) p.hidden = true;
+  document.body.classList.remove("artifact-open");
+}
+function syncArtifactVer(a) {
+  document.getElementById("ap-ver").textContent = `v${apVersion + 1}${a.versions.length > 1 ? ` av ${a.versions.length}` : ""}`;
+  document.getElementById("ap-prev").disabled = apVersion <= 0;
+  document.getElementById("ap-next").disabled = apVersion >= a.versions.length - 1;
+}
+function stepArtifactVersion(d) {
+  const a = artifacts[apCurrent];
+  if (!a) return;
+  const v = apVersion + d;
+  if (v < 0 || v >= a.versions.length) return;
+  apVersion = v;
+  renderArtifactBody(a);
+  syncArtifactVer(a);
+}
+function renderArtifactBody(a) {
+  const body = document.getElementById("ap-body");
+  const content = a.versions[apVersion] || "";
+  body.innerHTML = "";
+  if (a.type === "html" || a.type === "svg") {
+    const f = document.createElement("iframe");
+    f.className = "ap-frame";
+    f.setAttribute("sandbox", "allow-scripts"); // isolated: no same-origin, no top-navigation
+    f.srcdoc = a.type === "svg"
+      ? `<!DOCTYPE html><html><body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#fff">${content}</body></html>`
+      : content;
+    body.appendChild(f);
+  } else if (a.type === "markdown") {
+    body.innerHTML = `<div class="ap-doc">${formatMarkdown(content)}</div>`;
+  } else {
+    body.innerHTML = `<pre class="ap-code"><code></code></pre>`;
+    body.querySelector("code").textContent = content;
+  }
+}
+
+// The card in the chat that reopens an artifact (Claude-style chip).
+function renderArtifactChip(a) {
+  clearTyping();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  wrap.innerHTML =
+    `<div class="avatar">${MASCOT_IMG}</div>` +
+    `<div class="body"><button class="artifact-card" type="button">` +
+    `<span class="ac-ic">⧉</span>` +
+    `<span class="ac-main"><span class="ac-title">${escapeHtml(a.title)}</span>` +
+    `<span class="ac-sub">${escapeHtml(a.type === "code" ? (a.language || "kod") : a.type)} · v${a.versions.length} · klicka för att öppna</span></span>` +
+    `</button></div>`;
+  wrap.querySelector(".artifact-card").onclick = () => openArtifact(a, a.versions.length - 1);
+  els.messages.append(wrap);
+  scrollDown();
+}
+
+// Rebuild the artifact list from a reopened conversation's tool_use blocks,
+// and re-render one chip per artifact so they stay reachable.
+function rebuildArtifacts(render = true) {
+  artifacts = [];
+  closeArtifact();
+  for (const m of messages) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b?.type !== "tool_use" || b.name !== "show_artifact" || !b.input?.content) continue;
+      const t = String(b.input.title || "Artefakt").slice(0, 120);
+      let a = artifacts.find((x) => x.title === t);
+      if (!a) { a = { title: t, type: "code", language: "", versions: [] }; artifacts.push(a); }
+      if (["html", "svg", "markdown", "code"].includes(b.input.type)) a.type = b.input.type;
+      a.language = String(b.input.language || a.language || "");
+      a.versions.push(String(b.input.content));
+    }
+  }
+  if (render) for (const a of artifacts) renderArtifactChip(a); // chips already on screen? state-only
+}
+
 /* ---- Org-shared prompt templates ----------------------------------------- */
 async function openTemplates() {
   const token = await getSsoToken(false);
@@ -4600,6 +5056,7 @@ function buildSidebarNav() {
   const nav = document.getElementById("sb-nav");
   if (!nav) return;
   const items = [{ icon: "✦", label: "Agenter", run: openAgents }];
+  if (ssoServerConfigured) items.push({ icon: "📁", label: "Projekt", run: openProjects });
   if (ssoServerConfigured) items.push(
     { icon: "📚", label: "Kunskapsbank", run: openVault },
     { icon: "📧", label: "E-post", run: openMail },
@@ -4638,6 +5095,7 @@ function commandList() {
   if (ssoServerConfigured) cmds.push({ icon: "🎯", label: "Uppdrag (långjobb)", run: () => openMissions() });
   if (ssoServerConfigured) cmds.push({ icon: "🔔", label: "Bevakningar", run: () => openWatchers() });
   cmds.push({ icon: "📝", label: "Mötesanteckningar", run: () => openMeetingNotes() });
+  if (ssoServerConfigured) cmds.splice(3, 0, { icon: "📁", label: "Projekt", run: () => openProjects() });
   cmds.push({ icon: "🎧", label: "Röstläge (samtala med Simba)", run: () => toggleVoiceMode() });
   if (ssoServerConfigured) cmds.push({ icon: "🏛", label: "Styrning (organisationens användning)", run: () => openGovernance() });
   if (busy) cmds.unshift({ icon: "◼", label: "Stoppa Simba", run: () => stopGeneration() });

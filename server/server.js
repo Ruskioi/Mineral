@@ -18,7 +18,7 @@ import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { verifyToken, bearer, ssoConfigured } from "./identity.js";
 import { recordUsage, getUsage, getStats, rememberUser, getOrgUsage, orgSpendToday } from "./usage.js";
-import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation, listWorkspace, saveWorkspace, deleteWorkspace, workspaceContext } from "./store.js";
+import { getMemory, setMemory, usingPostgres, listConversations, getConversation, saveConversation, deleteConversation, renameConversation, listWorkspace, saveWorkspace, deleteWorkspace, workspaceContext, listProjects, saveProject, deleteProject } from "./store.js";
 import { randomUUID } from "node:crypto";
 import { graphConfigured, oboGraphToken, searchFiles, downloadFile, itemDriveInfo, listMail, getMail, sendMail, listAttachments, getAttachment, MAIL_SCOPE } from "./graph.js";
 import { listJobs, createJob, updateJob, deleteJob, getJobOwned } from "./jobs.js";
@@ -36,6 +36,7 @@ import { listMissions, getMission, createMission, cancelMission, runMission } fr
 import { ambientContext } from "./ambient.js";
 import { distillMemory } from "./automemory.js";
 import { runBrowserTask } from "./browser.js";
+import { pushEnabled, pushPublicKey, saveSubscription, deleteSubscription } from "./push.js";
 
 // Optional: restrict who can WRITE the shared company vault (comma-separated
 // Microsoft object-ids). Empty = any signed-in org member can contribute.
@@ -326,6 +327,14 @@ const TOOLS = [
     input_schema: { type: "object", properties: {
       query: { type: "string", description: "The question to research, phrased clearly." },
     }, required: ["query"] } },
+
+  { name: "show_artifact", description: "Visa en leverabel i ett live-fönster bredvid chatten (en 'artefakt'): en komplett interaktiv HTML-sida (inline JS/CSS tillåts), SVG-grafik, ett markdown-dokument eller källkod. Använd för dashboards, kalkylatorer, prototyper, rapporter och visualiseringar som användaren ska kunna se och interagera med direkt. Skicka HELA innehållet varje gång — samma titel uppdaterar artefakten som en ny version.",
+    input_schema: { type: "object", properties: {
+      title: { type: "string", description: "Artefaktens namn, t.ex. 'Försäljningsdashboard'." },
+      type: { type: "string", enum: ["html", "svg", "markdown", "code"], description: "html = komplett fristående sida, svg = grafik, markdown = dokument, code = källkod." },
+      content: { type: "string", description: "Hela innehållet. För html: ett komplett dokument med <!DOCTYPE html>." },
+      language: { type: "string", description: "Språk när type=code, t.ex. python eller sql." },
+    }, required: ["title", "type", "content"] } },
 
   { name: "browse_website", description: "Utför en uppgift i en riktig webbläsare på servern (öppnar sidor, klickar, skriver, läser JS-tunga sidor) och rapporterar resultatet med källa. Använd bara när web_lookup inte räcker — t.ex. data bakom knappar/filter, interaktiva tabeller eller stegvisa flöden. Ingen inloggning eller betalning. Kan vara avstängd på servern — säg i så fall det till användaren.",
     input_schema: { type: "object", properties: {
@@ -818,7 +827,7 @@ app.post("/api/conversations", async (req, res) => {
   if (!user) return;
   try {
     const id = randomUUID();
-    await saveConversation(user.key, id, req.body?.title || "", req.body?.messages || []);
+    await saveConversation(user.key, id, req.body?.title || "", req.body?.messages || [], req.body?.project || null);
     res.json({ id });
   } catch (err) { console.error("[Simba] conv create failed:", err?.message || err); res.status(502).json({ error: "Could not create conversation." }); }
 });
@@ -843,7 +852,7 @@ app.put("/api/conversations/:id", async (req, res) => {
     if (req.body?.messages === undefined && typeof req.body?.title === "string") {
       return res.json(await renameConversation(user.key, req.params.id, req.body.title));
     }
-    res.json(await saveConversation(user.key, req.params.id, req.body?.title || "", req.body?.messages || []));
+    res.json(await saveConversation(user.key, req.params.id, req.body?.title || "", req.body?.messages || [], req.body?.project || null));
   } catch (err) { console.error("[Simba] conv save failed:", err?.message || err); res.status(502).json({ error: "Could not save conversation." }); }
 });
 
@@ -852,6 +861,45 @@ app.delete("/api/conversations/:id", async (req, res) => {
   if (!user) return;
   try { await deleteConversation(user.key, req.params.id); res.json({ ok: true }); }
   catch (err) { console.error("[Simba] conv delete failed:", err?.message || err); res.status(502).json({ error: "Could not delete conversation." }); }
+});
+
+// ---- Web-push: notifications from watchers/uppdrag to the user's devices --
+app.get("/api/push/key", (req, res) => {
+  res.json({ enabled: pushEnabled, key: pushPublicKey });
+});
+app.post("/api/push/subscribe", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!pushEnabled) return res.status(503).json({ error: "Push är inte konfigurerat på servern (VAPID-nycklar saknas)." });
+  try { await saveSubscription(user.key, req.body?.subscription); res.json({ ok: true }); }
+  catch (err) { res.status(err.status || 502).json({ error: err.message || "Kunde inte spara prenumerationen." }); }
+});
+app.delete("/api/push/subscribe", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await deleteSubscription(user.key, req.body?.endpoint); res.json({ ok: true }); }
+  catch { res.status(502).json({ error: "Kunde inte ta bort prenumerationen." }); }
+});
+
+// ---- Projects: chat folders with standing instructions (Claude-style) -----
+app.get("/api/projects", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { res.json({ projects: await listProjects(user.key) }); }
+  catch (err) { console.error("[Simba] projects list failed:", err?.message || err); res.status(502).json({ error: "Kunde inte hämta projekt." }); }
+});
+app.post("/api/projects", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  if (!String(req.body?.name || "").trim()) return res.status(400).json({ error: "Projektet behöver ett namn." });
+  try { res.json({ project: await saveProject(user.key, { id: req.body?.id, name: req.body?.name, instructions: req.body?.instructions }) }); }
+  catch (err) { console.error("[Simba] project save failed:", err?.message || err); res.status(502).json({ error: "Kunde inte spara projektet." }); }
+});
+app.delete("/api/projects/:id", async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  try { await deleteProject(user.key, req.params.id); res.json({ ok: true }); }
+  catch (err) { console.error("[Simba] project delete failed:", err?.message || err); res.status(502).json({ error: "Kunde inte ta bort projektet." }); }
 });
 
 // ---- Fail-safes: input validation + a lightweight global rate limit ----
@@ -879,10 +927,14 @@ const SPEED_MAP = {
 // Per-user memory is appended as a second block AFTER the cache breakpoint, so it
 // can vary per user without invalidating the shared, cached prefix.
 const MAX_MEMORY_CHARS = 4000;
-function buildSystem(memory, surface) {
+function buildSystem(memory, surface, project) {
   const blocks = [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
   const mem = sanitizeMemory(memory);
   if (mem) blocks.push({ type: "text", text: `[Vad du minns om användaren]\n${mem}` });
+  // Project instructions: standing directions for this chat's folder. Stable per
+  // conversation, so they live in the cached system prefix.
+  const projIns = String(project?.instructions || "").trim().slice(0, 6000);
+  if (projIns) blocks.push({ type: "text", text: `[Projekt: ${String(project?.name || "").slice(0, 120)}]\nStående instruktioner för det här projektet — följ dem i varje svar:\n${projIns}` });
   if (surface === "desktop") blocks.push({ type: "text", text:
     "[Läge] Du körs som en fristående AI-app (skrivbord/webb) — en fullständig allmän " +
     "assistent. Hjälp till med vad som helst: svara på frågor, skriva och resonera, söka " +
@@ -1000,7 +1052,7 @@ function pickModel(pref, messages, speed) {
   return chooseModel(messages, speed, { strong: MODEL, simple: MODEL_SIMPLE, on: ROUTER_ON });
 }
 
-async function runModel(messages, speed, memory, surface, onText, vault, workspace, modelPref, ambient) {
+async function runModel(messages, speed, memory, surface, onText, vault, workspace, modelPref, ambient, onThinking, project) {
   const cfg = SPEED_MAP[speed] || SPEED_MAP[DEFAULT_SPEED] || SPEED_MAP.balanced;
   const model = pickModel(modelPref, messages, speed);
   const base = {
@@ -1008,7 +1060,7 @@ async function runModel(messages, speed, memory, surface, onText, vault, workspa
     max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: { effort: cfg.effort },
-    system: buildSystem(memory, surface),
+    system: buildSystem(memory, surface, project),
     tools: TOOLS,
     messages: withConversationCache(injectContext(messages, vault, workspace, ambient)),
   };
@@ -1022,6 +1074,9 @@ async function runModel(messages, speed, memory, surface, onText, vault, workspa
     const p = betas.length ? { ...params, betas } : params;
     const s = (betas.length ? client.beta.messages : client.messages).stream(p);
     s.on("text", (t) => { emitted = true; if (onText) onText(t); });
+    // Adaptive thinking emits summarized reasoning deltas — stream them so the
+    // client can show what Simba is working through (Claude-style).
+    if (onThinking) s.on("thinking", (t) => { try { if (t) onThinking(t); } catch { /* display only */ } });
     return await s.finalMessage();
   };
   // Fast mode applies to the strong (Opus) model; Haiku is already fast.
@@ -1169,7 +1224,7 @@ app.post("/api/chat", async (req, res) => {
   res.flushHeaders?.();
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
-    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText, workspaceText, req.body.model, ambientText);
+    const final = await runModel(req.body.messages, req.body.speed, req.body.memory, req.body.surface, (t) => send("delta", { text: t }), vaultText, workspaceText, req.body.model, ambientText, (t) => send("thinking", { text: t }), req.body.project);
     send("final", {
       content: final.content,
       stop_reason: final.stop_reason,
@@ -1327,6 +1382,21 @@ app.post("/api/analyze", async (req, res) => {
 });
 
 // General-purpose code execution: run Python for any task (not just spreadsheets).
+// Collect every file_id in a response (plots/CSVs the sandbox produced).
+function collectFileIds(content) {
+  const ids = [];
+  const walk = (x) => {
+    if (!x) return;
+    if (Array.isArray(x)) return x.forEach(walk);
+    if (typeof x === "object") {
+      if (typeof x.file_id === "string" && !ids.includes(x.file_id)) ids.push(x.file_id);
+      for (const k in x) walk(x[k]);
+    }
+  };
+  walk(content);
+  return ids;
+}
+
 app.post("/api/code", async (req, res) => {
   if (!preflight(req, res)) return;
   if (!(await enforceAuth(req, res))) return;
@@ -1334,12 +1404,36 @@ app.post("/api/code", async (req, res) => {
   const data = String(req.body?.data || "").slice(0, 200_000);
   if (!task) return res.status(400).json({ error: "Missing 'task'." });
   try {
-    const text = await runWithServerTools({
-      system: "You are Simba, a precise problem-solver. Use Python to compute the answer accurately. ALWAYS reply in Swedish (svenska). Give the result and a short, plain-language explanation; do not paste raw code unless the user asked to see it.",
-      content: data ? `Uppgift: ${task}\n\nIndata:\n${data}` : `Uppgift: ${task}`,
-      tools: [{ type: "code_execution_20260521", name: "code_execution" }],
-    });
-    res.json({ text });
+    const messages = [{ role: "user", content: data ? `Uppgift: ${task}\n\nIndata:\n${data}` : `Uppgift: ${task}` }];
+    let last;
+    for (let i = 0; i < 6; i++) {
+      last = await withRetry(() => client.messages.create({
+        model: MODEL, max_tokens: 8000,
+        system: "You are Simba, a precise problem-solver. Use Python to compute the answer accurately. ALWAYS reply in Swedish (svenska). Give the result and a short, plain-language explanation; do not paste raw code unless the user asked to see it. When a chart genuinely helps (trends, distributions, comparisons), render it with matplotlib and save it as a PNG file — the user sees produced files inline.",
+        tools: [{ type: "code_execution_20260521", name: "code_execution" }],
+        messages,
+      }), "code");
+      if (last.stop_reason === "pause_turn") { messages.push({ role: "assistant", content: last.content }); continue; }
+      break;
+    }
+    const text = (last?.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    // Ship back anything the sandbox produced: images render inline in the chat,
+    // other files become download chips. Bounded: last 4 files, ≤8 MB each.
+    const images = [], files = [];
+    for (const id of collectFileIds(last?.content).slice(-4)) {
+      try {
+        const meta = await client.beta.files.retrieveMetadata(id).catch(() => null);
+        const name = meta?.filename || "resultat";
+        const mime = meta?.mime_type || "";
+        const dl = await client.beta.files.download(id);
+        const buf = Buffer.from(await dl.arrayBuffer());
+        if (buf.length > 8 * 1024 * 1024) continue;
+        const rec = { name, media_type: mime, data: buf.toString("base64") };
+        if (/^image\//.test(mime) || /\.(png|jpe?g|gif|webp|svg)$/i.test(name)) images.push(rec);
+        else files.push(rec);
+      } catch { /* skip files that failed to download */ }
+    }
+    res.json({ text: text || "Klart.", images, files });
   } catch (err) {
     console.error("[Simba] /api/code error:", err?.message || err);
     res.status(502).json({ error: "Kunde inte köra koden." });
