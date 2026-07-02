@@ -665,8 +665,10 @@ body.has-chat .chat-watermark svg { opacity: 0.035; }
 .dl-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; max-width: 200px; white-space: nowrap; }
 .dl-go { font-size: 11.5px; color: var(--accent-strong); }
 
-/* Desktop app mode (no Excel) — hide Excel-only chrome */
-body.desktop .composer-foot,
+/* Desktop app mode (no Excel) — hide only the Excel-specific chrome. The
+ * composer footer stays: the model picker (Auto/Pluto/Simba), svarsnivå and
+ * project chip are core app controls; only the sheet-edit mode chip is Excel's. */
+body.desktop #mode-pill,
 body.desktop #undo,
 body.desktop #context-pill { display: none; }
 

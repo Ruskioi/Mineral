@@ -563,6 +563,14 @@ check("watchers (proactive bevakningar) are wired", () => {
   assert(/function openWatchers/.test(taskpane) && /label: "Bevakningar"/.test(taskpane), "watchers UI missing");
 });
 
+check("the standalone Simba app is a first-class surface (not Excel-flavored)", () => {
+  const css = read("src/taskpane/taskpane.css");
+  assert(/body\.desktop #mode-pill/.test(css) && !/body\.desktop \.composer-foot/.test(css), "the app must keep the composer footer (model/speed/project) — only the sheet-edit chip is Excel's");
+  assert(/function onbSteps/.test(taskpane) && /Din AI-assistent för jobbet/.test(taskpane), "onboarding must tell the app story outside Excel");
+  const html = read("src/taskpane/taskpane.html");
+  assert(!/kalkylark/i.test(html), "the HTML shell must not default to Excel copy (the Excel boot injects its own)");
+});
+
 check("artifacts (live deliverables panel, sandboxed + versioned) are wired", () => {
   assert(/name: "show_artifact"/.test(server), "show_artifact tool schema missing");
   assert(/async show_artifact\(/.test(taskpane) && /"show_artifact"/.test(taskpane), "client tool + DESKTOP_TOOLS entry missing");

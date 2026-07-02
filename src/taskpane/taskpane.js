@@ -1,14 +1,18 @@
 /*
- * Simba AI — Excel task pane.
+ * Simba AI — the client for every surface.
  *
- * Drives a chat UI in the sidebar and runs an agentic loop against the Simba
- * backend (/api/chat), which proxies the Claude API. Claude can request Excel
- * tools (read/write ranges, formulas, selection); those run here via Office.js
- * and the results are fed back until Claude produces a final answer.
+ * One bundle drives the standalone Simba app (web/PWA + Electron desktop) and
+ * the Excel/Outlook task panes. It runs an agentic loop against the Simba
+ * backend (/api/chat), which proxies the Claude API; tools the model requests
+ * (files, mail, vault, documents, artifacts — and in Excel the sheet tools via
+ * Office.js) execute here and the results feed back until the answer is done.
  *
- * UI: Claude-inspired theme (light/dark), entrance animations, toast
- * notifications, a settings popup, and an edit-confirmation modal so Simba
- * asks before changing the sheet.
+ * The standalone app is the primary surface: general assistant, projects,
+ * artifacts, uppdrag/bevakningar, push notiser. Excel/Outlook add the
+ * host-specific tools (sheet editing, open-mail) on top of the same core.
+ *
+ * UI: Claude-inspired theme (light/dark), streaming with visible thinking,
+ * toasts, settings, and edit-confirmation modals for sheet changes.
  */
 
 import "./taskpane.css";
@@ -3565,33 +3569,61 @@ function onbHelloArt() {
   </div>`;
 }
 
-const ONB_STEPS = [
-  {
-    art: onbHelloArt,
-    title: "Möt Simba",
-    body: "Din AI-kompis i Excel — en nyfiken liten pomeranian som bor i ditt kalkylark och hjälper dig få jobbet gjort, snabbt.",
-  },
-  {
-    art: onbGridArt,
-    title: "Jag förstår din data",
-    body: "Markera ett område och fråga på vanlig svenska. Jag läser dina celler, sammanfattar dem, hittar trender och svarar på frågor — utan att du behöver brottas med formler.",
-  },
-  {
-    art: onbFormulaArt,
-    title: "Och jag gör jobbet",
-    body: "Be mig städa en kolumn, bygga en formel eller fylla i värden, så skriver jag dem direkt i arket — med en förhandsvisning så du ser exakt vad som ändras.",
-  },
-  {
-    art: onbModesArt,
-    title: "Du har alltid kontrollen",
-    body: "Som standard <strong>frågar</strong> jag innan jag redigerar. Välj <strong>Auto</strong> för att låta mig tillämpa ändringar, eller <strong>Av</strong> för att bara läsa — när som helst, från fältet nedan.",
-    cta: "Börja använda Simba",
-  },
-];
+// Surface-aware: the standalone Simba app tells the general-assistant story;
+// inside Excel the tour is about the sheet.
+function onbSteps() {
+  if (IS_EXCEL) return [
+    {
+      art: onbHelloArt,
+      title: "Möt Simba",
+      body: "Din AI-kompis i Excel — en nyfiken liten pomeranian som bor i ditt kalkylark och hjälper dig få jobbet gjort, snabbt.",
+    },
+    {
+      art: onbGridArt,
+      title: "Jag förstår din data",
+      body: "Markera ett område och fråga på vanlig svenska. Jag läser dina celler, sammanfattar dem, hittar trender och svarar på frågor — utan att du behöver brottas med formler.",
+    },
+    {
+      art: onbFormulaArt,
+      title: "Och jag gör jobbet",
+      body: "Be mig städa en kolumn, bygga en formel eller fylla i värden, så skriver jag dem direkt i arket — med en förhandsvisning så du ser exakt vad som ändras.",
+    },
+    {
+      art: onbModesArt,
+      title: "Du har alltid kontrollen",
+      body: "Som standard <strong>frågar</strong> jag innan jag redigerar. Välj <strong>Auto</strong> för att låta mig tillämpa ändringar, eller <strong>Av</strong> för att bara läsa — när som helst, från fältet nedan.",
+      cta: "Börja använda Simba",
+    },
+  ];
+  return [
+    {
+      art: onbHelloArt,
+      title: "Möt Simba",
+      body: "Din AI-assistent för jobbet — research, analyser, dokument, dina filer och mejl. På svenska, med företagets kunskap inbyggd.",
+    },
+    {
+      art: onbGridArt,
+      title: "Jag har koll på ditt arbete",
+      body: "Logga in med Microsoft så når jag dina filer och mejl när du ber om det, grundar svaren i företagets kunskapsbank — med källor — och minns det viktiga mellan samtalen.",
+    },
+    {
+      art: onbFormulaArt,
+      title: "Jag arbetar medan du gör annat",
+      body: "Starta <strong>uppdrag</strong> med tydliga mål, sätt <strong>bevakningar</strong> som larmar när något händer och schemalägg återkommande jobb — jag säger till när det är klart.",
+    },
+    {
+      art: onbModesArt,
+      title: "Du har alltid kontrollen",
+      body: "Byt modell (<strong>Auto</strong>, <strong>Pluto</strong>, <strong>Simba</strong>) direkt i fältet, redigera dina frågor i efterhand, och se och styr allt jag minns under Inställningar. Tryck <strong>⌘K</strong> för att nå allt.",
+      cta: "Börja använda Simba",
+    },
+  ];
+}
 
 function showOnboarding() {
   if (document.querySelector(".onb-backdrop")) return;
 
+  const ONB_STEPS = onbSteps(); // freeze this surface's tour
   let step = 0;
   const bd = document.createElement("div");
   bd.className = "onb-backdrop";
@@ -3658,7 +3690,9 @@ function showOnboarding() {
     bd.classList.add("closing");
     document.removeEventListener("keydown", onKey);
     setTimeout(() => bd.remove(), 240);
-    toast("Tips: markera några celler och fråga sedan Simba om dem", "info", 3400);
+    toast(IS_EXCEL
+      ? "Tips: markera några celler och fråga sedan Simba om dem"
+      : "Tips: tryck ⌘K för att söka i allt och nå alla funktioner", "info", 3400);
   }
 
   function onKey(e) {

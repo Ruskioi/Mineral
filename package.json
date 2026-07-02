@@ -1,7 +1,7 @@
 {
   "name": "simba-ai-excel",
   "version": "1.0.0",
-  "description": "Simba AI — an AI assistant sidebar for Microsoft Excel, powered by Claude.",
+  "description": "Simba AI — a Swedish AI assistant (web/PWA, desktop, Teams, Excel & Outlook add-ins), powered by Claude.",
   "type": "module",
   "scripts": {
     "dev-certs": "office-addin-dev-certs install",
