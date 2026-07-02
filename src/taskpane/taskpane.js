@@ -38,13 +38,24 @@ const MAX_ATTACH = 6;
 let activeAgent = null; // a selected specialist agent persona for the next message(s)
 let IS_EXCEL = false; // true only when running inside Excel (Office.js available)
 let IS_OUTLOOK = false; // true when running inside Outlook (mailbox item available)
+let IS_WORD = false;  // true when running inside Word (document available)
 // Tools that only make sense inside Outlook (read the open message via Office.js).
 const OUTLOOK_TOOLS = new Set(["read_current_email"]);
+// Tools that only make sense inside Word (read/write the open document).
+const WORD_TOOLS = new Set(["read_document", "write_document", "replace_in_document"]);
+// A helpful error when a tool doesn't exist on this surface — point the model
+// at the right way to get it done instead of a dead end.
+function toolSurfaceError(name) {
+  if (WORD_TOOLS.has(name)) return "Det här kräver Word. Använd open_in_word för att skicka uppgiften dit.";
+  if (OUTLOOK_TOOLS.has(name)) return "Det här kräver Outlook (det öppna mejlet). Använd list_emails/read_email för brevlådan.";
+  return "Det här kräver Excel. Använd open_in_excel för att skicka uppgiften dit, eller öppna Simba inuti Excel.";
+}
 // Whether a tool may run on the current surface.
 function toolAllowed(name) {
   if (IS_EXCEL) return true;                                  // Excel: all tools
   if (typeof DESKTOP_TOOLS !== "undefined" && DESKTOP_TOOLS.has(name)) return true; // shared tools
   if (IS_OUTLOOK && OUTLOOK_TOOLS.has(name)) return true;     // Outlook-only tools
+  if (IS_WORD && WORD_TOOLS.has(name)) return true;           // Word-only tools
   return false;
 }
 
@@ -67,7 +78,7 @@ const AGENTS = [
 ];
 // Tools that work in the standalone desktop app (no Excel grid). Everything else
 // requires Office.js and is short-circuited with a friendly message in desktop mode.
-const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "browse_website", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "show_artifact", "open_in_excel", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
+const DESKTOP_TOOLS = new Set(["remember", "search_vault", "save_to_vault", "analyze_vault", "open_vault_file", "save_to_workspace", "get_workspace", "list_data_sources", "query_data_source", "web_lookup", "browse_website", "run_code", "list_files", "open_file", "list_emails", "read_email", "send_email", "create_document", "propose_plan", "update_plan", "show_chart", "show_artifact", "open_in_excel", "open_in_word", "delegate_task", "schedule_task", "list_schedules", "cancel_schedule"]);
 let editMode = store.get("simba.editMode", "ask"); // auto | ask | off
 let autoApproveTurn = false; // "Apply all" approves remaining edits for the current request
 let subagentDepth = 0;       // guards delegate_task against runaway recursion
@@ -437,6 +448,7 @@ function boot(isExcel) {
     }).catch(() => {});
   } else {
     applyDesktopMode();
+    if (IS_WORD) applyWordMode(); // Word pane: desktop chrome + document flavor
   }
 
   // Pull the configured model name for the settings panel (best effort), then
@@ -463,6 +475,7 @@ if (typeof Office !== "undefined" && Office.onReady) {
   Office.onReady((info) => {
     const host = info && info.host;
     IS_OUTLOOK = host === Office.HostType.Outlook;
+    IS_WORD = host === Office.HostType.Word;
     boot(host === Office.HostType.Excel);
   });
   setTimeout(() => boot(false), 15000);
@@ -480,6 +493,24 @@ function applyDesktopMode() {
   if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
     navigator.serviceWorker.register("/sw.js").catch(() => { /* non-fatal */ });
   }
+}
+
+// Word pane: same shell as the app, but document-first copy, the edit-mode
+// chip back (it gates document writes) and the sheet-style welcome replaced.
+function applyWordMode() {
+  document.body.classList.add("word");
+  if (els.prompt) els.prompt.placeholder = "Fråga Simba om ditt dokument…";
+  const w = document.querySelector(".welcome");
+  if (w) w.innerHTML = '<div id="home-stats" class="home-stats" hidden></div>' + heroWelcome(
+    "Hej, jag är Simba",
+    "Din assistent i Word — skriv, förbättra, strukturera och sammanfatta ditt dokument.",
+    [
+      ["✍️", "Skriv ett utkast utifrån mina punkter"],
+      ["🪄", "Förbättra språket i dokumentet"],
+      ["📋", "Sammanfatta dokumentet"],
+    ]
+  );
+  bindSuggestions();
 }
 
 // Reveal and wire the navigation sidebar. It exists on every surface: a permanent
@@ -1525,25 +1556,63 @@ const tools = {
 
   async open_in_excel({ task }) {
     if (IS_EXCEL) return { error: "Du kör redan i Excel — utför uppgiften direkt med kalkylarksverktygen istället." };
-    const token = await getSsoToken(false);
-    if (!token) return { error: "Logga in med Microsoft för att skicka uppgifter till Excel (Inställningar → Logga in)." };
+    return sendHandoff("excel", task);
+  },
+
+  async open_in_word({ task }) {
+    if (IS_WORD) return { error: "Du kör redan i Word — utför uppgiften direkt med dokumentverktygen istället." };
+    return sendHandoff("word", task);
+  },
+
+  /* ---------------- Word document tools (Office.js, Word only) ------------- */
+
+  async read_document() {
     try {
-      const r = await fetch(`${API_BASE}/api/handoffs`, {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ target: "excel", task }),
+      return await Word.run(async (ctx) => {
+        const body = ctx.document.body;
+        body.load("text");
+        await ctx.sync();
+        const text = String(body.text || "");
+        return { text: text.slice(0, 60000), characters: text.length, truncated: text.length > 60000 };
       });
-      if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Kunde inte skicka uppgiften." }; }
-      const { handoff } = await r.json();
-      // Open Excel for the user (a fresh workbook in Excel på webben; popup
-      // blockers fall back to the card's link). The add-in picks the task up.
-      const win = window.open("https://excel.new", "_blank");
-      renderHandoffCard(handoff, !win);
-      pollHandoff(handoff.id);
-      return {
-        queued: true,
-        note: "Excel öppnas hos användaren. Simba-panelen i Excel utför uppgiften i arbetsboken och resultatet rapporteras tillbaka i den här chatten. Be användaren öppna Simba-panelen i Excel (fliken Start) om den inte redan är öppen.",
-      };
-    } catch { return { error: "Kunde inte nå servern." }; }
+    } catch (e) { return { error: `Kunde inte läsa dokumentet${e?.message ? ": " + e.message : ""}.` }; }
+  },
+
+  async write_document({ markdown, location }) {
+    const md = String(markdown || "");
+    if (!md.trim()) return { error: "Inget innehåll att skriva." };
+    const loc = { start: "Start", end: "End", replace: "Replace" }[String(location || "end").toLowerCase()] || "End";
+    const ok = await gateEdit({ kind: "edit", summary: loc === "Replace"
+      ? "Ersätt HELA dokumentets innehåll"
+      : `Skriv in innehåll (${md.length} tecken) ${loc === "Start" ? "i början av" : "i slutet av"} dokumentet` });
+    if (!ok) return declined(ok);
+    try {
+      await Word.run(async (ctx) => {
+        ctx.document.body.insertHtml(mdToWordHtml(md), loc);
+        await ctx.sync();
+      });
+      toast("Skrev i dokumentet", "success");
+      return { written: true, location: loc };
+    } catch (e) { return { error: `Kunde inte skriva i dokumentet${e?.message ? ": " + e.message : ""}.` }; }
+  },
+
+  async replace_in_document({ find, replace, matchCase }) {
+    const needle = String(find || "").slice(0, 250); // Word's search cap
+    if (!needle) return { error: "Ange texten som ska ersättas." };
+    const ok = await gateEdit({ kind: "edit", summary: `Ersätt "${needle.slice(0, 60)}" med "${String(replace || "").slice(0, 60)}" i dokumentet` });
+    if (!ok) return declined(ok);
+    try {
+      const n = await Word.run(async (ctx) => {
+        const results = ctx.document.body.search(needle, { matchCase: !!matchCase });
+        results.load("items");
+        await ctx.sync();
+        for (const r of results.items) r.insertText(String(replace || ""), "Replace");
+        await ctx.sync();
+        return results.items.length;
+      });
+      if (n) toast(`Ersatte ${n} förekomster`, "success");
+      return { replaced: n, ...(n ? {} : { note: "Inga träffar — kontrollera exakt stavning." }) };
+    } catch (e) { return { error: `Kunde inte ersätta${e?.message ? ": " + e.message : ""}.` }; }
   },
 
   async show_artifact({ title, type, content, language }) {
@@ -1590,7 +1659,7 @@ const tools = {
             if (use.name === "delegate_task" || use.name === "propose_plan") {
               result = { error: "Inte tillgängligt inuti en subagent." };
             } else if (!toolAllowed(use.name)) {
-              result = { error: "Det här kräver Excel." };
+              result = { error: toolSurfaceError(use.name) };
             } else {
               const fn = tools[use.name];
               currentToolName = use.name;
@@ -2201,7 +2270,7 @@ async function runOneTool(use, group) {
   try {
     const fn = tools[use.name];
     if (!toolAllowed(use.name)) {
-      result = { error: "Det här kräver Excel. Öppna Simba inuti Excel för att läsa eller redigera arket." };
+      result = { error: toolSurfaceError(use.name) };
     } else {
       currentToolName = use.name; // lets pushUndo tag the change-log entry
       result = fn ? await fn(use.input || {}) : { error: `Okänt verktyg ${use.name}` };
@@ -2329,7 +2398,7 @@ async function callBackend(history, onDelta, onThinking) {
         messages: history, speed, model: modelPref, memory: memoryList(),
         ambient: prefAmbient(), autoMemory: prefAutoMem(),
         project: activeProject ? { name: activeProject.name, instructions: activeProject.instructions } : undefined,
-        surface: IS_EXCEL ? "excel" : (IS_OUTLOOK ? "outlook" : "desktop"),
+        surface: IS_EXCEL ? "excel" : IS_OUTLOOK ? "outlook" : IS_WORD ? "word" : "desktop",
       }),
       signal: ctrl.signal,
     });
@@ -3156,6 +3225,10 @@ function toolLabel(name, input) {
     browse_website: input?.url ? `Använder webbläsaren: ${input.url}` : "Använder webbläsaren",
     show_artifact: `Bygger artefakt: ${input?.title || ""}`,
     open_in_excel: "Skickar uppgiften till Excel",
+    open_in_word: "Skickar uppgiften till Word",
+    read_document: "Läser dokumentet",
+    write_document: "Skriver i dokumentet",
+    replace_in_document: "Ersätter text i dokumentet",
     run_code: "Kör kod",
     create_document: `Skapar ${(input?.kind || "dokument").toUpperCase()}`,
     list_files: input?.query ? `Letar efter "${input.query}" i dina filer` : "Letar i dina filer",
@@ -4760,30 +4833,105 @@ async function openVaultEval() {
  * Excel; the Simba panel inside Excel (same signed-in user) claims it, runs it
  * with the sheet tools, and reports back. The app polls and shows the result. */
 
+/* Minimal markdown → Word-friendly HTML (headings, bold/italic/code, lists,
+ * tables, paragraphs). Deliberately NOT the chat renderer — that one emits
+ * app chrome (copy buttons etc.) that has no business inside a document. */
+function mdToWordHtml(md) {
+  const escW = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s) => escW(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<i>$2</i>")
+    .replace(/`([^`]+)`/g, '<span style="font-family:Consolas,monospace">$1</span>');
+  const lines = String(md || "").replace(/\r/g, "").split("\n");
+  const out = [];
+  let list = null;  // "ul" | "ol"
+  let table = null; // collected pipe-rows
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  const flushTable = () => {
+    if (!table) return;
+    const rows = table; table = null;
+    const cells = (row, tag) => row.split("|").slice(1, -1).map((c) => `<${tag} style="border:1px solid #999;padding:4px 8px">${inline(c.trim())}</${tag}>`).join("");
+    out.push('<table style="border-collapse:collapse">' + rows
+      .filter((r, i) => !(i === 1 && /^\s*\|?[\s:|-]+\|?\s*$/.test(r)))
+      .map((r, i) => `<tr>${cells(r, i === 0 ? "th" : "td")}</tr>`)
+      .join("") + "</table>");
+  };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^\|.*\|$/.test(line.trim())) { closeList(); (table ??= []).push(line.trim()); continue; }
+    flushTable();
+    const h = line.match(/^(#{1,4})\s+(.*)/);
+    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
+    const ul = line.match(/^\s*[-*•]\s+(.*)/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)/);
+    if (ul || ol) {
+      const want = ul ? "ul" : "ol";
+      if (list !== want) { closeList(); out.push(`<${want}>`); list = want; }
+      out.push(`<li>${inline((ul || ol)[1])}</li>`);
+      continue;
+    }
+    closeList();
+    if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  closeList(); flushTable();
+  return out.join("");
+}
+
+const HANDOFF_TARGETS = {
+  excel: { label: "Excel", url: "https://excel.new", panelHint: "fliken Start" },
+  word: { label: "Word", url: "https://word.new", panelHint: "fliken Start" },
+};
+
+// App side: queue the task, open the Office app, show a live status card.
+async function sendHandoff(target, task) {
+  const t = HANDOFF_TARGETS[target];
+  const token = await getSsoToken(false);
+  if (!token) return { error: `Logga in med Microsoft för att skicka uppgifter till ${t.label} (Inställningar → Logga in).` };
+  try {
+    const r = await fetch(`${API_BASE}/api/handoffs`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ target, task }),
+    });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); return { error: j.error || "Kunde inte skicka uppgiften." }; }
+    const { handoff } = await r.json();
+    const win = window.open(t.url, "_blank"); // popup blockers fall back to the card's link
+    renderHandoffCard(handoff, !win);
+    pollHandoff(handoff.id);
+    return {
+      queued: true,
+      note: `${t.label} öppnas hos användaren. Simba-panelen i ${t.label} utför uppgiften och resultatet rapporteras tillbaka i den här chatten. Be användaren öppna Simba-panelen (${t.panelHint}) om den inte redan är öppen.`,
+    };
+  } catch { return { error: "Kunde inte nå servern." }; }
+}
+
 // Status card in the app's chat, with a fallback link if the popup was blocked.
 function renderHandoffCard(handoff, popupBlocked) {
+  const t = HANDOFF_TARGETS[handoff.target] || HANDOFF_TARGETS.excel;
   clearTyping();
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
   wrap.dataset.handoff = handoff.id;
+  wrap.dataset.target = handoff.target;
   wrap.innerHTML =
     `<div class="avatar">${MASCOT_IMG}</div>` +
     `<div class="body"><div class="handoff-card">` +
-    `<div class="ho-head"><span class="ho-spin">⏳</span> <b>Uppgift skickad till Excel</b></div>` +
+    `<div class="ho-head"><span class="ho-spin">⏳</span> <b>Uppgift skickad till ${t.label}</b></div>` +
     `<div class="ho-task">${escapeHtml(String(handoff.task).slice(0, 160))}${handoff.task.length > 160 ? "…" : ""}</div>` +
     `<div class="ho-status hint">${popupBlocked
-      ? 'Kunde inte öppna Excel automatiskt — <a href="https://excel.new" target="_blank" rel="noopener">öppna Excel här</a> och starta Simba-panelen (fliken Start).'
-      : "Excel öppnas i en ny flik. Öppna Simba-panelen där (fliken Start) så kör den igång direkt."}</div>` +
+      ? `Kunde inte öppna ${t.label} automatiskt — <a href="${t.url}" target="_blank" rel="noopener">öppna ${t.label} här</a> och starta Simba-panelen (${t.panelHint}).`
+      : `${t.label} öppnas i en ny flik. Öppna Simba-panelen där (${t.panelHint}) så kör den igång direkt.`}</div>` +
     `</div></div>`;
   els.messages.append(wrap);
   scrollDown();
 }
 
 function handoffCardUpdate(id, status, result) {
-  const card = els.messages.querySelector(`[data-handoff="${id}"] .handoff-card`);
-  if (!card) return;
+  const row = els.messages.querySelector(`[data-handoff="${id}"]`);
+  if (!row) return;
+  const card = row.querySelector(".handoff-card");
+  const label = (HANDOFF_TARGETS[row.dataset.target] || HANDOFF_TARGETS.excel).label;
   card.querySelector(".ho-head").innerHTML = status === "done"
-    ? "✅ <b>Klart i Excel</b>" : status === "error" ? "⚠️ <b>Excel-uppgiften misslyckades</b>" : "▶ <b>Excel arbetar…</b>";
+    ? `✅ <b>Klart i ${label}</b>` : status === "error" ? `⚠️ <b>${label}-uppgiften misslyckades</b>` : `▶ <b>${label} arbetar…</b>`;
   if (result) card.querySelector(".ho-status").textContent = String(result).slice(0, 500);
 }
 
@@ -4809,12 +4957,13 @@ function pollHandoff(id) {
   setTimeout(tick, HANDOFF_POLL_MS);
 }
 
-/* Excel side: claim pending tasks from the app and run them in the workbook.
- * Checked shortly after boot and then periodically while the pane is open —
- * so "öppna Excel + öppna Simba-panelen" is all the user has to do. */
+/* Office side (Excel/Word): claim pending tasks from the app and run them in
+ * the open workbook/document. Checked shortly after boot and then periodically
+ * while the pane is open — "öppna appen + öppna Simba-panelen" is all it takes. */
 let _handoffTimer = null;
 function startHandoffWatcher() {
-  if (!IS_EXCEL || _handoffTimer) return;
+  if ((!IS_EXCEL && !IS_WORD) || _handoffTimer) return;
+  const target = IS_WORD ? "word" : "excel";
   const tick = async () => {
     if (!signedIn || busy) return; // wait for sign-in / a free moment
     try {
@@ -4822,7 +4971,7 @@ function startHandoffWatcher() {
       if (!token) return;
       const r = await fetch(`${API_BASE}/api/handoffs/claim`, {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ target: "excel" }),
+        body: JSON.stringify({ target }),
       });
       if (!r.ok) return;
       const { handoff } = await r.json();
@@ -4838,7 +4987,7 @@ async function runHandoff(handoff) {
   clearWelcome();
   const before = messages.length;
   els.prompt.value =
-    `[Uppgift skickad från Simba-appen — utför den direkt i den öppna arbetsboken, komplett och utan följdfrågor]\n\n${handoff.task}`;
+    `[Uppgift skickad från Simba-appen — utför den direkt i ${IS_WORD ? "det öppna dokumentet" : "den öppna arbetsboken"}, komplett och utan följdfrågor]\n\n${handoff.task}`;
   await onSend();
   // Report the outcome back so the app's card flips to done. Only count it as
   // done if the run actually produced a new reply (onSend swallows errors).

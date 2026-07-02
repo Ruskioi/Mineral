@@ -573,7 +573,25 @@ check("app→Excel handoff (open Excel, add-in executes, reports back) is wired"
   assert(/Du kör redan i Excel/.test(taskpane), "open_in_excel must refuse inside Excel (use sheet tools directly)");
   assert(/function startHandoffWatcher/.test(taskpane) && /function runHandoff/.test(taskpane) && /function pollHandoff/.test(taskpane), "Excel pickup loop / app status poll missing");
   assert(/excel\.new/.test(taskpane), "the app must open Excel for the user");
-  assert(/open_in_excel — Excel öppnas/.test(server), "the desktop system prompt must point the model at open_in_excel");
+  assert(/open_in_excel respektive open_in_word/.test(server), "the desktop system prompt must point the model at the handoff tools");
+});
+
+check("Word add-in + app→Word handoff are wired", () => {
+  // Manifest tooling
+  assert(/Host Name="Document"/.test(read("manifest.word.template.xml")) && /WordApi/.test(read("manifest.word.template.xml")), "Word manifest template missing");
+  assert(/flag\("word"\)/.test(read("scripts/make-manifest.mjs")), "make-manifest must support --word");
+  assert(JSON.parse(read("package.json")).scripts["manifest:word"], "manifest:word npm script missing");
+  // Surface + tools (both sides — parity test covers the pairing)
+  assert(/IS_WORD = host === Office\.HostType\.Word/.test(taskpane) && /const WORD_TOOLS = new Set/.test(taskpane), "Word surface detection/gating missing");
+  assert(/name: "read_document"/.test(server) && /name: "write_document"/.test(server) && /name: "replace_in_document"/.test(server), "Word tool schemas missing");
+  assert(/async read_document\(/.test(taskpane) && /async write_document\(/.test(taskpane) && /async replace_in_document\(/.test(taskpane), "Word tool implementations missing");
+  assert(/function mdToWordHtml/.test(taskpane), "markdown→Word HTML converter missing (chat renderer would leak app chrome)");
+  assert(/gateEdit\(\{ kind: "edit", summary: loc === "Replace"/.test(taskpane), "document writes must be approval-gated like sheet edits");
+  assert(/surface === "word"/.test(server) && /function applyWordMode/.test(taskpane), "Word system prompt / pane mode missing");
+  // Handoff from the app
+  assert(/name: "open_in_word"/.test(server) && /async open_in_word\(/.test(taskpane) && /word\.new/.test(taskpane), "open_in_word handoff missing");
+  assert(/\["excel", "word"\]\.includes\(target\)/.test(read("server/handoffs.js")), "handoffs must accept the word target");
+  assert(/IS_WORD \? "word" : "excel"/.test(taskpane), "the Word pane must claim word-targeted tasks");
 });
 
 check("the standalone Simba app is a first-class surface (not Excel-flavored)", () => {

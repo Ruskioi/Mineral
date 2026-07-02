@@ -51,7 +51,7 @@ export async function createHandoff(userKey, target, task) {
   await ensureReady();
   const h = {
     id: randomUUID(), user_key: userKey,
-    target: target === "excel" ? "excel" : "excel", // one target today; keep the column for more
+    target: ["excel", "word"].includes(target) ? target : "excel",
     task: String(task || "").trim().slice(0, 4000),
     status: "pending", result: null,
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),

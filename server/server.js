@@ -334,6 +334,27 @@ const TOOLS = [
       task: { type: "string", description: "Hela uppgiften, självförklarande: vad som ska byggas/ändras, med data, struktur och formatering. Ta med allt underlag som behövs." },
     }, required: ["task"] } },
 
+  { name: "open_in_word", description: "Skicka en dokumentuppgift till Word: Word öppnas hos användaren och Simba-panelen där skriver dokumentet direkt (rubriker, stycken, listor, tabeller). Använd när användaren vill SKAPA eller ÄNDRA ett Word-dokument och du inte redan kör i Word. Beskriv uppgiften komplett och självständigt — panelen i Word ser inte den här chatten. Resultatet rapporteras tillbaka hit när det är klart.",
+    input_schema: { type: "object", properties: {
+      task: { type: "string", description: "Hela uppgiften, självförklarande: vad dokumentet ska innehålla, struktur, ton och allt underlag som behövs." },
+    }, required: ["task"] } },
+
+  { name: "read_document", description: "Läs hela texten i det öppna Word-dokumentet. Fungerar bara när Simba körs inuti Word. Använd innan du förbättrar, sammanfattar eller bygger vidare på dokumentet.",
+    input_schema: { type: "object", properties: {} } },
+
+  { name: "write_document", description: "Skriv formaterat innehåll i det öppna Word-dokumentet (markdown blir riktig formatering: #-rubriker, **fet**, *kursiv*, punkt-/numrerade listor, |tabeller|). Fungerar bara inuti Word. location: end (standard), start eller replace (ersätter HELA dokumentet — använd varsamt).",
+    input_schema: { type: "object", properties: {
+      markdown: { type: "string", description: "Innehållet som markdown." },
+      location: { type: "string", enum: ["end", "start", "replace"], description: "Var innehållet skrivs. Standard: end." },
+    }, required: ["markdown"] } },
+
+  { name: "replace_in_document", description: "Sök och ersätt text i det öppna Word-dokumentet (alla förekomster). Fungerar bara inuti Word. Bra för riktade ändringar utan att skriva om dokumentet.",
+    input_schema: { type: "object", properties: {
+      find: { type: "string", description: "Exakt text att hitta (max 250 tecken)." },
+      replace: { type: "string", description: "Ersättningstexten." },
+      matchCase: { type: "boolean", description: "Skiftlägeskänsligt (standard falskt)." },
+    }, required: ["find", "replace"] } },
+
   { name: "show_artifact", description: "Visa en leverabel i ett live-fönster bredvid chatten (en 'artefakt'): en komplett interaktiv HTML-sida (inline JS/CSS tillåts), SVG-grafik, ett markdown-dokument eller källkod. Använd för dashboards, kalkylatorer, prototyper, rapporter och visualiseringar som användaren ska kunna se och interagera med direkt. Skicka HELA innehållet varje gång — samma titel uppdaterar artefakten som en ny version.",
     input_schema: { type: "object", properties: {
       title: { type: "string", description: "Artefaktens namn, t.ex. 'Försäljningsdashboard'." },
@@ -979,8 +1000,15 @@ function buildSystem(memory, surface, project) {
     "dokument (create_document: Word/PowerPoint/Excel/PDF), läsa bifogade filer och " +
     "OneDrive/SharePoint-filer (list_files/open_file), schemalägga återkommande jobb " +
     "(schedule_task) och minnas det viktiga (remember). Vill användaren SKAPA eller ÄNDRA något " +
-    "i ett kalkylark: använd open_in_excel — Excel öppnas och Simba-panelen där utför uppgiften " +
-    "i arbetsboken och rapporterar tillbaka hit." });
+    "i ett kalkylark eller Word-dokument: använd open_in_excel respektive open_in_word — appen " +
+    "öppnas och Simba-panelen där utför uppgiften och rapporterar tillbaka hit. (create_document " +
+    "ger en färdig FIL för nedladdning; open_in_word arbetar LIVE i dokumentet.)" });
+  else if (surface === "word") blocks.push({ type: "text", text:
+    "[Läge] Du körs inuti Microsoft Word. Du kan läsa dokumentet (read_document), skriva formaterat " +
+    "innehåll direkt i det (write_document — markdown blir rubriker/listor/tabeller) och söka/ersätta " +
+    "(replace_in_document), utöver dina allmänna förmågor (webb, kod, kunskapsbank, filer, mejl). " +
+    "Läs alltid dokumentet innan du förbättrar eller bygger vidare på det. Kalkylark hanteras i Excel " +
+    "(open_in_excel)." });
   else if (surface === "outlook") blocks.push({ type: "text", text:
     "[Läge] Du körs inuti Microsoft Outlook. Du kan läsa det MEJL SOM ÄR ÖPPET just nu direkt " +
     "med read_current_email (be om det när användaren säger 'det här mejlet'), samt arbeta med " +

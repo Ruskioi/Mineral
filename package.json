@@ -1,7 +1,7 @@
 {
   "name": "simba-ai-excel",
   "version": "1.0.0",
-  "description": "Simba AI — a Swedish AI assistant (web/PWA, desktop, Teams, Excel & Outlook add-ins), powered by Claude.",
+  "description": "Simba AI \u2014 a Swedish AI assistant (web/PWA, desktop, Teams, Excel & Outlook add-ins), powered by Claude.",
   "type": "module",
   "scripts": {
     "dev-certs": "office-addin-dev-certs install",
@@ -17,7 +17,8 @@
     "sideload": "office-addin-debugging start manifest.xml",
     "validate": "office-addin-manifest validate manifest.xml",
     "test": "node test/unit.mjs",
-    "check": "npm run test && npm run build"
+    "check": "npm run test && npm run build",
+    "manifest:word": "node scripts/make-manifest.mjs --word --new-id --out manifest.word.prod.xml"
   },
   "author": "Simba AI",
   "license": "MIT",

@@ -671,6 +671,9 @@ body.has-chat .chat-watermark svg { opacity: 0.035; }
 body.desktop #mode-pill,
 body.desktop #undo,
 body.desktop #context-pill { display: none; }
+/* Word runs with desktop chrome, but the edit-mode chip is back on duty —
+ * it gates document writes exactly like sheet edits in Excel. */
+body.desktop.word #mode-pill { display: inline-block; }
 
 /* Navigation sidebar (Claude-style). Two modes:
  *  - Narrow panes (Excel/Outlook add-in, small windows): a slide-out drawer
